@@ -98,8 +98,8 @@ private fun assertDashboardSurvives(instrumentation: Instrumentation) {
     try {
         scenario.moveToState(Lifecycle.State.RESUMED)
         assertTrue(
-            "Dashboard content did not render after authenticated entry",
-            waitForVisibleText(instrumentation, "عملیات روزانه", UI_TIMEOUT_MILLIS),
+            "Dashboard header did not render after authenticated entry",
+            waitForVisibleText(instrumentation, "سلام، Runtime Owner", UI_TIMEOUT_MILLIS),
         )
         SystemClock.sleep(STABILITY_WINDOW_MILLIS)
         scenario.onActivity { activity ->
