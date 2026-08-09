@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ALPHA160_ZIP: Sabou-Restaurant-ERP-Alpha160-HR-Payroll-2.0-TASK-03.zip
+  ALPHA160_ZIP: Sabou-Restaurant-ERP-Alpha160.1-Runtime-Crash-Repair-TASK-03-A.zip
   ALPHA159_COMMIT: af9e919080475379bd9622b7373425ba0cc17008
   ALPHA159_ZIP: Sabou-Restaurant-ERP-Alpha159-Inventory-2.0-TASK-02-A-CI-Repair.zip
 
@@ -38,7 +38,6 @@ jobs:
           alpha160_root=$(find "$RUNNER_TEMP/alpha160-clean" -mindepth 1 -maxdepth 1 -type d -print -quit)
           test -n "$alpha160_root"
           test -f "$alpha160_root/gradlew"
-          patch -d "$alpha160_root" -p1 < "$GITHUB_WORKSPACE/ci/stock-transfer-parent-fk.patch"
           cp "$GITHUB_WORKSPACE/ci/Alpha160RuntimeSmokeTest.kt" \
             "$alpha160_root/app/src/androidTest/java/ir/sabou/inventory/Alpha160RuntimeSmokeTest.kt"
           cp "$GITHUB_WORKSPACE/ci/FullMigration1ToCurrentTest.kt" \
@@ -55,11 +54,17 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
 
-      - name: Build Alpha160 app and test APKs
+      - name: Run Alpha160 compile, unit, assembly, and static gates
         shell: bash
         run: |
           cd "$ALPHA160_ROOT"
-          ./gradlew --no-daemon -I "$GITHUB_WORKSPACE/ci/android-test-runner.init.gradle" :app:assembleDebug :app:assembleDebugAndroidTest
+          ./gradlew --no-daemon \
+            :app:compileDebugKotlin \
+            :app:assembleDebug \
+            :app:testDebugUnitTest \
+            :app:assembleDebugAndroidTest
+          bash scripts/verify-foundation.sh
+          python3 scripts/verify-hr-payroll-migration.py
 
       - name: Enable KVM
         shell: bash
@@ -77,7 +82,12 @@ jobs:
           profile: pixel_5
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: bash "$GITHUB_WORKSPACE/ci/run-alpha160-clean-runtime.sh" "$ALPHA160_ROOT"
+          script: |
+            bash "$GITHUB_WORKSPACE/ci/run-alpha160-clean-runtime.sh" "$ALPHA160_ROOT"
+            adb uninstall ir.sabou.inventory.test >/dev/null 2>&1 || true
+            adb uninstall ir.sabou.inventory >/dev/null 2>&1 || true
+            cd "$ALPHA160_ROOT"
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest
 
       - name: Upload clean runtime evidence
         if: always()
@@ -114,7 +124,6 @@ jobs:
           alpha160_root=$(find "$RUNNER_TEMP/alpha160-upgrade" -mindepth 1 -maxdepth 1 -type d -print -quit)
           test -f "$alpha159_root/gradlew"
           test -f "$alpha160_root/gradlew"
-          patch -d "$alpha160_root" -p1 < "$GITHUB_WORKSPACE/ci/stock-transfer-parent-fk.patch"
           # Alpha159 ships with unrelated stale instrumentation sources that do not compile.
           # Preserve them outside the source set so this job builds only the upgrade seed fixture.
           if [ -d "$alpha159_root/app/src/androidTest" ]; then
@@ -146,7 +155,7 @@ jobs:
           cd "$ALPHA159_ROOT"
           ./gradlew --no-daemon -I "$GITHUB_WORKSPACE/ci/android-test-runner.init.gradle" :app:assembleDebug :app:assembleDebugAndroidTest
           cd "$ALPHA160_ROOT"
-          ./gradlew --no-daemon -I "$GITHUB_WORKSPACE/ci/android-test-runner.init.gradle" :app:assembleDebug :app:assembleDebugAndroidTest
+          ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
 
       - name: Enable KVM
         shell: bash

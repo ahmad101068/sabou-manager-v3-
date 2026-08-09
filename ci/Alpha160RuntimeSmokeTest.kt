@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -55,6 +56,10 @@ class Alpha160UpgradeEntryRuntimeSmokeTest {
     @Test
     fun alpha159DatabaseMigratesAndPostEntryFlowsRemainAlive() = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        assumeTrue(
+            "Requires an externally seeded genuine Alpha159 database",
+            InstrumentationRegistry.getArguments().getString(UPGRADE_FIXTURE_ARGUMENT) == "true",
+        )
         val application = instrumentation.targetContext.applicationContext as SabouApplication
 
         // This is the production SQLCipher + Room builder and therefore executes 43 -> 44.
@@ -146,6 +151,7 @@ private fun hasRenderedComposeRoot(view: View): Boolean {
 private const val TEST_USERNAME = "runtime_owner"
 private const val TEST_PIN = "123456"
 private const val TEST_RECOVERY_CODE = "87654321"
+private const val UPGRADE_FIXTURE_ARGUMENT = "alpha160UpgradeFixture"
 private const val FLOW_TIMEOUT_MILLIS = 10_000L
 private const val UI_TIMEOUT_MILLIS = 20_000L
 private const val STABILITY_WINDOW_MILLIS = 8_000L

@@ -62,6 +62,7 @@ adb install -r "$alpha160_test" | tee "$artifact_dir/upgrade-alpha160-test.txt"
 
 adb logcat -c
 adb shell am instrument -w -r \
+  -e alpha160UpgradeFixture true \
   -e class ir.sabou.inventory.Alpha160UpgradeEntryRuntimeSmokeTest \
   "$runner" | tee "$artifact_dir/alpha160-upgrade-instrumentation.txt"
 upgrade_status=${PIPESTATUS[0]}
