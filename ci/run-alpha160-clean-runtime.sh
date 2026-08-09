@@ -78,4 +78,17 @@ if (( clean_ok != 1 || hr_migration_ok != 1 || full_migration_ok != 1 )); then
   exit 1
 fi
 
-echo "Alpha160 clean-entry and migration runtime gates passed."
+adb uninstall ir.sabou.inventory.test >/dev/null 2>&1 || true
+adb uninstall ir.sabou.inventory >/dev/null 2>&1 || true
+(
+  cd "$project_root"
+  ./gradlew --no-daemon :app:connectedDebugAndroidTest
+)
+connected_status=$?
+if (( connected_status != 0 )); then
+  capture_diagnostics connected-suite
+  echo "Full connectedDebugAndroidTest gate failed." >&2
+  exit "$connected_status"
+fi
+
+echo "Alpha160 clean-entry, migration, and full connected runtime gates passed."

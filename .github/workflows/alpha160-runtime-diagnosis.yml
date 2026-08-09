@@ -87,12 +87,7 @@ jobs:
           profile: pixel_5
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: |
-            bash "$GITHUB_WORKSPACE/ci/run-alpha160-clean-runtime.sh" "$ALPHA160_ROOT"
-            adb uninstall ir.sabou.inventory.test >/dev/null 2>&1 || true
-            adb uninstall ir.sabou.inventory >/dev/null 2>&1 || true
-            cd "$ALPHA160_ROOT"
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest
+          script: bash "$GITHUB_WORKSPACE/ci/run-alpha160-clean-runtime.sh" "$ALPHA160_ROOT"
 
       - name: Upload clean runtime evidence
         if: always()
