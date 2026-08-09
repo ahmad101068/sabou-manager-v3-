@@ -38,6 +38,7 @@ jobs:
           alpha160_root=$(find "$RUNNER_TEMP/alpha160-clean" -mindepth 1 -maxdepth 1 -type d -print -quit)
           test -n "$alpha160_root"
           test -f "$alpha160_root/gradlew"
+          patch -d "$alpha160_root" -p1 < "$GITHUB_WORKSPACE/ci/stock-transfer-parent-fk.patch"
           cp "$GITHUB_WORKSPACE/ci/Alpha160RuntimeSmokeTest.kt" \
             "$alpha160_root/app/src/androidTest/java/ir/sabou/inventory/Alpha160RuntimeSmokeTest.kt"
           cp "$GITHUB_WORKSPACE/ci/FullMigration1ToCurrentTest.kt" \
@@ -113,6 +114,7 @@ jobs:
           alpha160_root=$(find "$RUNNER_TEMP/alpha160-upgrade" -mindepth 1 -maxdepth 1 -type d -print -quit)
           test -f "$alpha159_root/gradlew"
           test -f "$alpha160_root/gradlew"
+          patch -d "$alpha160_root" -p1 < "$GITHUB_WORKSPACE/ci/stock-transfer-parent-fk.patch"
           # Alpha159 ships with unrelated stale instrumentation sources that do not compile.
           # Preserve them outside the source set so this job builds only the upgrade seed fixture.
           if [ -d "$alpha159_root/app/src/androidTest" ]; then
