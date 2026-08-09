@@ -1,0 +1,137 @@
+name: Sabou Android Runtime Gates
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "*.zip"
+      - ".github/workflows/runtime-gates.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "*.zip"
+      - ".github/workflows/runtime-gates.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sabou-runtime-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build, lint, unit and emulator gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve and extract the source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t source_zips < <(
+            find . -maxdepth 1 -type f \
+              -name 'Sabou-Restaurant-ERP-Alpha*.zip' \
+              -print | sort
+          )
+
+          if [[ ${#source_zips[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one Sabou source ZIP in the repository root; found ${#source_zips[@]}."
+            printf '%s\n' "${source_zips[@]}"
+            exit 1
+          fi
+
+          mkdir -p _ci/project
+          unzip -q "${source_zips[0]}" -d _ci/project
+
+          mapfile -t wrappers < <(
+            find _ci/project -type f -name gradlew -print | sort
+          )
+          if [[ ${#wrappers[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one Gradle wrapper after extraction; found ${#wrappers[@]}."
+            printf '%s\n' "${wrappers[@]}"
+            exit 1
+          fi
+
+          project_dir="${wrappers[0]%/gradlew}"
+          test -f "${project_dir}/settings.gradle.kts" || {
+            echo "::error::settings.gradle.kts was not found beside gradlew."
+            exit 1
+          }
+          test -d "${project_dir}/app" || {
+            echo "::error::Android app module was not found."
+            exit 1
+          }
+
+          chmod +x "${wrappers[0]}"
+          echo "PROJECT_DIR=${project_dir}" >> "$GITHUB_ENV"
+          echo "SOURCE_ZIP=${source_zips[0]}" >> "$GITHUB_ENV"
+          sha256sum "${source_zips[0]}"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run clean compile unit assemble and lint gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon \
+            clean \
+            compileDebugKotlin \
+            testDebugUnitTest \
+            assembleDebug \
+            lintDebug \
+            --stacktrace
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run instrumentation tests on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: >-
+            -no-window
+            -gpu swiftshader_indirect
+            -noaudio
+            -no-boot-anim
+            -camera-back none
+          script: |
+            set -euo pipefail
+            cd "$PROJECT_DIR"
+            ./gradlew --no-daemon connectedDebugAndroidTest --stacktrace
+
+      - name: Upload APK and verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sabou-runtime-gates-${{ github.run_number }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            _ci/project/**/app/build/outputs/apk/debug/*.apk
+            _ci/project/**/app/build/reports/
+            _ci/project/**/app/build/test-results/
+            _ci/project/**/app/build/outputs/androidTest-results/
