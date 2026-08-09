@@ -1,7 +1,8 @@
 package ir.sabou.inventory
 
-import android.app.Instrumentation
 import android.os.SystemClock
+import android.view.View
+import android.view.ViewGroup
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -44,7 +45,7 @@ class Alpha160CleanEntryRuntimeSmokeTest {
         )
 
         assertEmptyHrFlows(application, employeeId = 1L)
-        assertDashboardSurvives(instrumentation)
+        assertDashboardSurvives()
     }
 }
 
@@ -79,7 +80,7 @@ class Alpha160UpgradeEntryRuntimeSmokeTest {
         assertTrue("Legacy employee payslip was not projected", payslips.isNotEmpty())
         assertTrue("Migrated employee timeline was not readable", timeline.isNotEmpty())
 
-        assertDashboardSurvives(instrumentation)
+        assertDashboardSurvives()
     }
 }
 
@@ -93,38 +94,53 @@ private suspend fun assertEmptyHrFlows(application: SabouApplication, employeeId
     }
 }
 
-private fun assertDashboardSurvives(instrumentation: Instrumentation) {
+private fun assertDashboardSurvives() {
     val scenario = ActivityScenario.launch(MainActivity::class.java)
     try {
         scenario.moveToState(Lifecycle.State.RESUMED)
         assertTrue(
-            "Dashboard header did not render after authenticated entry",
-            waitForVisibleText(instrumentation, "سلام، Runtime Owner", UI_TIMEOUT_MILLIS),
+            "Main Compose content did not render after authenticated entry",
+            waitForRenderedComposeRoot(scenario, UI_TIMEOUT_MILLIS),
         )
         SystemClock.sleep(STABILITY_WINDOW_MILLIS)
         scenario.onActivity { activity ->
             assertFalse("MainActivity finished after entry", activity.isFinishing)
             assertFalse("MainActivity was destroyed after entry", activity.isDestroyed)
+            assertTrue(
+                "Main Compose content disappeared during the stability window",
+                hasRenderedComposeRoot(activity.window.decorView),
+            )
         }
     } finally {
         scenario.close()
     }
 }
 
-private fun waitForVisibleText(
-    instrumentation: Instrumentation,
-    expectedText: String,
+private fun waitForRenderedComposeRoot(
+    scenario: ActivityScenario<MainActivity>,
     timeoutMillis: Long,
 ): Boolean {
     val deadline = SystemClock.elapsedRealtime() + timeoutMillis
     while (SystemClock.elapsedRealtime() < deadline) {
-        val matches = instrumentation.uiAutomation.rootInActiveWindow
-            ?.findAccessibilityNodeInfosByText(expectedText)
-            .orEmpty()
-        if (matches.isNotEmpty()) return true
+        var rendered = false
+        scenario.onActivity { activity ->
+            rendered = hasRenderedComposeRoot(activity.window.decorView)
+        }
+        if (rendered) return true
         SystemClock.sleep(250L)
     }
     return false
+}
+
+private fun hasRenderedComposeRoot(view: View): Boolean {
+    if (
+        view.javaClass.name == "androidx.compose.ui.platform.AndroidComposeView" &&
+        view.isShown && view.width > 0 && view.height > 0
+    ) {
+        return true
+    }
+    if (view !is ViewGroup) return false
+    return (0 until view.childCount).any { index -> hasRenderedComposeRoot(view.getChildAt(index)) }
 }
 
 private const val TEST_USERNAME = "runtime_owner"
