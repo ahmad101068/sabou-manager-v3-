@@ -1,0 +1,12 @@
+diff --git a/app/src/main/java/ir/sabou/inventory/data/db/migration/EnterpriseMigrations.kt b/app/src/main/java/ir/sabou/inventory/data/db/migration/EnterpriseMigrations.kt
+--- a/app/src/main/java/ir/sabou/inventory/data/db/migration/EnterpriseMigrations.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/db/migration/EnterpriseMigrations.kt
+@@ -608,7 +608,7 @@ private fun upgradeStockTransfersToV43(db: SupportSQLiteDatabase) {
+             unitCostRial INTEGER,
+             valueRial INTEGER,
+             updatedAtEpochMillis INTEGER NOT NULL,
+-            FOREIGN KEY(transferId) REFERENCES stock_transfers_v43(id) ON UPDATE NO ACTION ON DELETE RESTRICT,
++            FOREIGN KEY(transferId) REFERENCES stock_transfers(id) ON UPDATE NO ACTION ON DELETE RESTRICT,
+             FOREIGN KEY(itemId) REFERENCES inventory_items(id) ON UPDATE NO ACTION ON DELETE RESTRICT,
+             FOREIGN KEY(lotId) REFERENCES inventory_lots(id) ON UPDATE NO ACTION ON DELETE RESTRICT
+         )""",
