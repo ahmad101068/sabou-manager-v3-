@@ -56,7 +56,7 @@ jobs:
         shell: bash
         run: |
           cd "$ALPHA160_ROOT"
-          ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+          ./gradlew --no-daemon -I "$GITHUB_WORKSPACE/ci/android-test-runner.init.gradle" :app:assembleDebug :app:assembleDebugAndroidTest
 
       - name: Enable KVM
         shell: bash
@@ -138,9 +138,9 @@ jobs:
         shell: bash
         run: |
           cd "$ALPHA159_ROOT"
-          ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+          ./gradlew --no-daemon -I "$GITHUB_WORKSPACE/ci/android-test-runner.init.gradle" :app:assembleDebug :app:assembleDebugAndroidTest
           cd "$ALPHA160_ROOT"
-          ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+          ./gradlew --no-daemon -I "$GITHUB_WORKSPACE/ci/android-test-runner.init.gradle" :app:assembleDebug :app:assembleDebugAndroidTest
 
       - name: Enable KVM
         shell: bash
