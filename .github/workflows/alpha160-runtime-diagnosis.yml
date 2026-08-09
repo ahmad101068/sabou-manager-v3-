@@ -40,6 +40,8 @@ jobs:
           test -f "$alpha160_root/gradlew"
           cp "$GITHUB_WORKSPACE/ci/Alpha160RuntimeSmokeTest.kt" \
             "$alpha160_root/app/src/androidTest/java/ir/sabou/inventory/Alpha160RuntimeSmokeTest.kt"
+          cp "$GITHUB_WORKSPACE/ci/FullMigration1ToCurrentTest.kt" \
+            "$alpha160_root/app/src/androidTest/java/ir/sabou/inventory/data/db/FullMigration1ToCurrentTest.kt"
           chmod +x "$alpha160_root/gradlew" "$GITHUB_WORKSPACE/ci/run-alpha160-clean-runtime.sh"
           echo "ALPHA160_ROOT=$alpha160_root" >> "$GITHUB_ENV"
 
@@ -121,6 +123,8 @@ jobs:
             "$alpha159_root/app/src/androidTest/java/ir/sabou/inventory/Alpha159UpgradeSeedTest.kt"
           cp "$GITHUB_WORKSPACE/ci/Alpha160RuntimeSmokeTest.kt" \
             "$alpha160_root/app/src/androidTest/java/ir/sabou/inventory/Alpha160RuntimeSmokeTest.kt"
+          cp "$GITHUB_WORKSPACE/ci/FullMigration1ToCurrentTest.kt" \
+            "$alpha160_root/app/src/androidTest/java/ir/sabou/inventory/data/db/FullMigration1ToCurrentTest.kt"
           chmod +x "$alpha159_root/gradlew" "$alpha160_root/gradlew" "$GITHUB_WORKSPACE/ci/run-alpha160-upgrade-runtime.sh"
           echo "ALPHA159_ROOT=$alpha159_root" >> "$GITHUB_ENV"
           echo "ALPHA160_ROOT=$alpha160_root" >> "$GITHUB_ENV"
