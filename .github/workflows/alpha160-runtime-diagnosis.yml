@@ -1,0 +1,169 @@
+name: Alpha160 Runtime Crash Diagnosis
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alpha160-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ALPHA160_ZIP: Sabou-Restaurant-ERP-Alpha160-HR-Payroll-2.0-TASK-03.zip
+  ALPHA159_COMMIT: af9e919080475379bd9622b7373425ba0cc17008
+  ALPHA159_ZIP: Sabou-Restaurant-ERP-Alpha159-Inventory-2.0-TASK-02-A-CI-Repair.zip
+
+jobs:
+  clean-entry:
+    name: Clean install and authenticated entry
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Extract Alpha160 and inject runtime smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$GITHUB_WORKSPACE/$ALPHA160_ZIP"
+          mkdir -p "$RUNNER_TEMP/alpha160-clean"
+          unzip -q "$GITHUB_WORKSPACE/$ALPHA160_ZIP" -d "$RUNNER_TEMP/alpha160-clean"
+          alpha160_root=$(find "$RUNNER_TEMP/alpha160-clean" -mindepth 1 -maxdepth 1 -type d -print -quit)
+          test -n "$alpha160_root"
+          test -f "$alpha160_root/gradlew"
+          cp "$GITHUB_WORKSPACE/ci/Alpha160RuntimeSmokeTest.kt" \
+            "$alpha160_root/app/src/androidTest/java/ir/sabou/inventory/Alpha160RuntimeSmokeTest.kt"
+          chmod +x "$alpha160_root/gradlew" "$GITHUB_WORKSPACE/ci/run-alpha160-clean-runtime.sh"
+          echo "ALPHA160_ROOT=$alpha160_root" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Build Alpha160 app and test APKs
+        shell: bash
+        run: |
+          cd "$ALPHA160_ROOT"
+          ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run clean-entry and Room migration runtime gates
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash "$GITHUB_WORKSPACE/ci/run-alpha160-clean-runtime.sh" "$ALPHA160_ROOT"
+
+      - name: Upload clean runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha160-clean-runtime-${{ github.run_number }}
+          path: |
+            runtime-artifacts/clean/
+            ${{ env.ALPHA160_ROOT }}/app/build/outputs/apk/
+            ${{ env.ALPHA160_ROOT }}/app/build/reports/androidTests/
+            ${{ env.ALPHA160_ROOT }}/app/build/outputs/androidTest-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+  upgrade-entry:
+    name: Alpha159 to Alpha160 production upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout diagnostic branch and history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Extract both versions and inject upgrade fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/alpha159-upgrade" "$RUNNER_TEMP/alpha160-upgrade"
+          git show "$ALPHA159_COMMIT:$ALPHA159_ZIP" > "$RUNNER_TEMP/alpha159.zip"
+          unzip -q "$RUNNER_TEMP/alpha159.zip" -d "$RUNNER_TEMP/alpha159-upgrade"
+          unzip -q "$GITHUB_WORKSPACE/$ALPHA160_ZIP" -d "$RUNNER_TEMP/alpha160-upgrade"
+          alpha159_root=$(find "$RUNNER_TEMP/alpha159-upgrade" -mindepth 1 -maxdepth 1 -type d -print -quit)
+          alpha160_root=$(find "$RUNNER_TEMP/alpha160-upgrade" -mindepth 1 -maxdepth 1 -type d -print -quit)
+          test -f "$alpha159_root/gradlew"
+          test -f "$alpha160_root/gradlew"
+          cp "$GITHUB_WORKSPACE/ci/Alpha159UpgradeSeedTest.kt" \
+            "$alpha159_root/app/src/androidTest/java/ir/sabou/inventory/Alpha159UpgradeSeedTest.kt"
+          cp "$GITHUB_WORKSPACE/ci/Alpha160RuntimeSmokeTest.kt" \
+            "$alpha160_root/app/src/androidTest/java/ir/sabou/inventory/Alpha160RuntimeSmokeTest.kt"
+          chmod +x "$alpha159_root/gradlew" "$alpha160_root/gradlew" "$GITHUB_WORKSPACE/ci/run-alpha160-upgrade-runtime.sh"
+          echo "ALPHA159_ROOT=$alpha159_root" >> "$GITHUB_ENV"
+          echo "ALPHA160_ROOT=$alpha160_root" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Build Alpha159 and Alpha160 app/test APKs
+        shell: bash
+        run: |
+          cd "$ALPHA159_ROOT"
+          ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+          cd "$ALPHA160_ROOT"
+          ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Seed Alpha159, upgrade in place, and enter Alpha160
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash "$GITHUB_WORKSPACE/ci/run-alpha160-upgrade-runtime.sh" "$ALPHA159_ROOT" "$ALPHA160_ROOT"
+
+      - name: Upload upgrade runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha160-upgrade-runtime-${{ github.run_number }}
+          path: |
+            runtime-artifacts/upgrade/
+            ${{ env.ALPHA159_ROOT }}/app/build/outputs/apk/
+            ${{ env.ALPHA160_ROOT }}/app/build/outputs/apk/
+            ${{ env.ALPHA160_ROOT }}/app/build/reports/androidTests/
+            ${{ env.ALPHA160_ROOT }}/app/build/outputs/androidTest-results/
+          if-no-files-found: warn
+          retention-days: 14
