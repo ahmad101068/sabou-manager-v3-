@@ -73,6 +73,16 @@ jobs:
           cache-provider: basic
           validate-wrappers: true
 
+      - name: Install static verification dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ripgrep
+          fi
+          rg --version | head -n 1 | tee _ci/logs/01-ripgrep-version.log
+
       - name: Run Alpha161 static and migration verifiers
         shell: bash
         run: |
