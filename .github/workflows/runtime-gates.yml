@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Initialize durable CI evidence
         shell: bash
@@ -51,6 +51,7 @@ jobs:
       - name: Resolve and extract the source ZIP
         shell: bash
         run: |
+          set +e
           set -o pipefail
           (
             set -euo pipefail
@@ -98,7 +99,7 @@ jobs:
           exit "${rc}"
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -109,25 +110,35 @@ jobs:
       - name: Run clean compile unit assemble and lint gates
         shell: bash
         run: |
+          set +e
           set -o pipefail
-          (
-            set -euo pipefail
-            cd "$PROJECT_DIR"
-            ./gradlew --no-daemon \
-              clean \
-              compileDebugKotlin \
-              testDebugUnitTest \
-              assembleDebug \
-              lintDebug \
-              --stacktrace
-          ) 2>&1 | tee _ci/logs/02-gradle-host-gates.log
-          rc=${PIPESTATUS[0]}
-          echo "gradle_host_gates=${rc}" >> _ci/logs/exit-codes.env
-          exit "${rc}"
+          cd "$PROJECT_DIR"
+          gates=(
+            clean
+            compileDebugKotlin
+            testDebugUnitTest
+            assembleDebug
+            lintDebug
+          )
+          overall_rc=0
+          index=0
+          for gate in "${gates[@]}"; do
+            index=$((index + 1))
+            log_file="$GITHUB_WORKSPACE/_ci/logs/host-$(printf '%02d' "$index")-${gate}.log"
+            echo "Running ./gradlew ${gate}" | tee "$log_file"
+            ./gradlew --no-daemon "$gate" --stacktrace 2>&1 | tee -a "$log_file"
+            rc=${PIPESTATUS[0]}
+            echo "${gate}=${rc}" | tee -a "$log_file" "$GITHUB_WORKSPACE/_ci/logs/exit-codes.env"
+            if [[ $rc -ne 0 ]]; then
+              overall_rc=1
+            fi
+          done
+          exit "$overall_rc"
 
       - name: Enable KVM
         shell: bash
         run: |
+          set +e
           set -o pipefail
           (
             set -euo pipefail
@@ -154,6 +165,7 @@ jobs:
             -no-boot-anim
             -camera-back none
           script: |
+            set +e
             set -uo pipefail
             log_dir="$GITHUB_WORKSPACE/_ci/logs"
             mkdir -p "$log_dir"
