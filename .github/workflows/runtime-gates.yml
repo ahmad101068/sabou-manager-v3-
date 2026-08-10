@@ -67,11 +67,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Validate Gradle wrapper
-        uses: gradle/actions/wrapper-validation@v4
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          validate-wrappers: true
 
       - name: Run Alpha161 static and migration verifiers
         shell: bash
@@ -173,7 +173,10 @@ jobs:
           java-version: "17"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          validate-wrappers: true
 
       - name: Enable KVM access
         shell: bash
@@ -185,7 +188,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Run full instrumentation suite on API ${{ matrix.api_level }}
-        uses: reactivecircus/android-emulator-runner@v2.30.1
+        uses: reactivecircus/android-emulator-runner@v2.37.0
         with:
           api-level: ${{ matrix.api_level }}
           target: google_apis
