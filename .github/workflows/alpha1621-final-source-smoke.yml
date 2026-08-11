@@ -7,7 +7,9 @@ on:
     paths:
       - ".github/workflows/alpha1621-final-source-smoke.yml"
       - "_ci/prepare-alpha1621-final.sh"
-      - "_ci/final-source-patch/**"
+      - "_ci/final-source-code.parts/**"
+      - "_ci/alpha1621_compilefix.patch"
+      - "Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip"
 
 permissions:
   contents: read
@@ -20,7 +22,7 @@ concurrency:
 jobs:
   final-source-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
       - name: Download official Room schemas from verified KSP run
@@ -45,7 +47,11 @@ jobs:
       - name: Install verifier dependency
         shell: bash
         run: |
-          if ! command -v rg >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep; fi
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ripgrep
+          fi
       - name: Static and architecture gates
         shell: bash
         run: |
@@ -60,15 +66,43 @@ jobs:
           python3 scripts/verify-alpha162-enterprise-core.py
           python3 scripts/verify-alpha162-room-schemas.py
           python3 scripts/verify-alpha162-code-quality.py
-      - name: Compile debug and release
+      - name: Clean
         shell: bash
         run: |
-          set -o pipefail
           cd "$PROJECT_DIR"
-          ./gradlew --no-daemon --console=plain clean compileDebugKotlin compileReleaseKotlin --stacktrace
-      - name: Unit, lint, and assemble proof
+          ./gradlew --no-daemon --console=plain clean --stacktrace
+      - name: Compile debug Kotlin
         shell: bash
         run: |
-          set -o pipefail
           cd "$PROJECT_DIR"
-          ./gradlew --no-daemon --console=plain testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleRelease --stacktrace
+          ./gradlew --no-daemon --console=plain compileDebugKotlin --stacktrace
+      - name: Compile release Kotlin
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain compileReleaseKotlin --stacktrace
+      - name: Unit tests
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain testDebugUnitTest --stacktrace
+      - name: Lint debug
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain lintDebug --stacktrace
+      - name: Assemble debug APK
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain assembleDebug --stacktrace
+      - name: Assemble AndroidTest APK
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain assembleDebugAndroidTest --stacktrace
+      - name: Assemble release APK
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain assembleRelease --stacktrace
