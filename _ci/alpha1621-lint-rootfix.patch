@@ -1,0 +1,274 @@
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -16,8 +16,10 @@
+ junit = "4.13.2"
+ androidxTestCore = "1.6.1"
+ androidxTestJunit = "1.2.1"
++desugarJdkLibs = "2.0.3"
+ 
+ [libraries]
++desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugarJdkLibs" }
+ androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+ androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+ androidx-lifecycle-runtime = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -53,6 +53,7 @@
+     }
+ 
+     compileOptions {
++        isCoreLibraryDesugaringEnabled = true
+         sourceCompatibility = JavaVersion.VERSION_17
+         targetCompatibility = JavaVersion.VERSION_17
+     }
+@@ -79,6 +80,7 @@
+ }
+ 
+ dependencies {
++    coreLibraryDesugaring(libs.desugar.jdk.libs)
+     implementation(libs.androidx.core.ktx)
+     implementation(libs.androidx.activity.compose)
+     implementation(libs.androidx.lifecycle.runtime)
+--- /dev/null
++++ b/app/src/main/java/ir/sabou/inventory/core/BigIntegerCompat.kt
+@@ -0,0 +1,17 @@
++package ir.sabou.inventory.core
++
++import java.math.BigInteger
++
++/**
++ * API-23-safe equivalent of BigInteger.longValueExact().
++ *
++ * Android only exposes BigInteger.longValueExact() from API 31. Converting first and
++ * round-tripping preserves the exact overflow contract without relying on that API.
++ */
++fun BigInteger.longValueExactCompat(): Long {
++    val converted = toLong()
++    if (BigInteger.valueOf(converted) != this) {
++        throw ArithmeticException("BigInteger out of long range")
++    }
++    return converted
++}
+--- a/app/src/main/java/ir/sabou/inventory/ui/SabouApp.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/SabouApp.kt
+@@ -26,6 +26,7 @@
+ import androidx.compose.foundation.shape.CircleShape
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.activity.compose.BackHandler
++import androidx.activity.compose.LocalActivity
+ import androidx.compose.material3.AlertDialog
+ import androidx.compose.material3.Card
+ import androidx.compose.material3.CardDefaults
+@@ -75,7 +76,6 @@
+ import androidx.compose.ui.text.style.TextOverflow
+ import androidx.compose.ui.unit.LayoutDirection
+ import androidx.compose.ui.unit.dp
+-import android.app.Activity
+ import androidx.lifecycle.viewmodel.compose.viewModel
+ import androidx.lifecycle.ViewModelStore
+ import androidx.lifecycle.ViewModelStoreOwner
+@@ -112,7 +112,7 @@
+     )
+     val securityState by security.state.collectAsStateWithLifecycle()
+     AutoClearMessage(securityState.message, security::clearMessage)
+-    val activity = LocalContext.current as? Activity
++    val activity = LocalActivity.current
+ 
+     CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides LayoutDirection.Rtl) {
+         val authenticatedUser = securityState.currentUser
+@@ -297,7 +297,7 @@
+     val screen = AppScreen.valueOf(routeStack.last())
+     var showExitConfirmation by rememberSaveable { mutableStateOf(false) }
+-    val activity = LocalContext.current as? Activity
++    val activity = LocalActivity.current
+ 
+     fun navigate(target: AppScreen) {
+         if (target != screen && canOpenScreen(securityState.currentUser, target)) {
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/LocalProfessionalSalesRepository.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/LocalProfessionalSalesRepository.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.longValueExactCompat
+ import androidx.room.withTransaction
+ import ir.sabou.inventory.core.MoneyRial
+ import ir.sabou.inventory.data.db.AppDatabase
+@@ -829,7 +830,7 @@
+     private fun mulDiv(a: Long, b: Long, divisor: Long): Long {
+         require(divisor != 0L) { "مقسوم‌علیه نمی‌تواند صفر باشد." }
+-        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExactCompat()
+     }
+ 
+     private data class AggregateConsumption(val item: InventoryItemEntity, val quantityMicros: Long, val valueRial: Long)
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/LocalProcurementRepository.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/LocalProcurementRepository.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.longValueExactCompat
+ import androidx.room.withTransaction
+ import ir.sabou.inventory.core.MoneyRial
+ import ir.sabou.inventory.data.db.AppDatabase
+@@ -681,7 +682,7 @@
+     ): Long = BigInteger.valueOf(amountRial)
+         .multiply(BigInteger.valueOf(numerator))
+         .divide(BigInteger.valueOf(denominator))
+-        .longValueExact()
++        .longValueExactCompat()
+ 
+     private fun averageUnitCost(totalCostRial: Long, totalQuantityMicros: Long): Long =
+         BigInteger.valueOf(totalCostRial)
+@@ -689,7 +690,7 @@
+             .multiply(BigInteger.valueOf(QuantityMicros.SCALE))
+             .divide(BigInteger.valueOf(totalQuantityMicros))
+-    }.longValueExact()
++    }.longValueExactCompat()
+ }
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/ProcurementInvoiceMatchingService.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/ProcurementInvoiceMatchingService.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.longValueExactCompat
+ import androidx.room.withTransaction
+ import ir.sabou.inventory.core.MoneyRial
+ import ir.sabou.inventory.data.db.AppDatabase
+@@ -205,7 +206,7 @@
+             val allocated = BigInteger.valueOf(invoiceLine.totalRial)
+                 .multiply(BigInteger.valueOf(receivedQuantityMicros))
+                 .divide(BigInteger.valueOf(invoiceLine.quantityMicros))
+-                .longValueExact()
++                .longValueExactCompat()
+             allocation += allocated
+         }
+         return allocation
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/SalesRecipeCostSnapshotService.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/SalesRecipeCostSnapshotService.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.longValueExactCompat
+ import ir.sabou.inventory.data.db.AppDatabase
+ import ir.sabou.inventory.data.db.entity.InventoryItemEntity
+ import ir.sabou.inventory.data.db.entity.SalesCogsSnapshotEntity
+@@ -95,7 +96,7 @@
+     private fun mulDiv(a: Long, b: Long, divisor: Long): Long {
+         require(divisor != 0L) { "مقسوم‌علیه نمی‌تواند صفر باشد." }
+-        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExactCompat()
+     }
+ }
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/LocalDailySalesRepository.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/LocalDailySalesRepository.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.longValueExactCompat
+ import androidx.room.withTransaction
+ import ir.sabou.inventory.data.db.AppDatabase
+ import ir.sabou.inventory.data.db.dao.DailySalesDao
+@@ -616,5 +617,5 @@
+         return mapped
+     }
+ 
+-    private fun mulDiv(a: Long, b: Long, divisor: Long): Long = BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++    private fun mulDiv(a: Long, b: Long, divisor: Long): Long = BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExactCompat()
+ }
+--- a/app/src/main/java/ir/sabou/inventory/domain/purchase/ProcurementModels.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/purchase/ProcurementModels.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.domain.purchase
+ 
++import ir.sabou.inventory.core.longValueExactCompat
+ import ir.sabou.inventory.core.MoneyRial
+ import ir.sabou.inventory.core.QuantityMicros
+ import ir.sabou.inventory.domain.supplier.SupplierPaymentMethod
+@@ -427,7 +428,7 @@
+                 .setScale(0, RoundingMode.CEILING)
+                 .toBigIntegerExact()
+-            val quantity = rounded.longValueExact()
++            val quantity = rounded.longValueExactCompat()
+             require(quantity > 0L) { "مقدار پیشنهادی خرید باید مثبت باشد." }
+             return quantity
+         }
+--- a/app/src/main/java/ir/sabou/inventory/domain/operations/UnitConversion.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/operations/UnitConversion.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.domain.operations
+ 
++import ir.sabou.inventory.core.longValueExactCompat
+ import java.math.BigInteger
+ 
+ object UnitConversion {
+@@ -28,7 +29,7 @@
+             .multiply(BigInteger.valueOf(to.denominator))
+             .divideAndRemainder(BigInteger.valueOf(from.denominator).multiply(BigInteger.valueOf(to.numerator)))
+         require(result[1] == BigInteger.ZERO) { "تبدیل واحد باعث اعشار غیرمجاز می‌شود." }
+-        return result[0].longValueExact()
++        return result[0].longValueExactCompat()
+     }
+ }
+--- a/app/src/main/java/ir/sabou/inventory/domain/sales/SalesCalculator.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/sales/SalesCalculator.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.domain.sales
+ 
++import ir.sabou.inventory.core.longValueExactCompat
+ import ir.sabou.inventory.core.MoneyRial
+ import java.math.BigInteger
+ 
+@@ -85,7 +86,7 @@
+     private fun mulDiv(a: Long, b: Long, divisor: Long): Long {
+         require(divisor != 0L) { "مقسوم‌علیه نمی‌تواند صفر باشد." }
+-        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExactCompat()
+     }
+ }
+--- a/app/src/main/java/ir/sabou/inventory/domain/inventory/InventoryReplenishmentModels.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/inventory/InventoryReplenishmentModels.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.domain.inventory
+ 
++import ir.sabou.inventory.core.longValueExactCompat
+ import ir.sabou.inventory.core.QuantityMicros
+ import java.math.BigInteger
+ 
+@@ -177,7 +178,7 @@
+         val available = BigInteger.valueOf(input.onHandMicros)
+             .subtract(BigInteger.valueOf(input.reservedMicros))
+             .add(BigInteger.valueOf(input.inTransitMicros))
+-            .longValueExact()
++            .longValueExactCompat()
+         require(available >= 0L) { "موجودی قابل استفاده نمی‌تواند منفی باشد." }
+ 
+         val usage = input.usageHistory
+@@ -199,7 +200,7 @@
+             .divide(BigInteger.valueOf(usage.size.toLong()))
+         val suggested = targetStock.subtract(projectedAtDelivery).max(BigInteger.ZERO)
+-        val suggestedLong = suggested.longValueExact()
++        val suggestedLong = suggested.longValueExactCompat()
+         val cappedSuggestion = suggestedLong.coerceAtMost(input.maxOrderMicros)
+ 
+         return ReplenishmentSuggestion(
+@@ -211,15 +212,15 @@
+             itemId = input.itemId,
+             warehouseId = input.warehouseId,
+-            availableMicros = available.longValueExact(),
++            availableMicros = available.longValueExactCompat(),
+             reorderLevelMicros = input.reorderLevelMicros,
+             targetLevelMicros = input.targetLevelMicros,
+-            averageDailyUsageMicros = daily.longValueExact(),
++            averageDailyUsageMicros = daily.longValueExactCompat(),
+             leadTimeDays = input.leadTimeDays,
+-            leadTimeDemandMicros = leadTimeDemand.longValueExact(),
+-            reorderPointMicros = reorderPoint.longValueExact(),
+-            targetStockMicros = targetStock.longValueExact(),
+-            projectedAtDeliveryMicros = projectedAtDelivery.min(QuantityMicros.MAX_VALUE.toBigInteger()).longValueExact(),
++            leadTimeDemandMicros = leadTimeDemand.longValueExactCompat(),
++            reorderPointMicros = reorderPoint.longValueExactCompat(),
++            targetStockMicros = targetStock.longValueExactCompat(),
++            projectedAtDeliveryMicros = projectedAtDelivery.min(QuantityMicros.MAX_VALUE.toBigInteger()).longValueExactCompat(),
+             suggestedOrderMicros = cappedSuggestion,
+             reason = reason,
+         )
