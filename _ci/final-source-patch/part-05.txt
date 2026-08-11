@@ -1,0 +1,189 @@
+port ir.sabou.inventory.data.repository.DashboardRepository
+ import ir.sabou.inventory.data.repository.DashboardSnapshot
+ import java.time.LocalDate
++import kotlinx.coroutines.ExperimentalCoroutinesApi
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.SharingStarted
+@@ -18,6 +19,7 @@
+ import kotlinx.coroutines.flow.flow
+ import kotlinx.coroutines.flow.stateIn
+ 
++@OptIn(ExperimentalCoroutinesApi::class)
+ class DashboardViewModel(
+     private val repository: DashboardRepository,
+     private val epochDay: () -> Long = ::currentLocalEpochDay,
+--- a/app/src/main/java/ir/sabou/inventory/ui/RestaurantViewModel.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/RestaurantViewModel.kt
+@@ -20,6 +20,7 @@
+ import ir.sabou.inventory.domain.restaurant.RestaurantReservationStatus
+ import ir.sabou.inventory.domain.restaurant.RestaurantTableRecord
+ import ir.sabou.inventory.domain.restaurant.TableReservationDraft
++import kotlinx.coroutines.ExperimentalCoroutinesApi
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.StateFlow
+ import kotlinx.coroutines.flow.asStateFlow
+@@ -42,6 +43,7 @@
+     val isError: Boolean = false,
+ )
+ 
++@OptIn(ExperimentalCoroutinesApi::class)
+ class RestaurantViewModel(private val useCases: RestaurantUseCases, recipes: RecipeRepository) : ViewModel() {
+     private val selectedOrder = MutableStateFlow<Long?>(null)
+     private val _state = MutableStateFlow(RestaurantUiState())
+--- a/app/src/main/java/ir/sabou/inventory/ui/SalesPosViewModel.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/SalesPosViewModel.kt
+@@ -15,6 +15,7 @@
+ import ir.sabou.inventory.domain.sales.SalesInvoiceRecord
+ import ir.sabou.inventory.domain.sales.SalesReturnDraft
+ import kotlinx.coroutines.ExperimentalCoroutinesApi
++import kotlinx.coroutines.FlowPreview
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.SharingStarted
+@@ -39,7 +40,7 @@
+     val message: String? = null,
+ )
+ 
+-@OptIn(ExperimentalCoroutinesApi::class)
++@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+ class SalesPosViewModel(
+     private val useCases: SalesUseCases,
+ ) : ViewModel() {
+--- a/app/src/main/java/ir/sabou/inventory/ui/theme/Theme.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/theme/Theme.kt
+@@ -3,7 +3,6 @@
+ import android.app.Activity
+ import android.content.Context
+ import android.content.ContextWrapper
+-import android.os.Build
+ import androidx.compose.foundation.isSystemInDarkTheme
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material3.MaterialTheme
+@@ -15,7 +14,6 @@
+ import androidx.compose.runtime.CompositionLocalProvider
+ import androidx.compose.runtime.SideEffect
+ import androidx.compose.ui.graphics.Color
+-import androidx.compose.ui.graphics.toArgb
+ import androidx.compose.ui.platform.LocalView
+ import androidx.compose.ui.platform.LocalDensity
+ import androidx.compose.ui.unit.Density
+@@ -128,12 +126,8 @@
+     if (!view.isInEditMode) {
+         SideEffect {
+             val window = view.context.findActivity()?.window ?: return@SideEffect
+-            // Older Android versions still paint an opaque status bar; match it to the
+-            // shared dark header so its light icons stay readable there as well.
+-            window.statusBarColor = SabouBrand.EvergreenDark.toArgb()
+-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+-                window.navigationBarColor = colors.surface.toArgb()
+-            }
++            // MainActivity owns edge-to-edge via the stable Activity API. Theme only
++            // controls icon contrast here; no deprecated direct system-bar color writes.
+             WindowInsetsControllerCompat(window, view).apply {
+                 // All primary screens draw a dark brand header behind the status bar.
+                 isAppearanceLightStatusBars = false
+--- a/scripts/verify-alpha162-code-quality.py
++++ b/scripts/verify-alpha162-code-quality.py
+@@ -84,6 +84,8 @@
+ schema_dir = ROOT / "app/schemas/ir.sabou.inventory.data.db.AppDatabase"
+ exported = {p.stem for p in schema_dir.glob('*.json')} if schema_dir.exists() else set()
+ missing_schema = sorted({"45", "46", "47"} - exported)
++if missing_schema:
++    fail("missing required Room schema evidence: " + ",".join(missing_schema))
+ 
+ if failures:
+     print("ALPHA162_CODE_QUALITY=FAIL")
+@@ -92,7 +94,4 @@
+     sys.exit(1)
+ 
+ print(f"ALPHA162_CODE_QUALITY=PASS production_files={len(main_files)} test_files={len(test_files)}")
+-if missing_schema:
+-    print("ALPHA162_ROOM_SCHEMA_EVIDENCE=NOT_COMPLETE missing=" + ",".join(missing_schema))
+-else:
+-    print("ALPHA162_ROOM_SCHEMA_EVIDENCE=PASS versions=45,46,47")
++print("ALPHA162_ROOM_SCHEMA_EVIDENCE=PASS versions=45,46,47")
+--- /dev/null
++++ b/scripts/verify-alpha162-room-schemas.py
+@@ -0,0 +1,86 @@
++#!/usr/bin/env python3
++from __future__ import annotations
++
++import json
++import re
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++DB_FILE = ROOT / "app/src/main/java/ir/sabou/inventory/data/db/AppDatabase.kt"
++MIGRATION_DIR = ROOT / "app/src/main/java/ir/sabou/inventory/data/db/migration"
++SCHEMA_DIR = ROOT / "app/schemas/ir.sabou.inventory.data.db.AppDatabase"
++
++failures: list[str] = []
++
++def fail(message: str) -> None:
++    failures.append(message)
++
++body = DB_FILE.read_text(encoding="utf-8")
++match = re.search(r"APP_DATABASE_SCHEMA_VERSION\s*=\s*(\d+)", body)
++if not match:
++    fail("APP_DATABASE_SCHEMA_VERSION not found")
++    current = -1
++else:
++    current = int(match.group(1))
++
++migration_versions: set[int] = set()
++for path in MIGRATION_DIR.glob("*.kt"):
++    text = path.read_text(encoding="utf-8", errors="ignore")
++    for start, end in re.findall(r"Migration\((\d+)\s*,\s*(\d+)\)", text):
++        start_i, end_i = int(start), int(end)
++        if start_i >= 44 or end_i >= 44:
++            migration_versions.update((start_i, end_i))
++
++required = sorted(v for v in migration_versions if 44 <= v <= current)
++if current >= 44 and current not in required:
++    required.append(current)
++    required.sort()
++if 44 <= current and 44 not in required:
++    required.insert(0, 44)
++
++seen_hashes: dict[str, int] = {}
++for version in required:
++    path = SCHEMA_DIR / f"{version}.json"
++    if not path.is_file():
++        fail(f"missing Room schema {version}.json")
++        continue
++    try:
++        root = json.loads(path.read_text(encoding="utf-8"))
++        db = root["database"]
++    except Exception as exc:  # malformed evidence is a hard failure
++        fail(f"invalid Room schema {version}.json: {exc}")
++        continue
++    if db.get("version") != version:
++        fail(f"schema {version}.json declares database.version={db.get('version')!r}")
++    identity = str(db.get("identityHash") or "").strip()
++    if not identity:
++        fail(f"schema {version}.json has empty identityHash")
++    elif identity in seen_hashes and seen_hashes[identity] != version:
++        fail(f"schemas {seen_hashes[identity]} and {version} share identityHash {identity}")
++    else:
++        seen_hashes[identity] = version
++    entities = db.get("entities")
++    if not isinstance(entities, list) or not entities:
++        fail(f"schema {version}.json has no entities")
++
++# Migration chain from 44 to current must be contiguous and explicit.
++edges: set[tuple[int, int]] = set()
++for path in MIGRATION_DIR.glob("*.kt"):
++    text = path.read_text(encoding="utf-8", errors="ignore")
++    for start, end in re.findall(r"Migration\((\d+)\s*,\s*(\d+)\)", text):
++        edges.add((int(start), int(end)))
++for version in range(44, current):
++    if (version, version + 1) not in edges:
++        fail(f"missing explicit migration {version}->{version + 1}")
++
++if failures:
++    print(f"ALPHA162_ROOM_SCHEMA_GATE=FAIL current={current} required={','.join(map(str, required))}")
++    for item in failures:
++        print(f" - {item}")
++    
