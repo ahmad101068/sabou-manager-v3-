@@ -6,7 +6,7 @@ EXPECTED_PATCH_GZ_SHA="43188d217ce3d35ee6e3303d7b200ebb84e1b3980bc588ffcdfb22784
 EXPECTED_PATCH_SHA="5d43cc0184587fd4ec255f4e54455861c6a6b623d914e633bd70021e11078bef"
 EXPECTED_HOTFIX_GIT_BLOB="a776e9e0572565dd0a6a27d762192df92662bdc8"
 EXPECTED_MIGRATION_HOTFIX_GIT_BLOB="17af7ce60cef17acf107ac2dc1f4ce3b893d5597"
-EXPECTED_LINT_HOTFIX_GIT_BLOB="e34ce1f3e6f7ba3d2025e69d62b685695b15407d"
+EXPECTED_LINT_HOTFIX_GIT_BLOB="15f13889ba1685e395adce69c93e28984057427e"
 SCHEMA_DIR_NAME="ir.sabou.inventory.data.db.AppDatabase"
 
 cd "$GITHUB_WORKSPACE"
@@ -14,7 +14,7 @@ test -f "$SOURCE_ZIP" || { echo "Missing source ZIP: $SOURCE_ZIP"; exit 1; }
 test -f _ci/alpha1621_compilefix.patch || { echo "Missing verified compile-fix patch"; exit 1; }
 test -f _ci/alpha1621-final-hotfix.patch || { echo "Missing final readiness hotfix patch"; exit 1; }
 test -f _ci/alpha1621-migration-proof-hotfix.patch || { echo "Missing direct migration proof hotfix"; exit 1; }
-test -f _ci/alpha1621-lint-root-fix.patch || { echo "Missing API23-safe lint root-fix"; exit 1; }
+test -f _ci/alpha1621-lint-api23-hotfix.patch || { echo "Missing API23-safe lint root-fix"; exit 1; }
 ACTUAL_HOTFIX_GIT_BLOB="$(git hash-object _ci/alpha1621-final-hotfix.patch)"
 test "$ACTUAL_HOTFIX_GIT_BLOB" = "$EXPECTED_HOTFIX_GIT_BLOB" || {
   echo "Final readiness hotfix identity mismatch: expected=$EXPECTED_HOTFIX_GIT_BLOB actual=$ACTUAL_HOTFIX_GIT_BLOB" >&2
@@ -25,7 +25,7 @@ test "$ACTUAL_MIGRATION_HOTFIX_GIT_BLOB" = "$EXPECTED_MIGRATION_HOTFIX_GIT_BLOB"
   echo "Migration proof hotfix identity mismatch: expected=$EXPECTED_MIGRATION_HOTFIX_GIT_BLOB actual=$ACTUAL_MIGRATION_HOTFIX_GIT_BLOB" >&2
   exit 1
 }
-ACTUAL_LINT_HOTFIX_GIT_BLOB="$(git hash-object _ci/alpha1621-lint-root-fix.patch)"
+ACTUAL_LINT_HOTFIX_GIT_BLOB="$(git hash-object _ci/alpha1621-lint-api23-hotfix.patch)"
 test "$ACTUAL_LINT_HOTFIX_GIT_BLOB" = "$EXPECTED_LINT_HOTFIX_GIT_BLOB" || {
   echo "Lint root-fix identity mismatch: expected=$EXPECTED_LINT_HOTFIX_GIT_BLOB actual=$ACTUAL_LINT_HOTFIX_GIT_BLOB" >&2
   exit 1
@@ -59,7 +59,7 @@ patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621_compilefix.patch"
 patch --forward --batch -p1 < /tmp/alpha1621-final-source.patch
 patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-final-hotfix.patch"
 patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-migration-proof-hotfix.patch"
-patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-lint-root-fix.patch"
+patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-lint-api23-hotfix.patch"
 
 OFFICIAL_SCHEMA_ROOT="$GITHUB_WORKSPACE/_official_schemas/$SCHEMA_DIR_NAME"
 test -f "$OFFICIAL_SCHEMA_ROOT/45.json"
