@@ -1,0 +1,188 @@
+--- a/app/src/androidTest/java/ir/sabou/inventory/data/repository/ExtractedResponsibilityServicesIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/sabou/inventory/data/repository/ExtractedResponsibilityServicesIntegrationTest.kt
+@@ -6,12 +6,18 @@
+ import ir.sabou.inventory.data.db.AppDatabase
+ import ir.sabou.inventory.data.db.CustomerReceivableLedgerEntity
+ import ir.sabou.inventory.data.db.InventoryItemEntity
++import ir.sabou.inventory.data.db.EmployeeEntity
+ import ir.sabou.inventory.data.db.SupplierEntity
+ import ir.sabou.inventory.data.security.SessionAuthorizer
+ import ir.sabou.inventory.domain.operations.UserDraft
+ import ir.sabou.inventory.domain.operations.UserRole
+ import ir.sabou.inventory.domain.purchase.ReplenishmentPolicyDraft
+ import ir.sabou.inventory.domain.purchase.SupplierOfferDraft
++import ir.sabou.inventory.domain.personnel.LeaveDraft
++import ir.sabou.inventory.domain.personnel.LeaveGrantDraft
++import ir.sabou.inventory.domain.personnel.LeaveReviewDraft
++import ir.sabou.inventory.domain.personnel.LeaveStatus
++import ir.sabou.inventory.domain.personnel.LeaveType
+ import ir.sabou.inventory.domain.sales.CustomerDraft
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+@@ -162,6 +168,102 @@
+         assertEquals(72_000L, offers.single().unitCostRial)
+     }
+ 
++    @Test
++    fun personnelLeaveService_ownsIdempotencyBalanceApprovalAttendanceAndAudit() = runBlocking {
++        val security = LocalSecurityRepository(database, authorizer = authorizer, clock = { now++ })
++        val owner = requireNotNull(database.securityDao().currentUser())
++        val managerId = security.save(
++            null,
++            UserDraft("leave-manager", "مدیر تأیید مرخصی", "654321", UserRole.MANAGER),
++        )
++        security.switchUser(owner.id, "123456")
++        val employeeId = database.personnelDao().insertEmployee(
++            EmployeeEntity(
++                name = "پرسنل سرویس مرخصی",
++                displayName = "پرسنل سرویس مرخصی",
++                employeeCode = "EMP-LEAVE-SVC",
++                jobTitle = "تست",
++                branchName = "شعبه تست",
++                monthlySalaryRial = 10_000_000L,
++                leaveBalanceMicros = 0L,
++                status = "ACTIVE",
++                createdAtEpochMillis = now++,
++                updatedAtEpochMillis = now++,
++            ),
++        )
++        val service = PersonnelLeaveService(
++            database = database,
++            authorizer = authorizer,
++            auditWriter = LocalAuditEventWriter(database),
++            clock = { now++ },
++        )
++        val grantCommand = ir.sabou.inventory.core.GlobalId.new().value
++        service.grant(
++            LeaveGrantDraft(
++                employeeId = employeeId,
++                leaveType = LeaveType.ANNUAL,
++                amountMicros = 5_000_000L,
++                businessEpochDay = 35_000L,
++                reason = "سهمیه تست مستقل سرویس",
++                commandId = grantCommand,
++            ),
++        )
++        val replayGrant = service.grant(
++            LeaveGrantDraft(
++                employeeId = employeeId,
++                leaveType = LeaveType.ANNUAL,
++                amountMicros = 5_000_000L,
++                businessEpochDay = 35_000L,
++                reason = "سهمیه تست مستقل سرویس",
++                commandId = grantCommand,
++            ),
++        )
++        assertTrue(replayGrant > 0)
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM leave_ledger_entries WHERE idempotencyKey='leave_grant:$grantCommand'"))
++
++        val requestCommand = ir.sabou.inventory.core.GlobalId.new().value
++        val leaveId = service.request(
++            LeaveDraft(
++                employeeId = employeeId,
++                startEpochDay = 35_010L,
++                endEpochDay = 35_011L,
++                leaveType = LeaveType.ANNUAL.storedValue,
++                notes = "مرخصی تست سرویس",
++                commandId = requestCommand,
++            ),
++            requestedBy = owner.displayName,
++        )
++        val replayLeaveId = service.request(
++            LeaveDraft(
++                employeeId = employeeId,
++                startEpochDay = 35_010L,
++                endEpochDay = 35_011L,
++                leaveType = LeaveType.ANNUAL.storedValue,
++                notes = "مرخصی تست سرویس",
++                commandId = requestCommand,
++            ),
++            requestedBy = owner.displayName,
++        )
++        assertEquals(leaveId, replayLeaveId)
++        assertEquals(3_000_000L, service.balance(employeeId, LeaveType.ANNUAL).remainingMicros)
++
++        security.switchUser(managerId, "654321")
++        service.review(
++            LeaveReviewDraft(
++                leaveId = leaveId,
++                decision = "APPROVE",
++                reviewer = "مدیر تأیید مرخصی",
++                notes = "تأیید تست مستقل سرویس",
++            ),
++        )
++        val leave = requireNotNull(database.personnelDao().leaveById(leaveId))
++        assertEquals(LeaveStatus.APPROVED.storedValue, leave.status)
++        assertEquals(2L, scalar("SELECT COUNT(*) FROM attendance WHERE employeeId=$employeeId AND workEpochDay BETWEEN 35010 AND 35011 AND status='LEAVE'"))
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM leave_ledger_entries WHERE leaveId=$leaveId AND entryType='USE'"))
++        assertEquals(3_000_000L, service.balance(employeeId, LeaveType.ANNUAL).remainingMicros)
++        assertTrue(scalar("SELECT COUNT(*) FROM audit_logs WHERE entityType IN ('LEAVE','LEAVE_BALANCE')") >= 3L)
++    }
++
+     private fun scalar(sql: String): Long = database.openHelper.writableDatabase.query(sql).use { cursor ->
+         check(cursor.moveToFirst())
+         cursor.getLong(0)
+--- a/app/src/androidTest/java/ir/sabou/inventory/data/repository/RestaurantV2IntegrationTest.kt
++++ b/app/src/androidTest/java/ir/sabou/inventory/data/repository/RestaurantV2IntegrationTest.kt
+@@ -117,6 +117,77 @@
+     }
+ 
+     @Test
++    fun reservationOverlap_exactAndPartialRejected_adjacentCancelledAndDifferentTableAllowed() = runBlocking {
++        val hallId = service.createHall("سالن تعارض رزرو")
++        val tableA = service.createTable(hallId, "O-01", 4)
++        val tableB = service.createTable(hallId, "O-02", 4)
++
++        val first = service.reserve(
++            TableReservationDraft(
++                tableId = tableA,
++                guestName = "رزرو اول",
++                reservationEpochDay = today,
++                startMinuteOfDay = 600,
++                guestCount = 2,
++            ),
++        )
++
++        fun expectConflict(startMinute: Int) {
++            try {
++                service.reserve(
++                    TableReservationDraft(
++                        tableId = tableA,
++                        guestName = "رزرو متداخل",
++                        reservationEpochDay = today,
++                        startMinuteOfDay = startMinute,
++                        guestCount = 2,
++                    ),
++                )
++                fail("رزرو متداخل در دقیقه $startMinute باید رد شود")
++            } catch (_: IllegalArgumentException) {
++                Unit
++            }
++        }
++
++        expectConflict(600) // exact overlap
++        expectConflict(660) // partial overlap inside 120-minute window
++
++        val adjacent = service.reserve(
++            TableReservationDraft(
++                tableId = tableA,
++                guestName = "رزرو مجاور",
++                reservationEpochDay = today,
++                startMinuteOfDay = 720,
++                guestCount = 2,
++            ),
++        )
++        assertTrue(adjacent > 0)
++
++        val otherTable = service.reserve(
++            TableReservationDraft(
++                tableId = tableB,
++                guestName = "رزرو میز دیگر",
++                reservationEpochDay = today,
++                startMinuteOfDay = 600,
++                guestCount = 2,
++            ),
++        )
++        assertTrue(otherTable > 0)
++
++        service.transiti
