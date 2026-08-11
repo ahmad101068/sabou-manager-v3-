@@ -35,12 +35,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Gradle and validate wrapper
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          validate-wrappers: true
-          cache-provider: basic
-
       - name: Reconstruct and verify v46 patch
         shell: bash
         run: |
