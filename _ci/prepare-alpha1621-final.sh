@@ -7,6 +7,7 @@ EXPECTED_PATCH_SHA="5d43cc0184587fd4ec255f4e54455861c6a6b623d914e633bd70021e1107
 EXPECTED_HOTFIX_GIT_BLOB="a776e9e0572565dd0a6a27d762192df92662bdc8"
 EXPECTED_MIGRATION_HOTFIX_GIT_BLOB="17af7ce60cef17acf107ac2dc1f4ce3b893d5597"
 EXPECTED_LINT_HOTFIX_GIT_BLOB="15f13889ba1685e395adce69c93e28984057427e"
+EXPECTED_LOCALCONTEXT_HOTFIX_GIT_BLOB="1099fe30815d63a6ecafdc3c66b6c9a5538021e9"
 SCHEMA_DIR_NAME="ir.sabou.inventory.data.db.AppDatabase"
 
 cd "$GITHUB_WORKSPACE"
@@ -15,6 +16,7 @@ test -f _ci/alpha1621_compilefix.patch || { echo "Missing verified compile-fix p
 test -f _ci/alpha1621-final-hotfix.patch || { echo "Missing final readiness hotfix patch"; exit 1; }
 test -f _ci/alpha1621-migration-proof-hotfix.patch || { echo "Missing direct migration proof hotfix"; exit 1; }
 test -f _ci/alpha1621-lint-api23-hotfix.patch || { echo "Missing API23-safe lint root-fix"; exit 1; }
+test -f _ci/alpha1621-localcontext-hotfix.patch || { echo "Missing LocalContext compile hotfix"; exit 1; }
 ACTUAL_HOTFIX_GIT_BLOB="$(git hash-object _ci/alpha1621-final-hotfix.patch)"
 test "$ACTUAL_HOTFIX_GIT_BLOB" = "$EXPECTED_HOTFIX_GIT_BLOB" || {
   echo "Final readiness hotfix identity mismatch: expected=$EXPECTED_HOTFIX_GIT_BLOB actual=$ACTUAL_HOTFIX_GIT_BLOB" >&2
@@ -30,9 +32,15 @@ test "$ACTUAL_LINT_HOTFIX_GIT_BLOB" = "$EXPECTED_LINT_HOTFIX_GIT_BLOB" || {
   echo "Lint root-fix identity mismatch: expected=$EXPECTED_LINT_HOTFIX_GIT_BLOB actual=$ACTUAL_LINT_HOTFIX_GIT_BLOB" >&2
   exit 1
 }
+ACTUAL_LOCALCONTEXT_HOTFIX_GIT_BLOB="$(git hash-object _ci/alpha1621-localcontext-hotfix.patch)"
+test "$ACTUAL_LOCALCONTEXT_HOTFIX_GIT_BLOB" = "$EXPECTED_LOCALCONTEXT_HOTFIX_GIT_BLOB" || {
+  echo "LocalContext hotfix identity mismatch: expected=$EXPECTED_LOCALCONTEXT_HOTFIX_GIT_BLOB actual=$ACTUAL_LOCALCONTEXT_HOTFIX_GIT_BLOB" >&2
+  exit 1
+}
 echo "FINAL_HOTFIX_GIT_BLOB=$ACTUAL_HOTFIX_GIT_BLOB"
 echo "MIGRATION_HOTFIX_GIT_BLOB=$ACTUAL_MIGRATION_HOTFIX_GIT_BLOB"
 echo "LINT_HOTFIX_GIT_BLOB=$ACTUAL_LINT_HOTFIX_GIT_BLOB"
+echo "LOCALCONTEXT_HOTFIX_GIT_BLOB=$ACTUAL_LOCALCONTEXT_HOTFIX_GIT_BLOB"
 
 cat > /tmp/final-binary-parts.sha256 <<'EOF'
 ae648ae7e41c8e808fe1f6a94e315c68ba04236e4424ba74155a7ddf578546f3  _ci/final-source-code.parts/part-00.bin
@@ -60,6 +68,7 @@ patch --forward --batch -p1 < /tmp/alpha1621-final-source.patch
 patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-final-hotfix.patch"
 patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-migration-proof-hotfix.patch"
 patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-lint-api23-hotfix.patch"
+patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-localcontext-hotfix.patch"
 
 OFFICIAL_SCHEMA_ROOT="$GITHUB_WORKSPACE/_official_schemas/$SCHEMA_DIR_NAME"
 test -f "$OFFICIAL_SCHEMA_ROOT/45.json"
