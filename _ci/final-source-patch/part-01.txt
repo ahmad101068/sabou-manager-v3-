@@ -1,0 +1,144 @@
+onReservation(first, RestaurantReservationStatus.CANCELLED, "تغییر برنامه مهمان")
++        val replacement = service.reserve(
++            TableReservationDraft(
++                tableId = tableA,
++                guestName = "جایگزین رزرو لغوشده",
++                reservationEpochDay = today,
++                startMinuteOfDay = 600,
++                guestCount = 2,
++            ),
++        )
++        assertTrue(replacement > 0)
++    }
++
++    @Test
+     fun kitchenInvalidTransition_isRejectedWithoutStateOrEventMutation_thenValidPathIsAudited() = runBlocking {
+         val hallId = service.createHall("سالن KDS")
+         val tableId = service.createTable(hallId, "K-01", 4)
+--- a/app/src/main/java/ir/sabou/inventory/MainActivity.kt
++++ b/app/src/main/java/ir/sabou/inventory/MainActivity.kt
+@@ -2,6 +2,7 @@
+ 
+ import android.os.Bundle
+ import androidx.activity.ComponentActivity
++import androidx.activity.enableEdgeToEdge
+ import androidx.activity.compose.setContent
+ import androidx.compose.foundation.isSystemInDarkTheme
+ import androidx.compose.foundation.layout.Arrangement
+@@ -73,6 +74,7 @@
+         )
+         MoneyDisplayPreferences.unit = selectedCurrency
+         var backupPolicy by mutableStateOf(backupPolicyStore.load())
++        enableEdgeToEdge()
+         setContent {
+             val dark = when (selectedTheme) {
+                 ThemePreference.SYSTEM -> isSystemInDarkTheme()
+--- a/app/src/main/java/ir/sabou/inventory/data/db/Alpha162Dao.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/db/Alpha162Dao.kt
+@@ -75,6 +75,24 @@
+     @Query("SELECT COUNT(*) FROM restaurant_reservations WHERE tableId=:tableId AND reservationEpochDay=:epochDay AND id!=:excludeId AND status IN ('BOOKED','CONFIRMED')")
+     suspend fun activeReservationCountForTable(tableId: Long, epochDay: Long, excludeId: Long): Int
+ 
++    @Query(
++        """SELECT COUNT(*) FROM restaurant_reservations
++           WHERE tableId=:tableId
++             AND reservationEpochDay=:epochDay
++             AND id!=:excludeId
++             AND status IN ('BOOKED','CONFIRMED')
++             AND startMinuteOfDay < :endMinuteExclusive
++             AND (startMinuteOfDay + :durationMinutes) > :startMinuteInclusive""",
++    )
++    suspend fun overlappingReservationCountForTable(
++        tableId: Long,
++        epochDay: Long,
++        startMinuteInclusive: Int,
++        endMinuteExclusive: Int,
++        durationMinutes: Int,
++        excludeId: Long = 0L,
++    ): Int
++
+     @Query("SELECT * FROM restaurant_reservations WHERE reservationEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND status NOT IN ('CANCELLED','NO_SHOW') ORDER BY reservationEpochDay,startMinuteOfDay")
+     fun observeReservations(fromEpochDay: Long, toEpochDay: Long): Flow<List<RestaurantReservationEntity>>
+ 
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/LocalPersonnelRepository.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/LocalPersonnelRepository.kt
+@@ -102,6 +102,7 @@
+     private val auditWriter = LocalAuditEventWriter(database)
+     private val numbering = LocalDocumentNumberAllocator(database, clock)
+     private val attendanceService = PersonnelAttendanceService(database, authorizer, auditWriter, clock)
++    private val leaveService = PersonnelLeaveService(database, authorizer, auditWriter, clock)
+ 
+     override val employees: Flow<List<EmployeeRecord>> = combine(
+         personnel.observeEmployees(),
+@@ -429,168 +430,19 @@
+         policy: AttendancePayrollPolicy,
+     ): AttendancePayrollAdjustment = attendanceService.payrollAdjustment(employeeId, startEpochDay, endEpochDay, policy)
+ 
+-    override suspend fun requestLeave(draft: LeaveDraft, requestedBy: String): Long {
+-        val actor = authorizer.require(Permission.PERSONNEL)
+-        val valid = draft.validated()
+-        require(requestedBy.trim().isNotEmpty()) { "ثبت‌کننده درخواست مشخص نیست." }
+-        return database.withTransaction {
+-            val idempotencyKey = "leave_request:${valid.commandId}"
+-            personnel.leaveByIdempotencyKey(idempotencyKey)?.let { existing ->
+-                if (
+-                    existing.employeeId != valid.employeeId || existing.startEpochDay != valid.startEpochDay ||
+-                    existing.endEpochDay != valid.endEpochDay || existing.leaveType != valid.leaveType
+-                ) {
+-                    throw BusinessError.IdempotencyConflict(idempotencyKey).asViolation()
+-                }
+-                return@withTransaction existing.id
+-            }
+-            val employee = personnel.employeeById(valid.employeeId) ?: error("پرسنل پیدا نشد.")
+-            val employeeStatus = EmploymentStatus.fromStoredValue(employee.status)
+-            require(employeeStatus in setOf(EmploymentStatus.ACTIVE, EmploymentStatus.ON_LEAVE)) { "پرسنل در وضعیت قابل مرخصی نیست." }
+-            require(!personnel.hasLeaveOverlap(valid.employeeId, valid.startEpochDay, valid.endEpochDay)) { "این درخواست با مرخصی دیگری هم‌پوشانی دارد." }
+-            val now = clock()
+-            val correlation = CorrelationId.forCommand("leave_request", GlobalId.parse(valid.commandId)).value
+-            val leaveId = personnel.insertLeave(LeaveEntity(
+-                employeeId = valid.employeeId, globalId = valid.commandId, idempotencyKey = idempotencyKey,
+-                startEpochDay = valid.startEpochDay, endEpochDay = valid.endEpochDay,
+-                daysMicros = SignedLongMath.multiply(
+-                    SignedLongMath.add(SignedLongMath.subtract(valid.endEpochDay, valid.startEpochDay), 1L),
+-                    1_000_000L,
+-                ),
+-                leaveType = valid.leaveType, status = LeaveStatus.SUBMITTED.storedValue, notes = valid.notes,
+-                requestedBy = actor.displayName, requestedByActorId = actor.id,
+-                createdAtEpochMillis = now, updatedAtEpochMillis = now, correlationId = correlation,
+-            ))
+-            auditWriter.appendAuthorized(
+-                authorizer, "SUBMIT", "LEAVE", leaveId, "ثبت درخواست مرخصی",
+-                now, valid.startEpochDay, valid.notes.ifBlank { "درخواست مرخصی" }, null,
+-                "status=SUBMITTED;type=${valid.leaveType};from=${valid.startEpochDay};to=${valid.endEpochDay}", correlation,
+-            )
+-            leaveId
+-        }
+-    }
++    override suspend fun requestLeave(draft: LeaveDraft, requestedBy: String): Long =
++        leaveService.request(draft, requestedBy)
+ 
+-    override suspend fun grantLeave(draft: LeaveGrantDraft): Long {
+-        val actor = authorizer.require(Permission.LEAVE_APPROVE)
+-        val valid = draft.validated()
+-        return database.withTransaction {
+-            val key = "leave_grant:${valid.commandId}"
+-            hr.leaveLedgerByIdempotencyKey(key)?.let { existing ->
+-                if (
+-                    existing.employeeId != valid.employeeId || existing.leaveType != valid.leaveType.storedValue ||
+-                    existing.amountMicros != valid.amountMicros
+-                ) throw BusinessError.IdempotencyConflict(key).asViolation()
+-                return@withTransaction existing.id
+-            }
+-            personnel.employeeById(valid.employeeId) ?: error("پرسنل پیدا نشد.")
+-            val now = clock()
+-            val correlation = CorrelationId.forCommand("leave_grant", GlobalId.parse(valid.commandId)).value
+-            val id = hr.insertLeaveLedgerEntry(
+-                LeaveLedgerEntryEntity(
+-                    globalId = valid.commandId, idempotencyKey = key, employeeId = valid.employeeId,
+-                    leaveType = valid.leaveType.storedValue, entryType = LeaveLedgerEntryType.GRANT.name,
+-                    amountMicros = valid.amountMicros, leaveId = null, businessEpochDay = valid.businessEpochDay,
+-                    reason = valid.reason, createdByActorId = actor.id, createdAtEpochMillis = now,
+-                    correlationId = correlation,
+-                ),
+-            )
+-            auditWriter.appendAuthorized(
