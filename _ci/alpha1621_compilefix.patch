@@ -105,3 +105,23 @@
                              Button(
                                  enabled = !state.isBusy,
                                  modifier = Modifier.testTag("restaurant_add_menu_${menu.id}"),
+--- a/app/src/main/java/ir/sabou/inventory/data/AppContainer.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/AppContainer.kt
+@@ -307,6 +307,7 @@
+             waste = inventoryWasteService,
+             transfers = inventoryTransferService,
+             reads = inventoryReadService,
++            replenishment = inventoryReplenishmentService,
+             integrity = inventoryIntegrityService,
+         )
+     }
+--- a/app/src/main/java/ir/sabou/inventory/ui/SecurityScreens.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/SecurityScreens.kt
+@@ -679,6 +679,7 @@
+     UserRole.CASHIER -> "ثبت فروش و مشاهده گزارش‌های مرتبط"
+     UserRole.INVENTORY -> "مشاهده و مدیریت موجودی انبار"
+     UserRole.STOREKEEPER -> "مدیریت خرید، تأمین‌کننده، انبار و رسپی‌ها"
++    UserRole.KITCHEN -> "دسترسی عملیاتی آشپزخانه و گردش سفارش‌های KDS"
+     UserRole.ACCOUNTANT -> "حسابداری، گزارش‌ها، اسناد، پرسنل و دارایی‌ها"
+     UserRole.LEGACY_RESTRICTED -> "نقش قدیمی یا ناشناخته؛ هیچ دسترسی عملیاتی ندارد"
+ }
