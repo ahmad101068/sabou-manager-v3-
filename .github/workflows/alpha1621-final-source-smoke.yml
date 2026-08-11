@@ -24,9 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Download official Room schemas from verified KSP run
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: alpha1621-official-room-schemas-45-47
           path: _official_schemas
@@ -87,10 +87,33 @@ jobs:
           cd "$PROJECT_DIR"
           ./gradlew --no-daemon --console=plain testDebugUnitTest --stacktrace
       - name: Lint debug
+        id: lint
         shell: bash
         run: |
+          set +e
+          set -o pipefail
           cd "$PROJECT_DIR"
-          ./gradlew --no-daemon --console=plain lintDebug --stacktrace
+          ./gradlew --no-daemon --console=plain lintDebug --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/lintDebug.log"
+          status=${PIPESTATUS[0]}
+          cd "$GITHUB_WORKSPACE"
+          grep -E "(^|: )[A-Za-z0-9_./-]+:[0-9]+: (Error|Warning):|^[^[:space:]].*: Error:|^Lint found [0-9]+ errors" lintDebug.log > lint-errors.txt || :
+          if [ -s lint-errors.txt ]; then
+            echo "--- LINT DIAGNOSTICS ---"
+            cat lint-errors.txt
+          fi
+          exit "$status"
+      - name: Upload lint failure evidence
+        if: failure() && steps.lint.conclusion == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: alpha1621-lint-failure-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            lintDebug.log
+            lint-errors.txt
+            ${{ env.PROJECT_DIR }}/app/build/reports/lint-results-debug.html
+            ${{ env.PROJECT_DIR }}/app/build/reports/lint-results-debug.xml
       - name: Assemble debug APK
         shell: bash
         run: |
