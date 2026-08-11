@@ -1,0 +1,6 @@
+ sys.exit(1)
++
++print(
++    f"ALPHA162_ROOM_SCHEMA_GATE=PASS current={current} "
++    f"schemas={','.join(map(str, required))} migrations=44->{current}"
++)
