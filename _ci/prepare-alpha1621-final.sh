@@ -9,10 +9,19 @@ SCHEMA_DIR_NAME="ir.sabou.inventory.data.db.AppDatabase"
 cd "$GITHUB_WORKSPACE"
 test -f "$SOURCE_ZIP" || { echo "Missing source ZIP: $SOURCE_ZIP"; exit 1; }
 test -f _ci/alpha1621_compilefix.patch || { echo "Missing verified compile-fix patch"; exit 1; }
-test -f _ci/final-source-code.patch.gz || { echo "Missing exact final source patch"; exit 1; }
 
-echo "$EXPECTED_PATCH_GZ_SHA  _ci/final-source-code.patch.gz" | sha256sum -c -
-gzip -dc _ci/final-source-code.patch.gz > /tmp/alpha1621-final-source.patch
+cat > /tmp/final-binary-parts.sha256 <<'EOF'
+ae648ae7e41c8e808fe1f6a94e315c68ba04236e4424ba74155a7ddf578546f3  _ci/final-source-code.parts/part-00.bin
+7563de2cce4e42e6a4f01874d4ef22f4294b010e933fe3df74e32a9f617cd921  _ci/final-source-code.parts/part-01.bin
+1e480966adbae7d3d62c872792794930c75c6a03ca0f7fe41a47de903f216050  _ci/final-source-code.parts/part-02.bin
+36503d1131b5e822d2cf3d0e6d1a35eda409463229d7c918f3f24794b40e6143  _ci/final-source-code.parts/part-03.bin
+dff280c481f5ad8bacf66bdc622d45a7580abf8aae1ecd866a36499cc5c7dbf7  _ci/final-source-code.parts/part-04.bin
+4e82f6cd530b0f7743b0de0d070e2d510912baa223f0ab7127ef1052a33813ef  _ci/final-source-code.parts/part-05.bin
+EOF
+sha256sum -c /tmp/final-binary-parts.sha256
+cat _ci/final-source-code.parts/part-*.bin > /tmp/alpha1621-final-source.patch.gz
+echo "$EXPECTED_PATCH_GZ_SHA  /tmp/alpha1621-final-source.patch.gz" | sha256sum -c -
+gzip -dc /tmp/alpha1621-final-source.patch.gz > /tmp/alpha1621-final-source.patch
 echo "$EXPECTED_PATCH_SHA  /tmp/alpha1621-final-source.patch" | sha256sum -c -
 
 rm -rf _final_project
