@@ -1,0 +1,72 @@
+name: Alpha162.1 Lint Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [alpha1621-final-readiness]
+    paths:
+      - ".github/workflows/alpha1621-lint-diagnostic.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  lint-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download official Room schemas
+        uses: actions/download-artifact@v8
+        with:
+          name: alpha1621-official-room-schemas-45-47
+          path: _official_schemas
+          repository: ahmad101068/sabou-manager-v3-
+          run-id: 31538593586
+          github-token: ${{ github.token }}
+      - name: Prepare exact final source
+        shell: bash
+        run: bash _ci/prepare-alpha1621-final.sh
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+          cache-provider: basic
+      - name: Run lint and preserve real exit code
+        id: lint
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain lintDebug --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/lintDebug.log"
+          status=${PIPESTATUS[0]}
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          src = Path('lintDebug.log').read_text(errors='replace').splitlines()
+          keep = []
+          for line in src:
+              if re.search(r'\bError:', line) or re.search(r'Lint found \d+ errors?', line) or 'LintError' in line:
+                  keep.append(line)
+          Path('lint-errors.txt').write_text('\n'.join(keep) + ('\n' if keep else ''))
+          print('\n'.join(keep[-200:]))
+          PY
+          exit "$status"
+      - name: Upload lint evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: alpha1621-lint-diagnostic-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            lintDebug.log
+            lint-errors.txt
+            ${{ env.PROJECT_DIR }}/app/build/reports/lint-results-debug.html
+            ${{ env.PROJECT_DIR }}/app/build/reports/lint-results-debug.xml
