@@ -1,0 +1,115 @@
+diff --git a/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration46To47Test.kt b/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration46To47Test.kt
+new file mode 100644
+index 0000000..43d3d3d
+--- /dev/null
++++ b/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration46To47Test.kt
+@@ -0,0 +1,112 @@
++package ir.sabou.inventory.data.db
++
++import android.content.Context
++import androidx.sqlite.db.SupportSQLiteDatabase
++import androidx.sqlite.db.SupportSQLiteOpenHelper
++import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
++import androidx.test.core.app.ApplicationProvider
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import org.json.JSONObject
++import org.junit.After
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertTrue
++import org.junit.Test
++import org.junit.runner.RunWith
++
++/** Direct proof that the official v46 schema upgrades non-destructively to v47. */
++@RunWith(AndroidJUnit4::class)
++class EnterpriseCompletionMigration46To47Test {
++    private val context = ApplicationProvider.getApplicationContext<Context>()
++    private val name = "alpha162-enterprise-completion-46-47.db"
++
++    @After
++    fun cleanUp() {
++        context.deleteDatabase(name)
++    }
++
++    @Test
++    fun realV46Seed_migratesDirectlyTo47_withBranchBackfillIntegrityAndForeignKeys() {
++        context.deleteDatabase(name)
++        createRealV46Database()
++
++        openDatabase(47).use { helper ->
++            val db = helper.writableDatabase
++            assertEquals("A", text(db, "SELECT branchName FROM sales_invoices WHERE invoiceNo='SAL-MIG-46'"))
++            assertEquals("", text(db, "SELECT branchName FROM purchases WHERE invoiceNo='PUR-MIG-46'"))
++            assertEquals("", text(db, "SELECT branchName FROM storage_locations WHERE code='LOC-MIG-46'"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='index_sales_invoices_branchName'"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='index_purchases_branchName'"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='index_storage_locations_branchName'"))
++
++            db.query("PRAGMA integrity_check").use { cursor ->
++                assertTrue(cursor.moveToFirst())
++                assertEquals("ok", cursor.getString(0))
++            }
++            db.query("PRAGMA foreign_key_check").use { cursor -> assertEquals(0, cursor.count) }
++        }
++    }
++
++    private fun createRealV46Database() {
++        val root = context.assets
++            .open("ir.sabou.inventory.data.db.AppDatabase/46.json")
++            .bufferedReader()
++            .use { JSONObject(it.readText()).getJSONObject("database") }
++        val callback = object : SupportSQLiteOpenHelper.Callback(46) {
++            override fun onConfigure(db: SupportSQLiteDatabase) {
++                db.setForeignKeyConstraintsEnabled(true)
++            }
++
++            override fun onCreate(db: SupportSQLiteDatabase) {
++                val entities = root.getJSONArray("entities")
++                for (index in 0 until entities.length()) {
++                    val entity = entities.getJSONObject(index)
++                    val tableName = entity.getString("tableName")
++                    db.execSQL(entity.getString("createSql").replace("${'$'}{TABLE_NAME}", tableName))
++                    val indices = entity.optJSONArray("indices") ?: continue
++                    for (position in 0 until indices.length()) {
++                        db.execSQL(indices.getJSONObject(position).getString("createSql").replace("${'$'}{TABLE_NAME}", tableName))
++                    }
++                }
++                val setupQueries = root.getJSONArray("setupQueries")
++                for (index in 0 until setupQueries.length()) db.execSQL(setupQueries.getString(index))
++
++                db.execSQL("INSERT INTO suppliers(id,name,contactName,phone,address,paymentTermsDays,notes,isActive,createdAtEpochMillis,updatedAtEpochMillis) VALUES(1,'Seed Supplier','','','',0,'',1,1,1)")
++                db.execSQL("INSERT INTO customers(id,customerCode,name,phone,nationalId,creditLimitRial,notes,isActive,createdAtEpochMillis,updatedAtEpochMillis,mobile,address,branch,paymentTermsDays,status) VALUES(1,'CUS-MIG-46','Seed Customer','09120000046','0012345046',5000,'',1,1,1,'','','A',30,'ACTIVE')")
++                db.execSQL("INSERT INTO purchases(id,invoiceNo,supplierId,purchaseEpochDay,dueEpochDay,totalRial,paidRial,paymentStatus,paymentMethod,reminderEnabled,reminderEpochDay,createdAtEpochMillis) VALUES(2,'PUR-MIG-46',1,22000,22030,1000,0,'UNPAID',NULL,0,NULL,1)")
++                db.execSQL("INSERT INTO storage_locations(id,code,name,kind,isActive,createdAtEpochMillis,updatedAtEpochMillis) VALUES(3,'LOC-MIG-46','انبار مهاجرت ۴۶','WAREHOUSE',1,1,1)")
++                db.execSQL("INSERT INTO sales_invoices(id,invoiceNo,commandId,businessEpochDay,customerId,dueEpochDay,grossRial,discountRial,serviceRial,taxRial,netRial,creditRial,theoreticalCostRial,journalEntryId,cogsJournalEntryId,status,notes,createdByActorId,createdAtEpochMillis,voidedAtEpochDay,voidCommandId,voidReason,voidJournalEntryId,voidCogsJournalEntryId) VALUES(4,'SAL-MIG-46','cmd-sal-mig-46',22000,1,22030,1000,0,0,0,1000,1000,400,NULL,NULL,'POSTED','seed',1,1,NULL,NULL,'',NULL,NULL)")
++            }
++
++            override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
++        }
++        FrameworkSQLiteOpenHelperFactory().create(
++            SupportSQLiteOpenHelper.Configuration.builder(context).name(name).callback(callback).build(),
++        ).use { it.writableDatabase }
++    }
++
++    private fun openDatabase(version: Int): SupportSQLiteOpenHelper {
++        val callback = object : SupportSQLiteOpenHelper.Callback(version) {
++            override fun onConfigure(db: SupportSQLiteDatabase) {
++                db.setForeignKeyConstraintsEnabled(true)
++            }
++
++            override fun onCreate(db: SupportSQLiteDatabase) = Unit
++
++            override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
++                if (oldVersion == 46 && newVersion == 47) MIGRATION_46_47.migrate(db)
++            }
++        }
++        return FrameworkSQLiteOpenHelperFactory().create(
++            SupportSQLiteOpenHelper.Configuration.builder(context).name(name).callback(callback).build(),
++        )
++    }
++
++    private fun scalar(db: SupportSQLiteDatabase, sql: String): Long =
++        db.query(sql).use { cursor -> check(cursor.moveToFirst()); cursor.getLong(0) }
++
++    private fun text(db: SupportSQLiteDatabase, sql: String): String =
++        db.query(sql).use { cursor -> check(cursor.moveToFirst()); cursor.getString(0) }
++}
