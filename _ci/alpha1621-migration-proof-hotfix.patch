@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..43d3d3d
 --- /dev/null
 +++ b/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration46To47Test.kt
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,108 @@
 +package ir.sabou.inventory.data.db
 +
 +import android.content.Context
