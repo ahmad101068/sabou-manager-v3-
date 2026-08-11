@@ -2,24 +2,17 @@
 set -euo pipefail
 
 SOURCE_ZIP="${SABOU_SOURCE_ZIP:-Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip}"
+EXPECTED_PATCH_GZ_SHA="43188d217ce3d35ee6e3303d7b200ebb84e1b3980bc588ffcdfb227844ebaf87"
 EXPECTED_PATCH_SHA="5d43cc0184587fd4ec255f4e54455861c6a6b623d914e633bd70021e11078bef"
 SCHEMA_DIR_NAME="ir.sabou.inventory.data.db.AppDatabase"
 
 cd "$GITHUB_WORKSPACE"
 test -f "$SOURCE_ZIP" || { echo "Missing source ZIP: $SOURCE_ZIP"; exit 1; }
 test -f _ci/alpha1621_compilefix.patch || { echo "Missing verified compile-fix patch"; exit 1; }
+test -f _ci/final-source-code.patch.gz || { echo "Missing exact final source patch"; exit 1; }
 
-cat > /tmp/final-patch-parts.sha256 <<'EOF'
-4b42dcc1b20355f5cbb294cd23bfbb169ce94b317921a6038e697279b20e9ffe  _ci/final-source-patch/part-00.txt
-c122b448f20ac68e9decdfd85dbb07b9396d78fa4bf75dc4f0cc82e45da0b89b  _ci/final-source-patch/part-01.txt
-7ba92dac36503b1f26f7ba292383916f5461d38c8c39e9be17ffae0589572261  _ci/final-source-patch/part-02.txt
-5102af0fdd535dca6016f5abf7f9ec26a55983fb2646c8454d82186c15241116  _ci/final-source-patch/part-03.txt
-c4603af5986684de03e4d21bc79750ab816f45401e2a530e32537d375dff10c2  _ci/final-source-patch/part-04.txt
-bfa2ae64ae3b5b2f2d72e124cb00a97dc0fe8fe38e02ef6a23d4d82275323214  _ci/final-source-patch/part-05.txt
-7abc44d00d8d5a11e516035c8157d6cb136414cd3e53844d1a57cadfc91557ac  _ci/final-source-patch/part-06.txt
-EOF
-sha256sum -c /tmp/final-patch-parts.sha256
-cat _ci/final-source-patch/part-*.txt > /tmp/alpha1621-final-source.patch
+echo "$EXPECTED_PATCH_GZ_SHA  _ci/final-source-code.patch.gz" | sha256sum -c -
+gzip -dc _ci/final-source-code.patch.gz > /tmp/alpha1621-final-source.patch
 echo "$EXPECTED_PATCH_SHA  /tmp/alpha1621-final-source.patch" | sha256sum -c -
 
 rm -rf _final_project
