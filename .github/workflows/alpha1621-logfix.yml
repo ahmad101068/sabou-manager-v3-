@@ -21,6 +21,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           validate-wrappers: true
+      - name: Install static verifier dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ripgrep
+          fi
+          rg --version | head -n 1
       - name: Extract exact Alpha162.1 source and apply root-cause patch
         shell: bash
         run: |
