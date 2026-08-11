@@ -1,0 +1,253 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 0eeb99d..867c27d 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -106,6 +106,7 @@ dependencies {
+     androidTestImplementation(libs.androidx.test.core)
+     androidTestImplementation(libs.androidx.test.junit)
+     androidTestImplementation(libs.androidx.sqlite.framework)
++    androidTestImplementation(platform(libs.androidx.compose.bom))
+     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+     debugImplementation(libs.androidx.compose.ui.tooling)
+     debugImplementation(libs.androidx.compose.ui.test.manifest)
+diff --git a/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration44To47Test.kt b/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration44To47Test.kt
+index f28ea2c..2bad991 100644
+--- a/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration44To47Test.kt
++++ b/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration44To47Test.kt
+@@ -35,6 +35,19 @@ class EnterpriseCompletionMigration44To47Test {
+             assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='index_purchases_branchName'"))
+             assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='index_storage_locations_branchName'"))
+             assertEquals("", text(db, "SELECT branchName FROM purchases WHERE invoiceNo='PUR-00000041'"))
++            // Seeded business truth from the real v44 schema must survive the complete chain.
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM inventory_items WHERE sku='INV-MIG-001'"))
++            assertEquals(2_000_000L, scalar(db, "SELECT onHandMicros FROM inventory_balances WHERE itemId=10 AND locationId=11"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM payroll_periods WHERE periodKey='MIG-44'"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM payroll_batches WHERE documentNumber='PAY-MIG-44'"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM journal_entries WHERE entryNo='JV-MIG-44'"))
++            assertEquals(10_000L, scalar(db, "SELECT COALESCE(SUM(debitRial),0) FROM journal_lines WHERE entryId=21"))
++            assertEquals(10_000L, scalar(db, "SELECT COALESCE(SUM(creditRial),0) FROM journal_lines WHERE entryId=21"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM fixed_assets WHERE assetCode='AST-MIG-44'"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM daily_sales_summaries WHERE businessEpochDay=20000 AND grossSalesRial=12000"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM customers WHERE customerCode='CUS-MIG-45'"))
++            assertEquals(1L, scalar(db, "SELECT COUNT(*) FROM sales_invoices WHERE invoiceNo='SAL-MIG-45'"))
++            assertEquals(750L, scalar(db, "SELECT COALESCE(SUM(debitRial-creditRial),0) FROM customer_receivable_ledger WHERE customerId=51"))
+             db.query("PRAGMA table_info(sales_invoices)").use { cursor ->
+                 val nameIndex = cursor.getColumnIndexOrThrow("name")
+                 val notNullIndex = cursor.getColumnIndexOrThrow("notnull")
+@@ -79,7 +92,18 @@ class EnterpriseCompletionMigration44To47Test {
+                 for (index in 0 until setupQueries.length()) db.execSQL(setupQueries.getString(index))
+                 db.execSQL("INSERT INTO suppliers(id,name,contactName,phone,address,paymentTermsDays,notes,isActive,createdAtEpochMillis,updatedAtEpochMillis) VALUES(1,'Seed Supplier','','','',0,'',1,1,1)")
+                 db.execSQL("INSERT INTO purchases(invoiceNo,supplierId,purchaseEpochDay,dueEpochDay,totalRial,paidRial,paymentStatus,paymentMethod,reminderEnabled,reminderEpochDay,createdAtEpochMillis) VALUES('PUR-00000041',1,20000,20030,1000,0,'UNPAID',NULL,0,NULL,1)")
+-                db.execSQL("INSERT INTO employees(name,firstName,lastName,displayName,fatherName,employeeCode,jobTitle,department,branchName,locationId,managerId,phone,email,nationalId,birthEpochDay,hireEpochDay,terminationEpochDay,insuranceNumber,bankCard,address,emergencyContact,notes,monthlySalaryRial,leaveBalanceMicros,status,createdAtEpochMillis,updatedAtEpochMillis,createdByActorId,updatedByActorId) VALUES('Seed Employee','Seed','Employee','Seed Employee','','EMP-00000102','','','A',NULL,NULL,'',NULL,NULL,NULL,20000,NULL,NULL,NULL,'','','',0,0,'ACTIVE',1,1,NULL,NULL)")
++                db.execSQL("INSERT INTO employees(id,name,firstName,lastName,displayName,fatherName,employeeCode,jobTitle,department,branchName,locationId,managerId,phone,email,nationalId,birthEpochDay,hireEpochDay,terminationEpochDay,insuranceNumber,bankCard,address,emergencyContact,notes,monthlySalaryRial,leaveBalanceMicros,status,createdAtEpochMillis,updatedAtEpochMillis,createdByActorId,updatedByActorId) VALUES(2,'Seed Employee','Seed','Employee','Seed Employee','','EMP-00000102','','','A',NULL,NULL,'',NULL,NULL,NULL,20000,NULL,NULL,NULL,'','','',0,0,'ACTIVE',1,1,NULL,NULL)")
++                db.execSQL("INSERT INTO storage_locations(id,code,name,kind,isActive,createdAtEpochMillis,updatedAtEpochMillis) VALUES(11,'LOC-MIG','انبار مهاجرت','WAREHOUSE',1,1,1)")
++                db.execSQL("INSERT INTO inventory_items(id,name,category,unit,sku,itemType,purchaseUnit,purchaseToStockNumerator,purchaseToStockDenominator,recipeUnit,recipeToStockNumerator,recipeToStockDenominator,stockMicros,inventoryValueRial,alertEnabled,alertThresholdMicros,supplierId,primaryBarcode,brand,storageCondition,shelfLifeDays,trackLot,trackExpiry,minimumStockMicros,maximumStockMicros,safetyStockMicros,reorderPointMicros,leadTimeDays,isActive,createdAtEpochMillis,updatedAtEpochMillis) VALUES(10,'Seed Inventory','مواد اولیه','kg','INV-MIG-001','INGREDIENT','kg',1,1,'kg',1,1,2000000,10000,1,500000,1,NULL,'','AMBIENT',NULL,0,0,0,0,0,0,0,1,1,1)")
++                db.execSQL("INSERT INTO inventory_balances(itemId,locationId,onHandMicros,reservedMicros,inTransitMicros,damagedMicros,quarantinedMicros,inventoryValueRial,updatedAtEpochMillis) VALUES(10,11,2000000,0,0,0,0,10000,1)")
++                db.execSQL("INSERT INTO stock_movements(id,itemId,movementType,quantityDeltaMicros,valueDeltaRial,referenceType,referenceId,movementEpochDay,notes,createdAtEpochMillis,globalId,idempotencyKey,correlationId,actorId,deviceId,locationId,unitCostRial,reasonCode,reversalOfMovementId) VALUES(12,10,'IN',2000000,10000,'MIGRATION_SEED',1,20000,'seed',1,'mov-mig-44','mov-mig-44','corr-mig-44',NULL,'migration-test',11,5000,'OPENING',NULL)")
++                db.execSQL("INSERT INTO payroll_periods(id,periodKey,startEpochDay,endEpochDay,paymentDueEpochDay,status,openedByActorId,openedAtEpochMillis,closedAtEpochMillis,reopenedAtEpochMillis,rowVersion,source) VALUES(31,'MIG-44',20000,20030,20031,'OPEN',NULL,1,NULL,NULL,1,'MIGRATION_TEST')")
++                db.execSQL("INSERT INTO payroll_batches(id,documentNumber,idempotencyKey,periodId,scope,branchName,department,status,createdByActorId,calculatedByActorId,calculatedAtEpochMillis,reviewedByActorId,reviewedAtEpochMillis,approvedByActorId,approvedAtEpochMillis,correlationId,notes,rowVersion,accrualJournalEntryId,reversalJournalEntryId,source) VALUES(32,'PAY-MIG-44','pay-mig-44',31,'ALL','A',NULL,'DRAFT',NULL,NULL,NULL,NULL,NULL,NULL,NULL,'corr-pay-mig-44','seed',1,NULL,NULL,'MIGRATION_TEST')")
++                db.execSQL("INSERT INTO accounts(code,name,type,isSystem,isActive) VALUES('1000','Seed Cash','ASSET',0,1),('4000','Seed Revenue','REVENUE',0,1)")
++                db.execSQL("INSERT INTO journal_entries(id,entryNo,entryEpochDay,description,sourceType,sourceId,status,createdAtEpochMillis,globalId,idempotencyKey,correlationId,reversalOfEntryId,postedAtEpochMillis,postedByActorId) VALUES(21,'JV-MIG-44',20000,'seed balanced voucher','MIGRATION_TEST',1,'POSTED',1,'jv-mig-44','jv-mig-44','corr-jv-mig-44',NULL,1,NULL)")
++                db.execSQL("INSERT INTO journal_lines(entryId,accountCode,debitRial,creditRial,memo) VALUES(21,'1000',10000,0,'seed debit'),(21,'4000',0,10000,'seed credit')")
++                db.execSQL("INSERT INTO fixed_assets(id,assetCode,name,category,quantity,purchaseEpochDay,purchaseCostRial,salvageValueRial,usefulLifeMonths,accumulatedDepreciationRial,location,status,notes,createdAtEpochMillis,updatedAtEpochMillis) VALUES(41,'AST-MIG-44','Seed Asset','EQUIPMENT',1,19000,50000,5000,60,10000,'A','ACTIVE','seed',1,1)")
++                db.execSQL("INSERT INTO daily_sales_summaries(id,businessEpochDay,grossSalesRial,discountRial,serviceRial,taxRial,netSalesRial,theoreticalCostRial,cashRial,cardRial,transferRial,notes,journalEntryId,costJournalEntryId,isLegacyArchive,reversedAtEpochDay,reversalReason,reversalJournalEntryId,reversalCostJournalEntryId,createdAtEpochMillis) VALUES(61,20000,12000,1000,0,0,11000,5000,6000,5000,0,'seed legacy sales',21,NULL,1,NULL,'',NULL,NULL,1)")
+             }
+             override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+         }
+@@ -94,7 +118,15 @@ class EnterpriseCompletionMigration44To47Test {
+             override fun onCreate(db: SupportSQLiteDatabase) = Unit
+             override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
+                 var version = oldVersion
+-                if (version == 44) { MIGRATION_44_45.migrate(db); version = 45 }
++                if (version == 44) {
++                    MIGRATION_44_45.migrate(db)
++                    version = 45
++                    // Sales/CRM tables are introduced by 44->45, so seed their real v45 shape
++                    // before 45->46 to prove AR backfill across the rest of the chain.
++                    db.execSQL("INSERT INTO customers(id,customerCode,name,phone,nationalId,creditLimitRial,notes,isActive,createdAtEpochMillis,updatedAtEpochMillis) VALUES(51,'CUS-MIG-45','Seed Customer','09120000051','0012345051',5000,'migration seed',1,1,1)")
++                    db.execSQL("INSERT INTO sales_invoices(id,invoiceNo,commandId,businessEpochDay,customerId,dueEpochDay,grossRial,discountRial,serviceRial,taxRial,netRial,creditRial,theoreticalCostRial,journalEntryId,cogsJournalEntryId,status,notes,createdByActorId,createdAtEpochMillis,voidedAtEpochDay,voidCommandId,voidReason,voidJournalEntryId,voidCogsJournalEntryId) VALUES(52,'SAL-MIG-45','cmd-sal-mig-45',20000,51,20030,1000,0,0,0,1000,1000,400,NULL,NULL,'POSTED','migration seed',1,1,NULL,NULL,'',NULL,NULL)")
++                    db.execSQL("INSERT INTO sales_returns(id,returnNo,commandId,invoiceId,returnEpochDay,refundMethod,grossRial,discountRial,serviceRial,taxRial,refundRial,cogsRial,reason,journalEntryId,cogsJournalEntryId,createdByActorId,createdAtEpochMillis) VALUES(53,'RET-MIG-45','cmd-ret-mig-45',52,20001,'CREDIT',250,0,0,0,250,100,'migration seed return',NULL,NULL,1,2)")
++                }
+                 if (version == 45) { MIGRATION_45_46.migrate(db); version = 46 }
+                 if (version == 46) { MIGRATION_46_47.migrate(db); version = 47 }
+                 check(version == newVersion) { "Unexpected migration chain $oldVersion->$newVersion ended at $version" }
+diff --git a/app/src/androidTest/java/ir/sabou/inventory/data/repository/AccountingPostingIntegrationTest.kt b/app/src/androidTest/java/ir/sabou/inventory/data/repository/AccountingPostingIntegrationTest.kt
+index f2a0ae0..be7b321 100644
+--- a/app/src/androidTest/java/ir/sabou/inventory/data/repository/AccountingPostingIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/sabou/inventory/data/repository/AccountingPostingIntegrationTest.kt
+@@ -15,6 +15,10 @@ import ir.sabou.inventory.domain.accounting.JournalLineDraft
+ import ir.sabou.inventory.domain.accounting.ManualJournalDraft
+ import ir.sabou.inventory.domain.operations.UserDraft
+ import ir.sabou.inventory.domain.operations.UserRole
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.async
++import kotlinx.coroutines.awaitAll
++import kotlinx.coroutines.coroutineScope
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+ import org.junit.Assert.assertEquals
+@@ -149,6 +153,46 @@ class AccountingPostingIntegrationTest {
+         )
+     }
+ 
++    @Test
++    fun concurrentManualJournalPosting_allocatesUniqueVoucherNumbers() = runBlocking {
++        val authorizer = SessionAuthorizer(database)
++        LocalSecurityRepository(
++            db = database,
++            clock = { NOW },
++            authorizer = authorizer,
++        ).save(
++            null,
++            UserDraft("owner-concurrency", "مالک همزمانی", "123456", UserRole.OWNER, "87654321"),
++        )
++        val repository = LocalAccountingRepository(
++            database = database,
++            clock = { NOW },
++            authorizer = authorizer,
++        )
++
++        val posted = coroutineScope {
++            (1..12).map { sequence ->
++                async(Dispatchers.IO) {
++                    repository.postManual(
++                        ManualJournalDraft(
++                            description = "سند همزمان شماره $sequence",
++                            entryEpochDay = 120,
++                            commandId = "123e4567-e89b-42d3-a456-${sequence.toString().padStart(12, '0')}",
++                            lines = listOf(
++                                JournalLineDraft(accountCode = "1101", debit = MoneyRial.of(10_000L + sequence)),
++                                JournalLineDraft(accountCode = "3101", credit = MoneyRial.of(10_000L + sequence)),
++                            ),
++                        ),
++                    )
++                }
++            }.awaitAll()
++        }
++
++        assertEquals(posted.size, posted.map { it.entryNo }.toSet().size)
++        assertEquals(posted.size, posted.map { it.id }.toSet().size)
++        posted.forEach { row -> assertEquals("س-${row.id}", row.entryNo) }
++    }
++
+     @Test
+     fun manualReversalRetryReturnsOriginalPostingWithoutDuplicateAudit() = runBlocking {
+         val authorizer = SessionAuthorizer(database)
+diff --git a/app/src/androidTest/java/ir/sabou/inventory/data/repository/DocumentNumberConcurrencyIntegrationTest.kt b/app/src/androidTest/java/ir/sabou/inventory/data/repository/DocumentNumberConcurrencyIntegrationTest.kt
+new file mode 100644
+index 0000000..d8f881a
+--- /dev/null
++++ b/app/src/androidTest/java/ir/sabou/inventory/data/repository/DocumentNumberConcurrencyIntegrationTest.kt
+@@ -0,0 +1,61 @@
++package ir.sabou.inventory.data.repository
++
++import android.content.Context
++import androidx.room.withTransaction
++import androidx.test.core.app.ApplicationProvider
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import ir.sabou.inventory.data.db.AppDatabase
++import ir.sabou.inventory.domain.common.DocumentNumberType
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.async
++import kotlinx.coroutines.awaitAll
++import kotlinx.coroutines.coroutineScope
++import kotlinx.coroutines.runBlocking
++import org.junit.After
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertTrue
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@RunWith(AndroidJUnit4::class)
++class DocumentNumberConcurrencyIntegrationTest {
++    private lateinit var database: AppDatabase
++    private lateinit var allocator: LocalDocumentNumberAllocator
++
++    @Before
++    fun setUp() {
++        database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
++        allocator = LocalDocumentNumberAllocator(database, clock = { 1_800_000_000_000L })
++    }
++
++    @After
++    fun tearDown() = database.close()
++
++    @Test
++    fun concurrentBusinessDocumentAllocation_neverDuplicatesSalesPurchaseAssetEmployeeOrCustomerCodes() = runBlocking {
++        val requiredTypes = listOf(
++            DocumentNumberType.SALES_INVOICE,
++            DocumentNumberType.PURCHASE,
++            DocumentNumberType.FIXED_ASSET,
++            DocumentNumberType.EMPLOYEE,
++            DocumentNumberType.CUSTOMER,
++        )
++
++        requiredTypes.forEach { type ->
++            val numbers = coroutineScope {
++                (1..16).map {
++                    async(Dispatchers.IO) {
++                        database.withTransaction { allocator.next(type) }
++                    }
++                }.awaitAll()
++            }
++
++            assertEquals("duplicate ${type.sequenceKey}", numbers.size, numbers.toSet().size)
++            assertTrue(numbers.all { it.startsWith("${type.prefix}-") })
++            assertEquals(
++                17L,
++                database.documentSequenceDao().nextValue(type.sequenceKey),
++            )
++        }
++    }
++}
+diff --git a/app/src/androidTest/java/ir/sabou/inventory/data/repository/TreasuryV2IntegrationTest.kt b/app/src/androidTest/java/ir/sabou/inventory/data/repository/TreasuryV2IntegrationTest.kt
+index 3700543..c6eb590 100644
+--- a/app/src/androidTest/java/ir/sabou/inventory/data/repository/TreasuryV2IntegrationTest.kt
++++ b/app/src/androidTest/java/ir/sabou/inventory/data/repository/TreasuryV2IntegrationTest.kt
+@@ -20,6 +20,10 @@ import ir.sabou.inventory.domain.treasury.TreasuryChannel
+ import ir.sabou.inventory.domain.treasury.TreasuryCommand
+ import ir.sabou.inventory.domain.treasury.TreasuryDirection
+ import ir.sabou.inventory.domain.treasury.TreasuryReversalCommand
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.async
++import kotlinx.coroutines.awaitAll
++import kotlinx.coroutines.coroutineScope
+ import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+@@ -88,6 +92,34 @@ class TreasuryV2IntegrationTest {
+         assertEquals(25_000L, service.observeBalance(cash).first())
+     }
+ 
++    @Test
++    fun concurrentReplayOfSameTreasuryCommand_createsExactlyOneTransactionLedgerAndVoucher() = runBlocking {
++        val commandId = GlobalId.new()
++        val command = TreasuryCommand.Receipt(
++            commandId = commandId,
++            businessEpochDay = 20_000L,
++            correlationId = CorrelationId.forCommand("treasury_concurrent_receipt", commandId),
++            sourceType = "OTHER_RECEIPT",
++            sourceId = 72L,
++            reason = "دریافت همزمان برای آزمون idempotency",
++            accountId = cash,
++            channel = TreasuryChannel.CASH,
++            amount = MoneyRial.of(26_000L),
++        )
++
++        val results = coroutineScope {
++            (1..8).map {
++                async(Dispatchers.IO) { service.execute(command) }
++            }.awaitAll()
++        }
++
++        assertEquals(1, results.count { !it.idempotentReplay })
++        assertEquals(1, results.map { it.id }.toSet().size)
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM treasury_transactions WHERE commandId='${commandId.value}'"))
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM treasury_ledger_entries WHERE transactionId='${commandId.value}'"))
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='OTHER_RECEIPT' AND sourceId=72"))
++    }
++
+     @Test
+     fun missingCustomerAfterAccountingPost_rollsBackEntireTreasuryCommand() = runBlocking {
+         val commandId = GlobalId.new()
