@@ -125,3 +125,13 @@
      UserRole.ACCOUNTANT -> "حسابداری، گزارش‌ها، اسناد، پرسنل و دارایی‌ها"
      UserRole.LEGACY_RESTRICTED -> "نقش قدیمی یا ناشناخته؛ هیچ دسترسی عملیاتی ندارد"
  }
+--- a/app/src/main/java/ir/sabou/inventory/domain/security/Permission.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/security/Permission.kt
+@@ -106,7 +106,6 @@
+             Permission.PAYROLL_CREATE,
+             Permission.PAYROLL_CALCULATE,
+             Permission.PAYROLL_REVIEW,
+-            Permission.PAYROLL_APPROVE,
+             Permission.JOURNAL_REVERSE,
+             Permission.ACCOUNTING_PERIOD_CLOSE,
+             Permission.SALES_DAY_CLOSE,
