@@ -1,0 +1,154 @@
+           tableId = valid.tableId,
++                epochDay = valid.reservationEpochDay,
++                startMinuteInclusive = valid.startMinuteOfDay,
++                endMinuteExclusive = endMinuteExclusive,
++                durationMinutes = RestaurantReservationWindowPolicy.DURATION_MINUTES,
++            )
++            require(overlaps == 0) {
++                "این میز در بازه ${valid.startMinuteOfDay} تا $endMinuteExclusive رزرو متداخل دارد."
++            }
+             val now = clock()
+             val actor = authorizer.actorIdentity()
+             val id = database.restaurantDao().insertReservation(
+--- /dev/null
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/PersonnelLeaveService.kt
+@@ -0,0 +1,269 @@
++package ir.sabou.inventory.data.repository
++
++import androidx.room.withTransaction
++import ir.sabou.inventory.core.CorrelationId
++import ir.sabou.inventory.core.GlobalId
++import ir.sabou.inventory.core.SignedLongMath
++import ir.sabou.inventory.data.db.AppDatabase
++import ir.sabou.inventory.data.db.AttendanceEntity
++import ir.sabou.inventory.data.db.LeaveEntity
++import ir.sabou.inventory.data.db.LeaveLedgerEntryEntity
++import ir.sabou.inventory.data.security.SessionAuthorizer
++import ir.sabou.inventory.domain.common.BusinessError
++import ir.sabou.inventory.domain.common.asViolation
++import ir.sabou.inventory.domain.personnel.LeaveBalance
++import ir.sabou.inventory.domain.personnel.LeaveBalanceCalculator
++import ir.sabou.inventory.domain.personnel.LeaveDraft
++import ir.sabou.inventory.domain.personnel.LeaveGrantDraft
++import ir.sabou.inventory.domain.personnel.LeaveLedgerEntry
++import ir.sabou.inventory.domain.personnel.LeaveLedgerEntryType
++import ir.sabou.inventory.domain.personnel.LeaveReviewDraft
++import ir.sabou.inventory.domain.personnel.LeaveStatus
++import ir.sabou.inventory.domain.personnel.LeaveType
++import ir.sabou.inventory.domain.personnel.PendingLeaveUsage
++import ir.sabou.inventory.domain.security.Permission
++import ir.sabou.inventory.domain.security.SegregationOfDuties
++
++/**
++ * Owns the leave-request lifecycle and leave-balance ledger. This boundary deliberately keeps
++ * overlap policy, approval segregation, attendance side effects and audit in one transaction while
++ * removing those responsibilities from the employee master repository.
++ */
++class PersonnelLeaveService(
++    private val database: AppDatabase,
++    private val authorizer: SessionAuthorizer,
++    private val auditWriter: LocalAuditEventWriter,
++    private val clock: () -> Long = System::currentTimeMillis,
++) {
++    private val personnel get() = database.personnelDao()
++    private val hr get() = database.hrPayrollDao()
++
++    suspend fun request(draft: LeaveDraft, requestedBy: String): Long {
++        val actor = authorizer.require(Permission.PERSONNEL)
++        val valid = draft.validated()
++        require(requestedBy.trim().isNotEmpty()) { "ثبت‌کننده درخواست مشخص نیست." }
++        return database.withTransaction {
++            val idempotencyKey = "leave_request:${valid.commandId}"
++            personnel.leaveByIdempotencyKey(idempotencyKey)?.let { existing ->
++                if (
++                    existing.employeeId != valid.employeeId || existing.startEpochDay != valid.startEpochDay ||
++                    existing.endEpochDay != valid.endEpochDay || existing.leaveType != valid.leaveType
++                ) {
++                    throw BusinessError.IdempotencyConflict(idempotencyKey).asViolation()
++                }
++                return@withTransaction existing.id
++            }
++            val employee = personnel.employeeById(valid.employeeId) ?: error("پرسنل پیدا نشد.")
++            val employeeStatus = ir.sabou.inventory.domain.personnel.EmploymentStatus.fromStoredValue(employee.status)
++            require(employeeStatus in setOf(
++                ir.sabou.inventory.domain.personnel.EmploymentStatus.ACTIVE,
++                ir.sabou.inventory.domain.personnel.EmploymentStatus.ON_LEAVE,
++            )) { "پرسنل در وضعیت قابل مرخصی نیست." }
++            require(!personnel.hasLeaveOverlap(valid.employeeId, valid.startEpochDay, valid.endEpochDay)) {
++                "این درخواست با مرخصی دیگری هم‌پوشانی دارد."
++            }
++            val now = clock()
++            val correlation = CorrelationId.forCommand("leave_request", GlobalId.parse(valid.commandId)).value
++            val leaveId = personnel.insertLeave(
++                LeaveEntity(
++                    employeeId = valid.employeeId,
++                    globalId = valid.commandId,
++                    idempotencyKey = idempotencyKey,
++                    startEpochDay = valid.startEpochDay,
++                    endEpochDay = valid.endEpochDay,
++                    daysMicros = SignedLongMath.multiply(
++                        SignedLongMath.add(SignedLongMath.subtract(valid.endEpochDay, valid.startEpochDay), 1L),
++                        1_000_000L,
++                    ),
++                    leaveType = valid.leaveType,
++                    status = LeaveStatus.SUBMITTED.storedValue,
++                    notes = valid.notes,
++                    requestedBy = actor.displayName,
++                    requestedByActorId = actor.id,
++                    createdAtEpochMillis = now,
++                    updatedAtEpochMillis = now,
++                    correlationId = correlation,
++                ),
++            )
++            auditWriter.appendAuthorized(
++                authorizer, "SUBMIT", "LEAVE", leaveId, "ثبت درخواست مرخصی",
++                now, valid.startEpochDay, valid.notes.ifBlank { "درخواست مرخصی" }, null,
++                "status=SUBMITTED;type=${valid.leaveType};from=${valid.startEpochDay};to=${valid.endEpochDay}", correlation,
++            )
++            leaveId
++        }
++    }
++
++    suspend fun grant(draft: LeaveGrantDraft): Long {
++        val actor = authorizer.require(Permission.LEAVE_APPROVE)
++        val valid = draft.validated()
++        return database.withTransaction {
++            val key = "leave_grant:${valid.commandId}"
++            hr.leaveLedgerByIdempotencyKey(key)?.let { existing ->
++                if (
++                    existing.employeeId != valid.employeeId || existing.leaveType != valid.leaveType.storedValue ||
++                    existing.amountMicros != valid.amountMicros
++                ) throw BusinessError.IdempotencyConflict(key).asViolation()
++                return@withTransaction existing.id
++            }
++            personnel.employeeById(valid.employeeId) ?: error("پرسنل پیدا نشد.")
++            val now = clock()
++            val correlation = CorrelationId.forCommand("leave_grant", GlobalId.parse(valid.commandId)).value
++            val id = hr.insertLeaveLedgerEntry(
++                LeaveLedgerEntryEntity(
++                    globalId = valid.commandId,
++                    idempotencyKey = key,
++                    employeeId = valid.employeeId,
++                    leaveType = valid.leaveType.storedValue,
++                    entryType = LeaveLedgerEntryType.GRANT.name,
++                    amountMicros = valid.amountMicros,
++                    leaveId = null,
++                    businessEpochDay = valid.businessEpochDay,
++                    reason = valid.reason,
++                    createdByActorId = actor.id,
++                    createdAtEpochMillis = now,
++                    correlationId = correlation,
++                ),
++            )
++            auditWriter.appendAuthorized(
++                authorizer, "GRANT", "LEAVE_BALANCE", id, "اعطای سهمیه مرخصی",
++                now, valid.businessEpochDay, valid.reason, null,
++                "employeeId=${valid.employeeId};type=${valid.leaveType.storedValue};amountMicros=${valid.amountMicros}", correlation,
++            )
++            id
++        }
++    }
++
++    suspend fun balance(employeeId: Long, leaveType: LeaveType): LeaveBalance {
++        authorizer.require(Permission.PERSONNEL)
++        val ledger = hr.leaveLedger(employeeId, leaveType.sto
