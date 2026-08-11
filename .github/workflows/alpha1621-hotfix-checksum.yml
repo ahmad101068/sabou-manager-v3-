@@ -1,0 +1,23 @@
+name: Alpha162.1 Hotfix Checksum
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [alpha1621-final-readiness]
+    paths:
+      - ".github/workflows/alpha1621-hotfix-checksum.yml"
+      - "_ci/alpha1621-final-hotfix.patch"
+
+permissions:
+  contents: read
+
+jobs:
+  checksum:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Print exact hotfix SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum _ci/alpha1621-final-hotfix.patch
