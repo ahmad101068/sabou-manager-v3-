@@ -1,0 +1,142 @@
+name: Alpha162.1 Room Schema Bootstrap
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - alpha1621-final-readiness
+    paths:
+      - ".github/workflows/alpha1621-schema-bootstrap.yml"
+      - "_ci/schema-v46/**"
+      - "_ci/alpha1621_compilefix.patch"
+      - "Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alpha1621-schema-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-room-schemas:
+    name: Generate official Room schemas 45, 46, 47
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+          cache-provider: basic
+
+      - name: Reconstruct and verify v46 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat _ci/schema-v46/part-*.b64 > /tmp/v46.patch.gz.b64
+          echo "c5e1550ae68e27b4fcae5dd0ca5fffe87cc44e1ee576abdffcf7877a1f61d984  /tmp/v46.patch.gz.b64" | sha256sum -c -
+          base64 --decode /tmp/v46.patch.gz.b64 | gzip -dc > /tmp/v47-to-v46.patch
+          echo "354f6793e3edadfbbbaf94fd79d483aa1128e66b456eac2c6e321a0bb1bfe43a  /tmp/v47-to-v46.patch" | sha256sum -c -
+
+      - name: Generate official schema 45 from historical source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/schema45
+          mkdir -p /tmp/schema45
+          git show 214bf5c83f72bd15387e52a6fea95f3752e8a137:Sabou-Restaurant-ERP-Alpha162-Stage01.1-Room45-StartupCrashFix-SOURCE.zip > /tmp/v45.zip
+          unzip -q /tmp/v45.zip -d /tmp/schema45
+          DIR45="$(find /tmp/schema45 -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)"
+          test -n "$DIR45"
+          chmod +x "$DIR45/gradlew"
+          cd "$DIR45"
+          ./gradlew --no-daemon --console=plain clean kspDebugKotlin --stacktrace
+          SCHEMA45="$(find app -type f -path '*/ir.sabou.inventory.data.db.AppDatabase/45.json' | head -n1)"
+          test -n "$SCHEMA45"
+          mkdir -p "$GITHUB_WORKSPACE/_room_schemas/ir.sabou.inventory.data.db.AppDatabase"
+          cp "$SCHEMA45" "$GITHUB_WORKSPACE/_room_schemas/ir.sabou.inventory.data.db.AppDatabase/45.json"
+
+      - name: Generate official schema 46 from exact v46 source reconstruction
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/schema46
+          mkdir -p /tmp/schema46
+          unzip -q Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip -d /tmp/schema46
+          DIR46="$(find /tmp/schema46 -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)"
+          test -n "$DIR46"
+          cd "$DIR46"
+          patch --forward --batch -p1 < /tmp/v47-to-v46.patch
+          grep -q 'APP_DATABASE_SCHEMA_VERSION = 46' app/src/main/java/ir/sabou/inventory/data/db/AppDatabase.kt
+          chmod +x gradlew
+          ./gradlew --no-daemon --console=plain clean kspDebugKotlin --stacktrace
+          SCHEMA46="$(find app -type f -path '*/ir.sabou.inventory.data.db.AppDatabase/46.json' | head -n1)"
+          test -n "$SCHEMA46"
+          cp "$SCHEMA46" "$GITHUB_WORKSPACE/_room_schemas/ir.sabou.inventory.data.db.AppDatabase/46.json"
+
+      - name: Generate official schema 47 from current source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/schema47
+          mkdir -p /tmp/schema47
+          unzip -q Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip -d /tmp/schema47
+          DIR47="$(find /tmp/schema47 -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)"
+          test -n "$DIR47"
+          cd "$DIR47"
+          patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621_compilefix.patch"
+          grep -q 'APP_DATABASE_SCHEMA_VERSION = 47' app/src/main/java/ir/sabou/inventory/data/db/AppDatabase.kt
+          chmod +x gradlew
+          ./gradlew --no-daemon --console=plain clean kspDebugKotlin --stacktrace
+          SCHEMA47="$(find app -type f -path '*/ir.sabou.inventory.data.db.AppDatabase/47.json' | head -n1)"
+          test -n "$SCHEMA47"
+          cp "$SCHEMA47" "$GITHUB_WORKSPACE/_room_schemas/ir.sabou.inventory.data.db.AppDatabase/47.json"
+
+      - name: Validate generated Room schema artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY2'
+          import json
+          from pathlib import Path
+          root = Path('_room_schemas/ir.sabou.inventory.data.db.AppDatabase')
+          hashes = []
+          for version in (45, 46, 47):
+              path = root / f'{version}.json'
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f'missing generated schema {version}')
+              data = json.loads(path.read_text())
+              db = data.get('database') or {}
+              if db.get('version') != version:
+                  raise SystemExit(f'wrong schema version in {path}: {db.get("version")}')
+              identity = db.get('identityHash')
+              if not isinstance(identity, str) or not identity.strip():
+                  raise SystemExit(f'missing identityHash in {path}')
+              if not db.get('entities'):
+                  raise SystemExit(f'no entities in {path}')
+              hashes.append(identity)
+              print(f'ROOM_SCHEMA_GENERATED version={version} identityHash={identity} entities={len(db["entities"])}')
+          if len(set(hashes)) != len(hashes):
+              raise SystemExit('Room identity hashes for 45/46/47 must be distinct')
+          print('ALPHA162_ROOM_SCHEMA_BOOTSTRAP=PASS')
+          PY2
+
+      - name: Upload official Room schema artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha1621-official-room-schemas-45-47
+          if-no-files-found: error
+          retention-days: 30
+          path: _room_schemas/
