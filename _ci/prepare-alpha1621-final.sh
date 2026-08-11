@@ -4,14 +4,19 @@ set -euo pipefail
 SOURCE_ZIP="${SABOU_SOURCE_ZIP:-Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip}"
 EXPECTED_PATCH_GZ_SHA="43188d217ce3d35ee6e3303d7b200ebb84e1b3980bc588ffcdfb227844ebaf87"
 EXPECTED_PATCH_SHA="5d43cc0184587fd4ec255f4e54455861c6a6b623d914e633bd70021e11078bef"
-EXPECTED_HOTFIX_SHA="b8d78684d9ede29e087233cdbfda139e27c7585d47f422f22c12141d70432cfb"
+EXPECTED_HOTFIX_GIT_BLOB="a776e9e0572565dd0a6a27d762192df92662bdc8"
 SCHEMA_DIR_NAME="ir.sabou.inventory.data.db.AppDatabase"
 
 cd "$GITHUB_WORKSPACE"
 test -f "$SOURCE_ZIP" || { echo "Missing source ZIP: $SOURCE_ZIP"; exit 1; }
 test -f _ci/alpha1621_compilefix.patch || { echo "Missing verified compile-fix patch"; exit 1; }
 test -f _ci/alpha1621-final-hotfix.patch || { echo "Missing final readiness hotfix patch"; exit 1; }
-echo "$EXPECTED_HOTFIX_SHA  _ci/alpha1621-final-hotfix.patch" | sha256sum -c -
+ACTUAL_HOTFIX_GIT_BLOB="$(git hash-object _ci/alpha1621-final-hotfix.patch)"
+test "$ACTUAL_HOTFIX_GIT_BLOB" = "$EXPECTED_HOTFIX_GIT_BLOB" || {
+  echo "Final readiness hotfix identity mismatch: expected=$EXPECTED_HOTFIX_GIT_BLOB actual=$ACTUAL_HOTFIX_GIT_BLOB" >&2
+  exit 1
+}
+echo "FINAL_HOTFIX_GIT_BLOB=$ACTUAL_HOTFIX_GIT_BLOB"
 
 cat > /tmp/final-binary-parts.sha256 <<'EOF'
 ae648ae7e41c8e808fe1f6a94e315c68ba04236e4424ba74155a7ddf578546f3  _ci/final-source-code.parts/part-00.bin
