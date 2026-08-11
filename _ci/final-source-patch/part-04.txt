@@ -1,0 +1,161 @@
+redValue).map { row ->
++            LeaveLedgerEntry(
++                id = row.id,
++                employeeId = row.employeeId,
++                leaveType = LeaveType.fromStoredValue(row.leaveType),
++                entryType = LeaveLedgerEntryType.valueOf(row.entryType),
++                amountMicros = row.amountMicros,
++                leaveId = row.leaveId,
++            )
++        }
++        val pending = personnel.pendingLeavesForBalance(employeeId, leaveType.storedValue).map { row ->
++            PendingLeaveUsage(row.employeeId, leaveType, row.daysMicros)
++        }
++        return LeaveBalanceCalculator.calculate(employeeId, leaveType, ledger, pending)
++    }
++
++    suspend fun review(draft: LeaveReviewDraft) {
++        val actor = authorizer.require(Permission.LEAVE_APPROVE)
++        val valid = draft.validated()
++        database.withTransaction {
++            val current = personnel.leaveById(valid.leaveId) ?: error("درخواست مرخصی پیدا نشد.")
++            require(LeaveStatus.fromStoredValue(current.status) == LeaveStatus.SUBMITTED) {
++                "فقط درخواست در انتظار قابل بررسی است."
++            }
++            current.requestedByActorId?.let {
++                SegregationOfDuties.requireDifferentActors("LEAVE_APPROVAL", it, actor.id)
++            }
++            val now = clock()
++            if (valid.decision == "APPROVE") {
++                require(!personnel.attendanceRangeLocked(current.employeeId, current.startEpochDay, current.endEpochDay)) {
++                    "بخشی از بازه مرخصی در دوره حقوق نهایی‌شده قرار دارد و قابل تغییر نیست."
++                }
++                require(!personnel.hasAttendanceConflict(current.employeeId, current.startEpochDay, current.endEpochDay)) {
++                    "در بازه مرخصی، رکورد حضور متعارض وجود دارد."
++                }
++                val leaveType = LeaveType.fromStoredValue(current.leaveType)
++                if (leaveType in setOf(LeaveType.PAID, LeaveType.ANNUAL, LeaveType.HOURLY)) {
++                    val currentBalance = balance(current.employeeId, leaveType)
++                    require(currentBalance.remainingMicros >= 0) { "مانده مرخصی برای تأیید کافی نیست." }
++                }
++                for (day in current.startEpochDay..current.endEpochDay) {
++                    if (personnel.attendanceByEmployeeDay(current.employeeId, day) == null) {
++                        personnel.insertAttendance(
++                            AttendanceEntity(
++                                employeeId = current.employeeId,
++                                workEpochDay = day,
++                                status = "LEAVE",
++                                checkInMinute = null,
++                                checkOutMinute = null,
++                                lateMinutes = 0,
++                                overtimeMinutes = 0,
++                                notes = "ثبت خودکار از گردش کار مرخصی",
++                            ),
++                        )
++                    }
++                }
++                val leaveLedgerKey = "leave_use:${current.id}"
++                if (hr.leaveLedgerByIdempotencyKey(leaveLedgerKey) == null) {
++                    hr.insertLeaveLedgerEntry(
++                        LeaveLedgerEntryEntity(
++                            globalId = GlobalId.new().value,
++                            idempotencyKey = leaveLedgerKey,
++                            employeeId = current.employeeId,
++                            leaveType = current.leaveType,
++                            entryType = LeaveLedgerEntryType.USE.name,
++                            amountMicros = current.daysMicros,
++                            leaveId = current.id,
++                            businessEpochDay = current.startEpochDay,
++                            reason = valid.notes.ifBlank { "تأیید مرخصی" },
++                            createdByActorId = actor.id,
++                            createdAtEpochMillis = now,
++                            correlationId = current.correlationId,
++                        ),
++                    )
++                }
++            }
++            check(
++                personnel.updateLeave(
++                    current.copy(
++                        status = if (valid.decision == "APPROVE") LeaveStatus.APPROVED.storedValue else LeaveStatus.REJECTED.storedValue,
++                        reviewedBy = actor.displayName,
++                        reviewedByActorId = actor.id,
++                        reviewNotes = valid.notes,
++                        reviewedAtEpochMillis = now,
++                        updatedAtEpochMillis = now,
++                    ),
++                ) == 1,
++            ) { "ثبت نتیجه بررسی مرخصی انجام نشد." }
++            auditWriter.appendAuthorized(
++                authorizer,
++                if (valid.decision == "APPROVE") "APPROVE" else "REJECT",
++                "LEAVE",
++                current.id,
++                if (valid.decision == "APPROVE") "تأیید درخواست مرخصی" else "رد درخواست مرخصی",
++                now,
++                current.startEpochDay,
++                valid.notes.ifBlank { "بررسی مرخصی" },
++                "status=${current.status};requestedByActorId=${current.requestedByActorId}",
++                "status=${if (valid.decision == "APPROVE") "APPROVED" else "REJECTED"};reviewedByActorId=${actor.id}",
++                current.correlationId,
++            )
++        }
++    }
++
++    suspend fun cancel(id: Long) {
++        authorizer.require(Permission.PERSONNEL)
++        database.withTransaction {
++            val current = personnel.leaveById(id) ?: error("درخواست مرخصی پیدا نشد.")
++            require(LeaveStatus.fromStoredValue(current.status) == LeaveStatus.SUBMITTED) {
++                "فقط درخواست در انتظار قابل لغو است."
++            }
++            val now = clock()
++            check(
++                personnel.updateLeave(
++                    current.copy(
++                        status = LeaveStatus.CANCELLED.storedValue,
++                        cancelledAtEpochMillis = now,
++                        updatedAtEpochMillis = now,
++                    ),
++                ) == 1,
++            ) { "لغو درخواست انجام نشد." }
++            auditWriter.appendAuthorized(
++                authorizer, "CANCEL", "LEAVE", id, "لغو درخواست مرخصی", now,
++                current.startEpochDay, "لغو درخواست", "status=${current.status}", "status=CANCELLED", current.correlationId,
++            )
++        }
++    }
++
++    fun legacyApproveEntryPointRejected(): Nothing =
++        throw BusinessError.ApprovalRequired("LEAVE_APPROVAL", 1).asViolation()
++}
+--- a/app/src/main/java/ir/sabou/inventory/domain/restaurant/RestaurantModels.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/restaurant/RestaurantModels.kt
+@@ -13,6 +13,13 @@
+ enum class RestaurantCourse { STARTER, MAIN, DESSERT, DRINK }
+ enum class KitchenTicketStatus { NEW, ACCEPTED, PREPARING, READY, SERVED, CANCELLED }
+ 
++object RestaurantReservationWindowPolicy {
++    const val DURATION_MINUTES: Int = 120
++
++    fun endMinuteExclusive(startMinuteOfDay: Int): Int =
++        Math.addExact(startMinuteOfDay, DURATION_MINUTES)
++}
++
+ data class RestaurantHallRecord(val id: Long, val name: String, val sortOrder: Int)
+ 
+ data class RestaurantTableRecord(
+@@ -79,6 +86,9 @@
+     fun validated(): TableReservationDraft {
+         require(tableId > 0 && reservationEpochDay > 0)
+         require(startMinuteOfDay in 0..1439)
++        require(RestaurantReservationWindowPolicy.endMinuteExclusive(startMinuteOfDay) <= 1440) {
++            "رزرو باید در همان روز و داخل بازه عملیاتی ${RestaurantReservationWindowPolicy.DURATION_MINUTES} دقیقه‌ای پایان یابد."
++        }
+         require(guestCount in 1..100)
+         require(guestName.trim().length in 2..120)
+         require(guestPhone.filter(Char::isDigit).length <= 15)
+--- a/app/src/main/java/ir/sabou/inventory/ui/DashboardViewModel.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/DashboardViewModel.kt
+@@ -8,6 +8,7 @@
+ im
