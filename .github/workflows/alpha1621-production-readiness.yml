@@ -1,0 +1,543 @@
+name: Alpha162.1 Production Readiness
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [alpha1621-final-readiness]
+    paths:
+      - ".github/workflows/alpha1621-production-readiness.yml"
+      - "_ci/prepare-alpha1621-final.sh"
+      - "_ci/alpha1621-final-hotfix.patch"
+      - "_ci/alpha1621-migration-proof-hotfix.patch"
+      - "_ci/alpha1621_compilefix.patch"
+      - "_ci/final-source-code.parts/**"
+      - "Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: alpha1621-production-readiness-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FINAL_SOURCE_ARTIFACT: alpha1621-final-source-${{ github.run_id }}
+
+jobs:
+  prepare-source:
+    name: prepare-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download official Room schemas
+        uses: actions/download-artifact@v8
+        with:
+          name: alpha1621-official-room-schemas-45-47
+          path: _official_schemas
+          repository: ahmad101068/sabou-manager-v3-
+          run-id: 31538593586
+          github-token: ${{ github.token }}
+      - name: Prepare exact fail-closed source
+        shell: bash
+        run: bash _ci/prepare-alpha1621-final.sh
+      - name: Pack exact final source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(dirname "$PROJECT_DIR")"
+          name="$(basename "$PROJECT_DIR")"
+          tar -C "$base" -czf alpha1621-final-source.tar.gz "$name"
+          sha256sum alpha1621-final-source.tar.gz | tee alpha1621-final-source.tar.gz.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.FINAL_SOURCE_ARTIFACT }}
+          if-no-files-found: error
+          retention-days: 3
+          path: |
+            alpha1621-final-source.tar.gz
+            alpha1621-final-source.tar.gz.sha256
+
+  static-verification:
+    name: static-verification
+    needs: prepare-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum -c alpha1621-final-source.tar.gz.sha256
+          mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project
+          echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - name: Install verifier dependency
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
+      - name: Run all static/architecture gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          bash scripts/verify-foundation.sh
+          bash scripts/verify-alpha161-professional-erp.sh
+          python3 scripts/verify-alpha161-sql.py
+          python3 scripts/verify-alpha161-ci-logfix.py
+          python3 scripts/verify-hr-payroll-migration.py
+          python3 scripts/verify-runtime-crash-repair.py
+          python3 scripts/verify-alpha162-enterprise-core.py
+          python3 scripts/verify-alpha162-room-schemas.py
+          python3 scripts/verify-alpha162-code-quality.py
+
+  room-schema-gate:
+    name: room-schema-gate
+    needs: prepare-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore and verify official schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum -c alpha1621-final-source.tar.gz.sha256
+          mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project
+          PROJECT_DIR="$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)"
+          cd "$PROJECT_DIR"
+          python3 scripts/verify-alpha162-room-schemas.py
+          test -f app/schemas/ir.sabou.inventory.data.db.AppDatabase/44.json
+          test -f app/schemas/ir.sabou.inventory.data.db.AppDatabase/45.json
+          test -f app/schemas/ir.sabou.inventory.data.db.AppDatabase/46.json
+          test -f app/schemas/ir.sabou.inventory.data.db.AppDatabase/47.json
+
+  compile-debug:
+    name: compile-debug
+    needs: prepare-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Clean and compile debug
+        shell: bash
+        run: cd "$PROJECT_DIR" && chmod +x gradlew && ./gradlew --no-daemon --console=plain clean compileDebugKotlin --stacktrace
+
+  compile-release:
+    name: compile-release
+    needs: prepare-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Compile release Kotlin
+        run: cd "$PROJECT_DIR" && chmod +x gradlew && ./gradlew --no-daemon --console=plain compileReleaseKotlin --stacktrace
+
+  unit-tests:
+    name: unit-tests
+    needs: prepare-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Run debug unit tests
+        run: cd "$PROJECT_DIR" && chmod +x gradlew && ./gradlew --no-daemon --console=plain testDebugUnitTest --stacktrace
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: alpha1621-unit-results-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 14
+          path: project/**/app/build/test-results/testDebugUnitTest/**
+
+  lint:
+    name: lint
+    needs: prepare-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Run lintDebug fail-closed
+        run: cd "$PROJECT_DIR" && chmod +x gradlew && ./gradlew --no-daemon --console=plain lintDebug --stacktrace
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: alpha1621-lint-results-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: project/**/app/build/reports/lint-results-debug.*
+
+  assemble-debug:
+    name: assemble-debug
+    needs: [prepare-source, compile-debug, unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Assemble debug APK
+        run: cd "$PROJECT_DIR" && chmod +x gradlew && ./gradlew --no-daemon --console=plain assembleDebug --stacktrace
+      - name: Stage debug APK
+        run: |
+          set -euo pipefail
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -type f -name '*.apk' | head -n1)"
+          test -s "$APK"
+          mkdir debug-out && cp "$APK" debug-out/sabou-alpha1621-debug.apk
+          sha256sum debug-out/sabou-alpha1621-debug.apk > debug-out/sabou-alpha1621-debug.apk.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sabou-alpha1621-debug-apk
+          if-no-files-found: error
+          retention-days: 30
+          path: debug-out/
+
+  assemble-android-test:
+    name: assemble-android-test
+    needs: [prepare-source, compile-debug]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Assemble AndroidTest APK
+        run: cd "$PROJECT_DIR" && chmod +x gradlew && ./gradlew --no-daemon --console=plain assembleDebugAndroidTest --stacktrace
+      - name: Require AndroidTest APK
+        run: test -n "$(find "$PROJECT_DIR/app/build/outputs/apk/androidTest" -type f -name '*.apk' -print -quit)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sabou-alpha1621-android-test-apk
+          if-no-files-found: error
+          retention-days: 14
+          path: project/**/app/build/outputs/apk/androidTest/**/*.apk
+
+  assemble-release:
+    name: assemble-release
+    needs: [prepare-source, compile-release, unit-tests, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PROD_KEYSTORE_BASE64: ${{ secrets.SABOU_RELEASE_KEYSTORE_BASE64 }}
+      PROD_STORE_PASSWORD: ${{ secrets.SABOU_RELEASE_KEYSTORE_PASSWORD }}
+      PROD_KEY_ALIAS: ${{ secrets.SABOU_RELEASE_KEY_ALIAS }}
+      PROD_KEY_PASSWORD: ${{ secrets.SABOU_RELEASE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Configure secure release signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          values=("$PROD_KEYSTORE_BASE64" "$PROD_STORE_PASSWORD" "$PROD_KEY_ALIAS" "$PROD_KEY_PASSWORD")
+          present=0
+          for value in "${values[@]}"; do [[ -n "$value" ]] && present=$((present+1)); done
+          if [[ "$present" -ne 0 && "$present" -ne 4 ]]; then
+            echo "Production signing secrets are incomplete" >&2
+            exit 1
+          fi
+          if [[ "$present" -eq 4 ]]; then
+            mkdir -p "$RUNNER_TEMP/sabou-signing"
+            echo "$PROD_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/sabou-signing/release.jks"
+            test -s "$RUNNER_TEMP/sabou-signing/release.jks"
+            export CAFE_RESTAURANT_KEYSTORE_PATH="$RUNNER_TEMP/sabou-signing/release.jks"
+            export CAFE_RESTAURANT_KEYSTORE_PASSWORD="$PROD_STORE_PASSWORD"
+            export CAFE_RESTAURANT_KEY_ALIAS="$PROD_KEY_ALIAS"
+            export CAFE_RESTAURANT_KEY_PASSWORD="$PROD_KEY_PASSWORD"
+            echo "SIGNING_TIER=production" >> "$GITHUB_ENV"
+          else
+            mkdir -p "$RUNNER_TEMP/sabou-signing"
+            PASS="$(openssl rand -hex 24)"
+            echo "::add-mask::$PASS"
+            keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/sabou-signing/staging.jks" -storetype JKS -storepass "$PASS" -keypass "$PASS" -alias sabou-staging -keyalg RSA -keysize 3072 -validity 30 -dname "CN=Sabou CI Staging,OU=CI,O=Sabou,L=Berlin,C=DE"
+            export CAFE_RESTAURANT_KEYSTORE_PATH="$RUNNER_TEMP/sabou-signing/staging.jks"
+            export CAFE_RESTAURANT_KEYSTORE_PASSWORD="$PASS"
+            export CAFE_RESTAURANT_KEY_ALIAS="sabou-staging"
+            export CAFE_RESTAURANT_KEY_PASSWORD="$PASS"
+            echo "SIGNING_TIER=staging" >> "$GITHUB_ENV"
+          fi
+          {
+            echo "CAFE_RESTAURANT_KEYSTORE_PATH=$CAFE_RESTAURANT_KEYSTORE_PATH"
+            echo "CAFE_RESTAURANT_KEYSTORE_PASSWORD=$CAFE_RESTAURANT_KEYSTORE_PASSWORD"
+            echo "CAFE_RESTAURANT_KEY_ALIAS=$CAFE_RESTAURANT_KEY_ALIAS"
+            echo "CAFE_RESTAURANT_KEY_PASSWORD=$CAFE_RESTAURANT_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+      - name: Assemble signed non-debuggable release
+        run: cd "$PROJECT_DIR" && chmod +x gradlew && ./gradlew --no-daemon --console=plain assembleRelease --stacktrace
+      - name: Stage and cryptographically verify release
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/release" -type f -name '*.apk' | head -n1)"
+          test -s "$APK"
+          APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -n1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose "$APK"
+          mkdir release-out
+          cp "$APK" release-out/sabou-alpha1621-release.apk
+          sha256sum release-out/sabou-alpha1621-release.apk > release-out/sabou-alpha1621-release.apk.sha256
+          printf '%s\n' "$SIGNING_TIER" > release-out/signing-tier.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sabou-alpha1621-release-apk
+          if-no-files-found: error
+          retention-days: 30
+          path: release-out/
+
+  database-migration-tests:
+    name: database-migration-tests
+    needs: [prepare-source, room-schema-gate, assemble-android-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Run required migration proofs on API 35
+        uses: reactivecircus/android-emulator-runner@v2.37.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            cd "$PROJECT_DIR"
+            chmod +x gradlew
+            ./gradlew --no-daemon --console=plain connectedDebugAndroidTest --stacktrace -Pandroid.testInstrumentationRunnerArguments.class=ir.sabou.inventory.data.db.ProfessionalSalesMigration44To45Test,ir.sabou.inventory.data.db.EnterpriseCoreMigration45To46Test,ir.sabou.inventory.data.db.EnterpriseCompletionMigration46To47Test,ir.sabou.inventory.data.db.EnterpriseCompletionMigration44To47Test
+
+  instrumentation-api23:
+    name: instrumentation-api23
+    needs: [prepare-source, assemble-android-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Full instrumentation suite API 23
+        uses: reactivecircus/android-emulator-runner@v2.37.0
+        with:
+          api-level: 23
+          target: google_apis
+          arch: x86_64
+          profile: Nexus 6
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: cd "$PROJECT_DIR" && chmod +x gradlew && ./gradlew --no-daemon --console=plain connectedDebugAndroidTest --stacktrace
+
+  instrumentation-api35:
+    name: instrumentation-api35
+    needs: [prepare-source, assemble-android-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Full instrumentation suite API 35
+        uses: reactivecircus/android-emulator-runner@v2.37.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: cd "$PROJECT_DIR" && chmod +x gradlew && ./gradlew --no-daemon --console=plain connectedDebugAndroidTest --stacktrace
+
+  compose-e2e:
+    name: compose-e2e
+    needs: [prepare-source, assemble-android-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.FINAL_SOURCE_ARTIFACT }}", path: . }
+      - name: Restore source
+        run: mkdir project && tar -xzf alpha1621-final-source.tar.gz -C project && echo "PROJECT_DIR=$(find project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v6
+        with: { validate-wrappers: true, cache-provider: basic }
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Execute all Compose E2E classes on API 35
+        uses: reactivecircus/android-emulator-runner@v2.37.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            cd "$PROJECT_DIR"
+            chmod +x gradlew
+            ./gradlew --no-daemon --console=plain connectedDebugAndroidTest --stacktrace -Pandroid.testInstrumentationRunnerArguments.class=ir.sabou.inventory.ui.StartupAuthenticationBoundaryComposeTest,ir.sabou.inventory.ui.EnterpriseCoreComposeE2ETest
+
+  release-verification:
+    name: release-verification
+    needs: [assemble-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: sabou-alpha1621-release-apk, path: release }
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - name: Verify package, version, debuggable, signature and SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="release/sabou-alpha1621-release.apk"
+          test -s "$APK"
+          APKANALYZER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -path '*/bin/apkanalyzer' | sort -V | tail -n1)"
+          APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -n1)"
+          test -x "$APKANALYZER" && test -x "$APKSIGNER"
+          test "$("$APKANALYZER" manifest application-id "$APK")" = "ir.sabou.inventory"
+          test "$("$APKANALYZER" manifest version-code "$APK")" = "208"
+          test "$("$APKANALYZER" manifest version-name "$APK")" = "3.2.0-alpha162.1-enterprise-core-completion"
+          test "$("$APKANALYZER" manifest debuggable "$APK")" = "false"
+          "$APKSIGNER" verify --verbose "$APK"
+          sha256sum "$APK" | tee release/release-verification.sha256
+          cat release/signing-tier.txt
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Prove release APK installable on API 35
+        uses: reactivecircus/android-emulator-runner@v2.37.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            adb install -r release/sabou-alpha1621-release.apk
+            adb shell pm path ir.sabou.inventory
+            adb uninstall ir.sabou.inventory
+      - uses: actions/upload-artifact@v7
+        with:
+          name: alpha1621-release-verification-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            release/sabou-alpha1621-release.apk.sha256
+            release/release-verification.sha256
+            release/signing-tier.txt
+
+  final-production-gate:
+    name: final-production-gate
+    if: always()
+    needs:
+      - prepare-source
+      - static-verification
+      - room-schema-gate
+      - compile-debug
+      - compile-release
+      - unit-tests
+      - lint
+      - assemble-debug
+      - assemble-android-test
+      - assemble-release
+      - database-migration-tests
+      - instrumentation-api23
+      - instrumentation-api35
+      - compose-e2e
+      - release-verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every critical gate to be success
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          bad = {name: data.get('result') for name, data in needs.items() if data.get('result') != 'success'}
+          for name, data in sorted(needs.items()):
+              print(f"{name}={data.get('result')}")
+          if bad:
+              print(f"FINAL_PRODUCTION_GATE=FAIL {bad}", file=sys.stderr)
+              raise SystemExit(1)
+          print('FINAL_PRODUCTION_GATE=PASS')
+          PY
