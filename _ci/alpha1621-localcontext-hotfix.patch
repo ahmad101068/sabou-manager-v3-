@@ -1,0 +1,10 @@
+--- a/app/src/main/java/ir/sabou/inventory/ui/SabouApp.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/SabouApp.kt
+@@ -68,6 +68,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
+ import androidx.compose.ui.semantics.contentDescription
+ import androidx.compose.ui.semantics.role
+ import androidx.compose.ui.draw.clip
++import androidx.compose.ui.platform.LocalContext
+ import androidx.compose.ui.graphics.Color
+ import androidx.compose.ui.graphics.Brush
+ import androidx.compose.ui.graphics.vector.ImageVector
