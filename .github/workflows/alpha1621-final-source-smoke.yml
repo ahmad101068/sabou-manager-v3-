@@ -96,7 +96,12 @@ jobs:
           ./gradlew --no-daemon --console=plain lintDebug --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/lintDebug.log"
           status=${PIPESTATUS[0]}
           cd "$GITHUB_WORKSPACE"
-          grep -E "(^|: )[A-Za-z0-9_./-]+:[0-9]+: (Error|Warning):|^[^[:space:]].*: Error:|^Lint found [0-9]+ errors" lintDebug.log > lint-errors.txt || :
+          grep -E "(^|: )[A-Za-z0-9_./-]+:[0-9]+: (Error|Warning):|^[^[:space:]].*: Error:|^Lint found [0-9]+ errors" lintDebug.log > lint-errors.txt
+          grep_status=$?
+          if [ "$grep_status" -gt 1 ]; then
+            echo "Failed to parse lint diagnostics" >&2
+            exit "$grep_status"
+          fi
           if [ -s lint-errors.txt ]; then
             echo "--- LINT DIAGNOSTICS ---"
             cat lint-errors.txt
