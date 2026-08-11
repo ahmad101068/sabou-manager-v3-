@@ -1,64 +1,139 @@
 name: Build Sabou Manager APK
 
 on:
+  workflow_dispatch:
+    inputs:
+      source_zip:
+        description: "Source ZIP filename"
+        required: false
+        default: "Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip"
+        type: string
   push:
     branches:
       - main
-  workflow_dispatch:
+    paths:
+      - "Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip"
+      - "_ci/alpha1621_compilefix.patch"
+      - ".github/workflows/blank.yml"
 
 permissions:
   contents: read
 
+concurrency:
+  group: sabou-build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  build-apk:
+    name: Compile, test and build debug APK
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      DEFAULT_SOURCE_ZIP: Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Find source ZIP
-        id: zip
+      - name: Resolve source ZIP
+        id: source
         shell: bash
         run: |
-          ZIP=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
-          if [ -z "$ZIP" ]; then
-            echo "No ZIP file found in repository."
-            exit 1
-          fi
-          echo "zip=$ZIP" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          INPUT_ZIP="${{ github.event.inputs.source_zip || '' }}"
+          ZIP="${INPUT_ZIP:-$DEFAULT_SOURCE_ZIP}"
+          test -f "$ZIP" || { echo "Source ZIP not found: $ZIP"; exit 1; }
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "Using source ZIP: $ZIP"
 
-      - name: Extract project
-        run: |
-          unzip -q "${{ steps.zip.outputs.zip }}" -d project
-
-      - name: Find Android project
+      - name: Extract source and apply verified compile fix
         id: project
         shell: bash
         run: |
-          DIR=$(find project -name gradlew | head -n 1 | xargs dirname)
-          echo "dir=$DIR" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          rm -rf _apk_project
+          mkdir -p _apk_project
+          unzip -q "${{ steps.source.outputs.zip }}" -d _apk_project
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+          PROJECT_DIR="$(find _apk_project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n 1)"
+          test -n "$PROJECT_DIR" || { echo "Android project not found inside source ZIP"; exit 1; }
+          test -f "$PROJECT_DIR/gradlew" || { echo "gradlew not found in $PROJECT_DIR"; exit 1; }
+
+          cd "$PROJECT_DIR"
+          patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621_compilefix.patch"
+          chmod +x gradlew
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
-          cache: gradle
+          java-version: "17"
 
-      - name: Make Gradle executable
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: chmod +x gradlew
-
-      - name: Build APK
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: ./gradlew assembleDebug --stacktrace
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        if: success()
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@v6
         with:
-          name: SabouManager-debug-apk
+          validate-wrappers: true
+          cache-provider: basic
+
+      - name: Compile debug Kotlin
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain compileDebugKotlin --stacktrace \
+            2>&1 | tee "$GITHUB_WORKSPACE/compileDebugKotlin.log"
+
+      - name: Run debug unit tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain testDebugUnitTest --stacktrace \
+            2>&1 | tee "$GITHUB_WORKSPACE/testDebugUnitTest.log"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain assembleDebug --stacktrace \
+            2>&1 | tee "$GITHUB_WORKSPACE/assembleDebug.log"
+
+      - name: Verify and stage APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          test -n "$APK" || { echo "assembleDebug finished but no APK was found"; exit 1; }
+
+          mkdir -p _apk_output
+          cp "$APK" _apk_output/Sabou-Alpha162.1.1-debug.apk
+          sha256sum _apk_output/Sabou-Alpha162.1.1-debug.apk | tee _apk_output/Sabou-Alpha162.1.1-debug.apk.sha256
+          ls -lh _apk_output/Sabou-Alpha162.1.1-debug.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sabou-Alpha162.1.1-debug-apk
+          if-no-files-found: error
+          retention-days: 30
           path: |
-            ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/*.apk
-            ${{ steps.project.outputs.dir }}/app/build/outputs/apk/**/*.apk
+            _apk_output/Sabou-Alpha162.1.1-debug.apk
+            _apk_output/Sabou-Alpha162.1.1-debug.apk.sha256
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sabou-Alpha162.1.1-build-logs-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            compileDebugKotlin.log
+            testDebugUnitTest.log
+            assembleDebug.log
