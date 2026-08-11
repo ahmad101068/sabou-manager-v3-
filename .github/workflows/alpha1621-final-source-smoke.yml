@@ -1,0 +1,74 @@
+name: Alpha162.1 Final Source Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [alpha1621-final-readiness]
+    paths:
+      - ".github/workflows/alpha1621-final-source-smoke.yml"
+      - "_ci/prepare-alpha1621-final.sh"
+      - "_ci/final-source-patch/**"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: alpha1621-final-source-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  final-source-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download official Room schemas from verified KSP run
+        uses: actions/download-artifact@v5
+        with:
+          name: alpha1621-official-room-schemas-45-47
+          path: _official_schemas
+          repository: ahmad101068/sabou-manager-v3-
+          run-id: 31538593586
+          github-token: ${{ github.token }}
+      - name: Prepare exact final source
+        shell: bash
+        run: bash _ci/prepare-alpha1621-final.sh
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+          cache-provider: basic
+      - name: Install verifier dependency
+        shell: bash
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep; fi
+      - name: Static and architecture gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          bash scripts/verify-foundation.sh
+          bash scripts/verify-alpha161-professional-erp.sh
+          python3 scripts/verify-alpha161-sql.py
+          python3 scripts/verify-alpha161-ci-logfix.py
+          python3 scripts/verify-hr-payroll-migration.py
+          python3 scripts/verify-runtime-crash-repair.py
+          python3 scripts/verify-alpha162-enterprise-core.py
+          python3 scripts/verify-alpha162-room-schemas.py
+          python3 scripts/verify-alpha162-code-quality.py
+      - name: Compile debug and release
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain clean compileDebugKotlin compileReleaseKotlin --stacktrace
+      - name: Unit, lint, and assemble proof
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest assembleRelease --stacktrace
