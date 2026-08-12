@@ -1,0 +1,193 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 0eeb99d..867c27d 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -106,6 +106,7 @@ dependencies {
+     androidTestImplementation(libs.androidx.test.core)
+     androidTestImplementation(libs.androidx.test.junit)
+     androidTestImplementation(libs.androidx.sqlite.framework)
++    androidTestImplementation(platform(libs.androidx.compose.bom))
+     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+     debugImplementation(libs.androidx.compose.ui.tooling)
+     debugImplementation(libs.androidx.compose.ui.test.manifest)
+diff --git a/app/src/test/java/ir/sabou/inventory/domain/personnel/AttendanceCalculationEngineTest.kt b/app/src/test/java/ir/sabou/inventory/domain/personnel/AttendanceCalculationEngineTest.kt
+new file mode 100644
+index 0000000..1b08f02
+--- /dev/null
++++ b/app/src/test/java/ir/sabou/inventory/domain/personnel/AttendanceCalculationEngineTest.kt
+@@ -0,0 +1,124 @@
++package ir.sabou.inventory.domain.personnel
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class AttendanceCalculationEngineTest {
++    private val day = 20_000L
++    private val dayMillis = 86_400_000L
++    private val minuteMillis = 60_000L
++
++    private fun epoch(dayOffset: Long, minute: Int): Long =
++        (day + dayOffset) * dayMillis + minute * minuteMillis
++
++    @Test
++    fun `night shift crosses midnight and keeps business day`() {
++        val result = AttendanceCalculationEngine.calculate(
++            businessEpochDay = day,
++            checkInMinute = 18 * 60,
++            checkOutMinute = 2 * 60,
++            shift = AttendanceCalculationEngine.ShiftInput(
++                plannedStartEpochMillis = epoch(0, 18 * 60),
++                plannedEndEpochMillis = epoch(1, 2 * 60),
++                breakMinutes = 30,
++                graceInMinutes = 0,
++                graceOutMinutes = 0,
++                overtimeEligible = true,
++                overtimeRequiresApproval = false,
++            ),
++        )
++
++        assertEquals(450, result.workedMinutes)
++        assertEquals(epoch(1, 2 * 60), result.actualCheckOutEpochMillis)
++        assertEquals(0, result.rawLateMinutes)
++        assertEquals(0, result.rawEarlyLeaveMinutes)
++    }
++
++    @Test
++    fun `late raw and payable honor grace independently`() {
++        val result = AttendanceCalculationEngine.calculate(
++            businessEpochDay = day,
++            checkInMinute = 18 * 60 + 17,
++            checkOutMinute = 2 * 60,
++            shift = AttendanceCalculationEngine.ShiftInput(
++                plannedStartEpochMillis = epoch(0, 18 * 60),
++                plannedEndEpochMillis = epoch(1, 2 * 60),
++                breakMinutes = 0,
++                graceInMinutes = 10,
++                graceOutMinutes = 0,
++                overtimeEligible = true,
++                overtimeRequiresApproval = true,
++            ),
++        )
++
++        assertEquals(17, result.rawLateMinutes)
++        assertEquals(7, result.payableLateMinutes)
++    }
++
++    @Test
++    fun `early leave is independent and grace aware`() {
++        val result = AttendanceCalculationEngine.calculate(
++            businessEpochDay = day,
++            checkInMinute = 18 * 60,
++            checkOutMinute = 1 * 60 + 30,
++            shift = AttendanceCalculationEngine.ShiftInput(
++                plannedStartEpochMillis = epoch(0, 18 * 60),
++                plannedEndEpochMillis = epoch(1, 2 * 60),
++                breakMinutes = 0,
++                graceInMinutes = 0,
++                graceOutMinutes = 5,
++                overtimeEligible = true,
++                overtimeRequiresApproval = true,
++            ),
++        )
++
++        assertEquals(30, result.rawEarlyLeaveMinutes)
++        assertEquals(25, result.payableEarlyLeaveMinutes)
++        assertEquals(0, result.rawOvertimeMinutes)
++    }
++
++    @Test
++    fun `payroll receives only approved overtime when approval is required`() {
++        val result = AttendanceCalculationEngine.calculate(
++            businessEpochDay = day,
++            checkInMinute = 18 * 60,
++            checkOutMinute = 3 * 60 + 32,
++            shift = AttendanceCalculationEngine.ShiftInput(
++                plannedStartEpochMillis = epoch(0, 18 * 60),
++                plannedEndEpochMillis = epoch(1, 2 * 60),
++                breakMinutes = 0,
++                graceInMinutes = 0,
++                graceOutMinutes = 0,
++                overtimeEligible = true,
++                overtimeRequiresApproval = true,
++            ),
++            approvedOvertimeMinutes = 60,
++        )
++
++        assertEquals(92, result.rawOvertimeMinutes)
++        assertEquals(60, result.approvedOvertimeMinutes)
++        assertEquals(60, result.payrollOvertimeMinutes)
++    }
++
++    @Test
++    fun `unapproved overtime is zero for payroll`() {
++        val result = AttendanceCalculationEngine.calculate(
++            businessEpochDay = day,
++            checkInMinute = 18 * 60,
++            checkOutMinute = 3 * 60,
++            shift = AttendanceCalculationEngine.ShiftInput(
++                plannedStartEpochMillis = epoch(0, 18 * 60),
++                plannedEndEpochMillis = epoch(1, 2 * 60),
++                breakMinutes = 0,
++                graceInMinutes = 0,
++                graceOutMinutes = 0,
++                overtimeEligible = true,
++                overtimeRequiresApproval = true,
++            ),
++        )
++
++        assertEquals(60, result.rawOvertimeMinutes)
++        assertEquals(0, result.approvedOvertimeMinutes)
++        assertEquals(0, result.payrollOvertimeMinutes)
++    }
++}
+diff --git a/app/src/test/java/ir/sabou/inventory/domain/personnel/WorkforceSchedulingModelsTest.kt b/app/src/test/java/ir/sabou/inventory/domain/personnel/WorkforceSchedulingModelsTest.kt
+new file mode 100644
+index 0000000..5414144
+--- /dev/null
++++ b/app/src/test/java/ir/sabou/inventory/domain/personnel/WorkforceSchedulingModelsTest.kt
+@@ -0,0 +1,45 @@
++package ir.sabou.inventory.domain.personnel
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class WorkforceSchedulingModelsTest {
++    @Test
++    fun `night shift derives cross midnight duration`() {
++        val shift = ShiftTemplateDraft(
++            code = "night-a",
++            name = "شب A",
++            category = ShiftCategory.NIGHT,
++            startMinute = 18 * 60,
++            endMinute = 2 * 60,
++            breakMinutes = 30,
++        ).validated()
++
++        assertEquals("NIGHT-A", shift.code)
++        assertTrue(shift.crossesMidnight)
++        assertEquals(450, shift.plannedWorkMinutes)
++    }
++
++    @Test
++    fun `weekly schedule requires unique days and selected shift on workday`() {
++        val schedule = WorkScheduleDraft(
++            code = "kitchen-night",
++            name = "الگوی آشپزخانه شب",
++            patternType = WorkSchedulePatternType.WEEKLY_FIXED,
++            cycleLengthDays = 7,
++            effectiveFromEpochDay = 20_000,
++            days = (0..6).map { sequence ->
++                WorkScheduleDayRule(
++                    sequenceDay = sequence,
++                    dayOfWeek = sequence + 1,
++                    shiftTemplateId = if (sequence == 2) null else 10L,
++                    isOffDay = sequence == 2,
++                )
++            },
++        ).validated()
++
++        assertEquals(7, schedule.days.size)
++        assertTrue(schedule.days[2].isOffDay)
++    }
++}
