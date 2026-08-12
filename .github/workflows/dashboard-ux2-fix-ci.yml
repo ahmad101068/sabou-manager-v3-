@@ -9,6 +9,8 @@ on:
       - "_ci/apply-dashboard-ux2-fix2.py"
       - "_ci/apply-dashboard-ux2-fix3.py"
       - "_ci/apply-dashboard-ux2-fix4.py"
+      - "_ci/apply-dashboard-ux2-fix5.py"
+      - "_ci/apply-dashboard-ux2-fix6.py"
       - ".github/workflows/dashboard-ux2-fix-ci.yml"
 
 permissions:
@@ -55,6 +57,8 @@ jobs:
           python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix2.py"
           python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix3.py"
           python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix4.py"
+          python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix5.py"
+          python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix6.py"
           chmod +x gradlew
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
