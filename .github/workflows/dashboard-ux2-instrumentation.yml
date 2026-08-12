@@ -6,6 +6,7 @@ on:
     branches:
       - dashboard-ux2-fix1-ci
     paths:
+      - "_ci/apply-dashboard-ux2-fix3.py"
       - ".github/workflows/dashboard-ux2-instrumentation.yml"
 
 permissions:
@@ -57,6 +58,7 @@ jobs:
           patch --forward --batch -p1 < "$RUNNER_TEMP/dashboard-ux2.patch"
           python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix1.py"
           python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix2.py"
+          python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix3.py"
           chmod +x gradlew
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
