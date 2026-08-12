@@ -18,6 +18,7 @@ on:
       - "_ci/personnel21.patch.gz.b64.*"
       - "_ci/personnel21-fix2.patch"
       - "_ci/personnel21-fix3.patch"
+      - "_ci/personnel21-fix4.patch"
       - ".github/workflows/blank.yml"
 
 permissions:
@@ -31,7 +32,7 @@ jobs:
   build-apk:
     name: Compile, test and build Personnel 2.1
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     env:
       DEFAULT_SOURCE_ZIP: Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip
@@ -66,6 +67,7 @@ jobs:
           cat "$GITHUB_WORKSPACE"/_ci/personnel21.patch.gz.b64.* | base64 --decode --ignore-garbage | gzip -dc | patch --forward --batch -p1
           patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/personnel21-fix2.patch"
           patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/personnel21-fix3.patch"
+          patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/personnel21-fix4.patch"
           chmod +x gradlew
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
@@ -109,7 +111,25 @@ jobs:
         run: |
           set -o pipefail
           cd "$PROJECT_DIR"
+          set +e
           ./gradlew --no-daemon --console=plain lintDebug --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/lintDebug.log"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            REPORT="app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt"
+            if [ -f "$REPORT" ]; then
+              echo "===== FULL LINT REPORT ====="
+              cat "$REPORT"
+            fi
+            exit "$STATUS"
+          fi
+
+      - name: Compile release Kotlin
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain compileReleaseKotlin --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/compileReleaseKotlin.log"
 
       - name: Assemble debug APK
         shell: bash
@@ -125,26 +145,39 @@ jobs:
           cd "$PROJECT_DIR"
           ./gradlew --no-daemon --console=plain assembleDebugAndroidTest --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/assembleDebugAndroidTest.log"
 
-      - name: Verify and stage APK
+      - name: Assemble release APK
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain assembleRelease --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/assembleRelease.log"
+
+      - name: Verify and stage APKs
         id: apk
         shell: bash
         run: |
           set -euo pipefail
-          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -maxdepth 1 -type f -name '*.apk' | head -n 1)"
-          test -n "$APK" || { echo "assembleDebug finished but no APK was found"; exit 1; }
+          DEBUG_APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          RELEASE_APK="$(find "$PROJECT_DIR/app/build/outputs/apk/release" -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          test -n "$DEBUG_APK" || { echo "assembleDebug finished but no APK was found"; exit 1; }
+          test -n "$RELEASE_APK" || { echo "assembleRelease finished but no APK was found"; exit 1; }
           mkdir -p _apk_output
-          cp "$APK" _apk_output/Sabou-Personnel-2.1-debug.apk
+          cp "$DEBUG_APK" _apk_output/Sabou-Personnel-2.1-debug.apk
+          cp "$RELEASE_APK" _apk_output/Sabou-Personnel-2.1-release.apk
           sha256sum _apk_output/Sabou-Personnel-2.1-debug.apk | tee _apk_output/Sabou-Personnel-2.1-debug.apk.sha256
+          sha256sum _apk_output/Sabou-Personnel-2.1-release.apk | tee _apk_output/Sabou-Personnel-2.1-release.apk.sha256
 
-      - name: Upload APK artifact
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Sabou-Personnel-2.1-debug-apk
+          name: Sabou-Personnel-2.1-apks
           if-no-files-found: error
           retention-days: 30
           path: |
             _apk_output/Sabou-Personnel-2.1-debug.apk
             _apk_output/Sabou-Personnel-2.1-debug.apk.sha256
+            _apk_output/Sabou-Personnel-2.1-release.apk
+            _apk_output/Sabou-Personnel-2.1-release.apk.sha256
 
       - name: Upload build logs
         if: always()
@@ -158,5 +191,7 @@ jobs:
             compileDebugKotlin.log
             testDebugUnitTest.log
             lintDebug.log
+            compileReleaseKotlin.log
             assembleDebug.log
             assembleDebugAndroidTest.log
+            assembleRelease.log
