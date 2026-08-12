@@ -1,11 +1,11 @@
-name: Dashboard UX2 Fix12 Final Device Gates
+name: Dashboard UX2 Fix13 Final Device Gates
 
 on:
   push:
     branches:
       - dashboard-ux2-fix1-ci
     paths:
-      - '_ci/apply-dashboard-ux2-fix12.py'
+      - '_ci/apply-dashboard-ux2-fix13.py'
       - '.github/workflows/dashboard-ux2-fix12-final-device.yml'
   workflow_dispatch:
 
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: dashboard-ux2-fix12-final-device-${{ github.ref }}
+  group: dashboard-ux2-final-device-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -21,7 +21,7 @@ env:
 
 jobs:
   final-device-gates:
-    name: Fix12 connected tests API ${{ matrix.api_level }}
+    name: Fix13 connected tests API ${{ matrix.api_level }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Reconstruct source through fix12
+      - name: Reconstruct source through fix13
         shell: bash
         run: |
           set -euo pipefail
@@ -52,7 +52,7 @@ jobs:
           cat "$GITHUB_WORKSPACE"/_ci/dashboard-ux2-v2.patch.gz.b64.* | base64 --decode --ignore-garbage > "$RUNNER_TEMP/dashboard-ux2.patch.gz"
           gzip -t "$RUNNER_TEMP/dashboard-ux2.patch.gz"
           gzip -dc "$RUNNER_TEMP/dashboard-ux2.patch.gz" | patch --forward --batch -p1
-          for n in 1 2 3 4 5 6 7 8 9 10 11 12; do
+          for n in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
             python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix${n}.py"
           done
           chmod +x gradlew
@@ -79,7 +79,7 @@ jobs:
         run: |
           set -o pipefail
           cd "$PROJECT_DIR"
-          ./gradlew --no-daemon --console=plain assembleDebugAndroidTest --stacktrace |& tee "$GITHUB_WORKSPACE/_ci/logs/assembleDebugAndroidTest-fix12-api${{ matrix.api_level }}.log"
+          ./gradlew --no-daemon --console=plain assembleDebugAndroidTest --stacktrace |& tee "$GITHUB_WORKSPACE/_ci/logs/assembleDebugAndroidTest-fix13-api${{ matrix.api_level }}.log"
 
       - name: Enable KVM access
         shell: bash
@@ -100,16 +100,16 @@ jobs:
           script: >-
             bash -lc 'set -o pipefail; cd "$PROJECT_DIR"; set +e;
             ./gradlew --no-daemon --console=plain connectedDebugAndroidTest --stacktrace 2>&1 |
-            tee "$GITHUB_WORKSPACE/_ci/logs/connectedDebugAndroidTest-fix12-api${{ matrix.api_level }}.log";
+            tee "$GITHUB_WORKSPACE/_ci/logs/connectedDebugAndroidTest-fix13-api${{ matrix.api_level }}.log";
             STATUS=${PIPESTATUS[0]};
-            adb logcat -d > "$GITHUB_WORKSPACE/_ci/logs/logcat-fix12-api${{ matrix.api_level }}.txt" 2>&1 || true;
+            adb logcat -d > "$GITHUB_WORKSPACE/_ci/logs/logcat-fix13-api${{ matrix.api_level }}.txt" 2>&1 || true;
             exit $STATUS'
 
       - name: Upload final device evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Sabou-fix12-final-device-api${{ matrix.api_level }}-${{ github.run_id }}
+          name: Sabou-fix13-final-device-api${{ matrix.api_level }}-${{ github.run_id }}
           retention-days: 30
           if-no-files-found: warn
           path: |
