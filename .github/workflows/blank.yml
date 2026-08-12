@@ -12,6 +12,7 @@ on:
     branches:
       - main
       - personnel21-ci
+      - dashboard-ux2-ci
     paths:
       - "Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip"
       - "_ci/alpha1621_compilefix.patch"
@@ -19,6 +20,8 @@ on:
       - "_ci/personnel21-fix2.patch"
       - "_ci/personnel21-fix3.patch"
       - "_ci/personnel21-fix4.patch"
+      - "_ci/personnel21-fix5.patch"
+      - "_ci/dashboard-ux2.patch.gz.b64.*"
       - ".github/workflows/blank.yml"
 
 permissions:
@@ -30,7 +33,7 @@ concurrency:
 
 jobs:
   build-apk:
-    name: Compile, test and build Personnel 2.1
+    name: Compile, test and build Dashboard UX 2.0
     runs-on: ubuntu-latest
     timeout-minutes: 75
 
@@ -68,10 +71,12 @@ jobs:
           patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/personnel21-fix2.patch"
           patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/personnel21-fix3.patch"
           patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/personnel21-fix4.patch"
+          patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/personnel21-fix5.patch"
+          cat "$GITHUB_WORKSPACE"/_ci/dashboard-ux2.patch.gz.b64.* | base64 --decode --ignore-garbage | gzip -dc | patch --forward --batch -p1
           chmod +x gradlew
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Run Personnel static gates
+      - name: Run static quality gates
         shell: bash
         run: |
           set -euo pipefail
@@ -79,6 +84,7 @@ jobs:
           python3 scripts/verify-alpha162-code-quality.py | tee "$GITHUB_WORKSPACE/static-code-quality.log"
           python3 scripts/verify-alpha162-enterprise-core.py | tee "$GITHUB_WORKSPACE/static-enterprise-core.log"
           python3 scripts/verify-hr-payroll-migration.py | tee "$GITHUB_WORKSPACE/static-hr-payroll-migration.log"
+          python3 scripts/verify-dashboard-ux2.py | tee "$GITHUB_WORKSPACE/static-dashboard-ux2.log"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -162,28 +168,28 @@ jobs:
           test -n "$DEBUG_APK" || { echo "assembleDebug finished but no APK was found"; exit 1; }
           test -n "$RELEASE_APK" || { echo "assembleRelease finished but no APK was found"; exit 1; }
           mkdir -p _apk_output
-          cp "$DEBUG_APK" _apk_output/Sabou-Personnel-2.1-debug.apk
-          cp "$RELEASE_APK" _apk_output/Sabou-Personnel-2.1-release.apk
-          sha256sum _apk_output/Sabou-Personnel-2.1-debug.apk | tee _apk_output/Sabou-Personnel-2.1-debug.apk.sha256
-          sha256sum _apk_output/Sabou-Personnel-2.1-release.apk | tee _apk_output/Sabou-Personnel-2.1-release.apk.sha256
+          cp "$DEBUG_APK" _apk_output/Sabou-Dashboard-UX2-debug.apk
+          cp "$RELEASE_APK" _apk_output/Sabou-Dashboard-UX2-release.apk
+          sha256sum _apk_output/Sabou-Dashboard-UX2-debug.apk | tee _apk_output/Sabou-Dashboard-UX2-debug.apk.sha256
+          sha256sum _apk_output/Sabou-Dashboard-UX2-release.apk | tee _apk_output/Sabou-Dashboard-UX2-release.apk.sha256
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Sabou-Personnel-2.1-apks
+          name: Sabou-Dashboard-UX2-apks
           if-no-files-found: error
           retention-days: 30
           path: |
-            _apk_output/Sabou-Personnel-2.1-debug.apk
-            _apk_output/Sabou-Personnel-2.1-debug.apk.sha256
-            _apk_output/Sabou-Personnel-2.1-release.apk
-            _apk_output/Sabou-Personnel-2.1-release.apk.sha256
+            _apk_output/Sabou-Dashboard-UX2-debug.apk
+            _apk_output/Sabou-Dashboard-UX2-debug.apk.sha256
+            _apk_output/Sabou-Dashboard-UX2-release.apk
+            _apk_output/Sabou-Dashboard-UX2-release.apk.sha256
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Sabou-Personnel-2.1-build-logs-${{ github.run_id }}
+          name: Sabou-Dashboard-UX2-build-logs-${{ github.run_id }}
           if-no-files-found: warn
           retention-days: 14
           path: |
