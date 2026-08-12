@@ -1,0 +1,105 @@
+name: Dashboard UX2 Fix17 Final Device Gates
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dashboard-ux2-fix1-ci]
+    paths:
+      - '_ci/apply-dashboard-ux2-fix17.py'
+      - '.github/workflows/dashboard-ux2-fix17-final-device.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-ux2-fix17-final-device-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_ZIP: Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip
+
+jobs:
+  final-device-gates:
+    name: Fix17 connected tests API ${{ matrix.api_level }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api_level: 23
+            profile: Nexus 6
+          - api_level: 35
+            profile: pixel_5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Reconstruct source through fix17
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _project && mkdir -p _project _ci/logs
+          unzip -q "$SOURCE_ZIP" -d _project
+          PROJECT_DIR="$(find _project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n 1)"
+          test -n "$PROJECT_DIR"
+          cd "$PROJECT_DIR"
+          patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621_compilefix.patch"
+          cat "$GITHUB_WORKSPACE"/_ci/personnel21.patch.gz.b64.* | base64 --decode --ignore-garbage | gzip -dc | patch --forward --batch -p1
+          for p in personnel21-fix2.patch personnel21-fix3.patch personnel21-fix4.patch personnel21-fix5.patch; do patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/$p"; done
+          cat "$GITHUB_WORKSPACE"/_ci/dashboard-ux2-v2.patch.gz.b64.* | base64 --decode --ignore-garbage > "$RUNNER_TEMP/dashboard-ux2.patch.gz"
+          gzip -t "$RUNNER_TEMP/dashboard-ux2.patch.gz"
+          gzip -dc "$RUNNER_TEMP/dashboard-ux2.patch.gz" | patch --forward --batch -p1
+          for n in $(seq 1 17); do python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix${n}.py"; done
+          chmod +x gradlew
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+          cache-read-only: true
+      - name: Prewarm Gradle
+        shell: bash
+        run: |
+          chmod +x _ci/prewarm-gradle.sh
+          _ci/prewarm-gradle.sh
+      - name: Compile AndroidTest APK
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain assembleDebugAndroidTest --stacktrace |& tee "$GITHUB_WORKSPACE/_ci/logs/assembleDebugAndroidTest-fix17-api${{ matrix.api_level }}.log"
+      - name: Enable KVM access
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run connectedDebugAndroidTest API ${{ matrix.api_level }}
+        uses: reactivecircus/android-emulator-runner@v2.37.0
+        with:
+          api-level: ${{ matrix.api_level }}
+          target: google_apis
+          arch: x86_64
+          profile: ${{ matrix.profile }}
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: >-
+            bash -lc 'set -o pipefail; cd "$PROJECT_DIR"; set +e;
+            ./gradlew --no-daemon --console=plain connectedDebugAndroidTest --stacktrace 2>&1 |
+            tee "$GITHUB_WORKSPACE/_ci/logs/connectedDebugAndroidTest-fix17-api${{ matrix.api_level }}.log";
+            STATUS=${PIPESTATUS[0]};
+            adb logcat -d > "$GITHUB_WORKSPACE/_ci/logs/logcat-fix17-api${{ matrix.api_level }}.txt" 2>&1 || true;
+            exit $STATUS'
+      - name: Upload final device evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sabou-fix17-final-device-api${{ matrix.api_level }}-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            _ci/logs/
+            _project/**/app/build/reports/androidTests/
+            _project/**/app/build/outputs/androidTest-results/
+            _project/**/app/schemas/
