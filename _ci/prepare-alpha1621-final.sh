@@ -9,6 +9,7 @@ EXPECTED_MIGRATION_HOTFIX_GIT_BLOB="17af7ce60cef17acf107ac2dc1f4ce3b893d5597"
 EXPECTED_LINT_HOTFIX_GIT_BLOB="15f13889ba1685e395adce69c93e28984057427e"
 EXPECTED_LOCALCONTEXT_HOTFIX_GIT_BLOB="1099fe30815d63a6ecafdc3c66b6c9a5538021e9"
 EXPECTED_ANDROIDTEST_HOTFIX_GIT_BLOB="67309cff8890ab0bb208e1a5a159a324115283cf"
+EXPECTED_TEST_ASSET_CONTEXT_HOTFIX_GIT_BLOB="2da5d2a8d46bdc70f821964f7315c8c4c09f987b"
 SCHEMA_DIR_NAME="ir.sabou.inventory.data.db.AppDatabase"
 
 cd "$GITHUB_WORKSPACE"
@@ -19,6 +20,8 @@ test -f _ci/alpha1621-migration-proof-hotfix.patch || { echo "Missing direct mig
 test -f _ci/alpha1621-lint-api23-hotfix.patch || { echo "Missing API23-safe lint root-fix"; exit 1; }
 test -f _ci/alpha1621-localcontext-hotfix.patch || { echo "Missing LocalContext compile hotfix"; exit 1; }
 test -f _ci/alpha1621-androidtest-compile-hotfix.patch || { echo "Missing AndroidTest compile hotfix"; exit 1; }
+test -f _ci/alpha1621-test-assets-context-hotfix.patch || { echo "Missing migration schema asset-context hotfix"; exit 1; }
+
 ACTUAL_HOTFIX_GIT_BLOB="$(git hash-object _ci/alpha1621-final-hotfix.patch)"
 test "$ACTUAL_HOTFIX_GIT_BLOB" = "$EXPECTED_HOTFIX_GIT_BLOB" || {
   echo "Final readiness hotfix identity mismatch: expected=$EXPECTED_HOTFIX_GIT_BLOB actual=$ACTUAL_HOTFIX_GIT_BLOB" >&2
@@ -44,11 +47,17 @@ test "$ACTUAL_ANDROIDTEST_HOTFIX_GIT_BLOB" = "$EXPECTED_ANDROIDTEST_HOTFIX_GIT_B
   echo "AndroidTest compile hotfix identity mismatch: expected=$EXPECTED_ANDROIDTEST_HOTFIX_GIT_BLOB actual=$ACTUAL_ANDROIDTEST_HOTFIX_GIT_BLOB" >&2
   exit 1
 }
+ACTUAL_TEST_ASSET_CONTEXT_HOTFIX_GIT_BLOB="$(git hash-object _ci/alpha1621-test-assets-context-hotfix.patch)"
+test "$ACTUAL_TEST_ASSET_CONTEXT_HOTFIX_GIT_BLOB" = "$EXPECTED_TEST_ASSET_CONTEXT_HOTFIX_GIT_BLOB" || {
+  echo "Migration schema asset-context hotfix identity mismatch: expected=$EXPECTED_TEST_ASSET_CONTEXT_HOTFIX_GIT_BLOB actual=$ACTUAL_TEST_ASSET_CONTEXT_HOTFIX_GIT_BLOB" >&2
+  exit 1
+}
 echo "FINAL_HOTFIX_GIT_BLOB=$ACTUAL_HOTFIX_GIT_BLOB"
 echo "MIGRATION_HOTFIX_GIT_BLOB=$ACTUAL_MIGRATION_HOTFIX_GIT_BLOB"
 echo "LINT_HOTFIX_GIT_BLOB=$ACTUAL_LINT_HOTFIX_GIT_BLOB"
 echo "LOCALCONTEXT_HOTFIX_GIT_BLOB=$ACTUAL_LOCALCONTEXT_HOTFIX_GIT_BLOB"
 echo "ANDROIDTEST_HOTFIX_GIT_BLOB=$ACTUAL_ANDROIDTEST_HOTFIX_GIT_BLOB"
+echo "TEST_ASSET_CONTEXT_HOTFIX_GIT_BLOB=$ACTUAL_TEST_ASSET_CONTEXT_HOTFIX_GIT_BLOB"
 
 cat > /tmp/final-binary-parts.sha256 <<'EOF'
 ae648ae7e41c8e808fe1f6a94e315c68ba04236e4424ba74155a7ddf578546f3  _ci/final-source-code.parts/part-00.bin
@@ -78,6 +87,7 @@ patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-migration-proof-h
 patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-lint-api23-hotfix.patch"
 patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-localcontext-hotfix.patch"
 patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-androidtest-compile-hotfix.patch"
+patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621-test-assets-context-hotfix.patch"
 
 OFFICIAL_SCHEMA_ROOT="$GITHUB_WORKSPACE/_official_schemas/$SCHEMA_DIR_NAME"
 test -f "$OFFICIAL_SCHEMA_ROOT/45.json"
