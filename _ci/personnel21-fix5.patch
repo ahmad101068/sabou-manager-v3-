@@ -1,0 +1,31 @@
+From d67da1cf2b03da75e5ac1d03a81cc7c04dd652c1 Mon Sep 17 00:00:00 2001
+From: OpenAI Engineering <engineering@openai.local>
+Date: Wed, 12 Aug 2026 15:39:20 +0000
+Subject: [PATCH] Align enterprise verifier with Personnel 2.1 engineering
+ version
+
+
+diff --git a/scripts/verify-alpha162-enterprise-core.py b/scripts/verify-alpha162-enterprise-core.py
+index ec186f6..e211874 100755
+--- a/scripts/verify-alpha162-enterprise-core.py
++++ b/scripts/verify-alpha162-enterprise-core.py
+@@ -306,7 +306,7 @@ require("fun branch(" in dashboard_vm and "fun warehouse(" in dashboard_vm, "Das
+ dashboard_dao = text("app/src/main/java/ir/sabou/inventory/data/db/DashboardAnalyticsDao.kt")
+ require(":branchName" in dashboard_dao and ":warehouseLocationId" in dashboard_dao, "Dashboard DAO does not apply branch/warehouse filters")
+ 
+-# Alpha162.1 completion gates: authentication lifetime, migration chain, real application wiring, reversal, CRM, branch scope and release metadata.
++# Alpha162.2 Personnel 2.1 engineering gates: preserve enterprise-core authentication/migration/wiring/reversal/CRM/branch scope and require current release metadata.
+ sabou_app = text("app/src/main/java/ir/sabou/inventory/ui/SabouApp.kt")
+ require("if (authenticatedUser == null)" in sabou_app and "AuthenticatedSabouApp(" in sabou_app, "P0 auth boundary is not explicit")
+ require("AuthenticatedSessionViewModelScope(sessionUserId = authenticatedUser.id)" in sabou_app, "protected ViewModel store is not session-scoped")
+@@ -372,8 +372,8 @@ refactor_test = contains(
+ require(len(sales_repo.splitlines()) < 900, "LocalProfessionalSalesRepository regressed past focused threshold")
+ require(len(procurement_repo.splitlines()) < 760, "LocalProcurementRepository regressed past focused threshold")
+ 
+-require("versionCode = 208" in build, "Alpha162.1 versionCode must be 208")
+-require('versionName = "3.2.0-alpha162.1-enterprise-core-completion"' in build, "Alpha162.1 versionName missing")
++require("versionCode = 209" in build, "Alpha162.2 Personnel 2.1 versionCode must be 209")
++require('versionName = "3.2.0-alpha162.2-personnel-2.1-engineering"' in build, "Alpha162.2 Personnel 2.1 versionName missing")
+ require("release {" in build and "isDebuggable = false" in build, "Release build must explicitly be non-debuggable")
+ 
+ # Current CI must run this verifier in addition to legacy gates.
