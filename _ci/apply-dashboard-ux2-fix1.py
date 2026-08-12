@@ -32,6 +32,7 @@ if changed_calls != 19:
 
 HELPER.write_text('''package ir.sabou.inventory.core
 
+import java.math.BigDecimal
 import java.math.BigInteger
 
 private val LONG_MIN_BIG_INTEGER: BigInteger = BigInteger.valueOf(Long.MIN_VALUE)
@@ -44,11 +45,15 @@ fun BigInteger.toLongExactCompat(): Long {
     }
     return toLong()
 }
+
+/** API-23 compatible exact BigDecimal-to-Long conversion; fractional values are rejected. */
+fun BigDecimal.toLongExactCompat(): Long = toBigIntegerExact().toLongExactCompat()
 ''', encoding="utf-8")
 
 TEST.parent.mkdir(parents=True, exist_ok=True)
 TEST.write_text('''package ir.sabou.inventory.core
 
+import java.math.BigDecimal
 import java.math.BigInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -59,6 +64,11 @@ class BigIntegerCompatTest {
         assertEquals(Long.MIN_VALUE, BigInteger.valueOf(Long.MIN_VALUE).toLongExactCompat())
         assertEquals(0L, BigInteger.ZERO.toLongExactCompat())
         assertEquals(Long.MAX_VALUE, BigInteger.valueOf(Long.MAX_VALUE).toLongExactCompat())
+    }
+
+    @Test fun `big decimal conversion stays exact`() {
+        assertEquals(42L, BigDecimal("42.000").toLongExactCompat())
+        assertThrows(ArithmeticException::class.java) { BigDecimal("42.1").toLongExactCompat() }
     }
 
     @Test fun `rejects values above Long range`() {
@@ -76,4 +86,4 @@ class BigIntegerCompatTest {
 remaining = sum(p.read_text(encoding="utf-8").count(".longValueExact()") for p in MAIN.rglob("*.kt"))
 if remaining:
     raise SystemExit(f"longValueExact() still present: {remaining}")
-print(f"DASHBOARD_UX2_API23_BIG_INTEGER_FIX=PASS calls={changed_calls} files={changed_files}")
+print(f"DASHBOARD_UX2_API23_EXACT_NUMBER_FIX=PASS calls={changed_calls} files={changed_files}")
