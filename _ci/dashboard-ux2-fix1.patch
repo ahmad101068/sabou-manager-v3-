@@ -1,0 +1,240 @@
+From 2fb706003e6daba41bf3a601fda614a419593850 Mon Sep 17 00:00:00 2001
+From: OpenAI Engineering <engineering@openai.local>
+Date: Wed, 12 Aug 2026 17:25:00 +0000
+Subject: [PATCH] Make exact BigInteger conversions compatible with API 23
+
+---
+ app/src/main/java/ir/sabou/inventory/core/BigIntegerCompat.kt | 18 ++++++++++++++++++
+ app/src/main/java/ir/sabou/inventory/core/QuantityMicros.kt | 2 +-
+ app/src/main/java/ir/sabou/inventory/data/repository/LocalDailySalesRepository.kt | 3 ++-
+ app/src/main/java/ir/sabou/inventory/data/repository/LocalProcurementRepository.kt | 5 +++--
+ app/src/main/java/ir/sabou/inventory/data/repository/LocalProfessionalSalesRepository.kt | 3 ++-
+ app/src/main/java/ir/sabou/inventory/data/repository/ProcurementInvoiceMatchingService.kt | 3 ++-
+ app/src/main/java/ir/sabou/inventory/data/repository/SalesRecipeCostSnapshotService.kt | 3 ++-
+ app/src/main/java/ir/sabou/inventory/domain/inventory/InventoryReplenishmentModels.kt | 17 +++++++++--------
+ app/src/main/java/ir/sabou/inventory/domain/operations/UnitConversion.kt | 3 ++-
+ app/src/main/java/ir/sabou/inventory/domain/purchase/ProcurementModels.kt | 3 ++-
+ app/src/main/java/ir/sabou/inventory/domain/sales/SalesCalculator.kt | 3 ++-
+ app/src/main/java/ir/sabou/inventory/ui/InputParsers.kt | 3 ++-
+ app/src/test/java/ir/sabou/inventory/core/BigIntegerCompatTest.kt | 34 ++++++++++++++++++++++++++++++++++
+ 13 files changed, 74 insertions(+), 19 deletions(-)
+ create mode 100644 app/src/main/java/ir/sabou/inventory/core/BigIntegerCompat.kt
+ create mode 100644 app/src/test/java/ir/sabou/inventory/core/BigIntegerCompatTest.kt
+
+diff --git a/app/src/main/java/ir/sabou/inventory/core/BigIntegerCompat.kt b/app/src/main/java/ir/sabou/inventory/core/BigIntegerCompat.kt
+new file mode 100644
+index 0000000..b017a01
+--- /dev/null
++++ b/app/src/main/java/ir/sabou/inventory/core/BigIntegerCompat.kt
+@@ -0,0 +1,18 @@
++package ir.sabou.inventory.core
++
++import java.math.BigInteger
++
++private val LONG_MIN_BIG_INTEGER: BigInteger = BigInteger.valueOf(Long.MIN_VALUE)
++private val LONG_MAX_BIG_INTEGER: BigInteger = BigInteger.valueOf(Long.MAX_VALUE)
++
++/**
++ * API-23 compatible equivalent of BigInteger.toLongExactCompat(), which is only
++ * available to Android apps from API 31. Preserves exact-conversion semantics
++ * by throwing when the value is outside Long's representable range.
++ */
++fun BigInteger.toLongExactCompat(): Long {
++    if (this < LONG_MIN_BIG_INTEGER || this > LONG_MAX_BIG_INTEGER) {
++        throw ArithmeticException("BigInteger value is outside Long range: $this")
++    }
++    return toLong()
++}
+diff --git a/app/src/main/java/ir/sabou/inventory/core/QuantityMicros.kt b/app/src/main/java/ir/sabou/inventory/core/QuantityMicros.kt
+index de9e1b8..2ce46ae 100644
+--- a/app/src/main/java/ir/sabou/inventory/core/QuantityMicros.kt
++++ b/app/src/main/java/ir/sabou/inventory/core/QuantityMicros.kt
+@@ -39,7 +39,7 @@ value class QuantityMicros(val value: Long) : Comparable<QuantityMicros> {
+         return try {
+             val raw = BigInteger.valueOf(value)
+                 .multiply(BigInteger.valueOf(multiplier.value))
+-                .longValueExact()
++                .toLongExactCompat()
+             of(raw)
+         } catch (error: ArithmeticException) {
+             throw DomainValidationException("ضرب مقدار از محدوده مجاز خارج است.")
+diff --git a/app/src/main/java/ir/sabou/inventory/data/repository/LocalDailySalesRepository.kt b/app/src/main/java/ir/sabou/inventory/data/repository/LocalDailySalesRepository.kt
+index ddc1d0c..59e9c4a 100644
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/LocalDailySalesRepository.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/LocalDailySalesRepository.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+ import ir.sabou.inventory.core.MoneyRial
+ import ir.sabou.inventory.core.QuantityMicros
+ import ir.sabou.inventory.data.db.AccountingEntryType
+@@ -616,7 +617,7 @@ class LocalDailySalesRepository(
+-    private fun mulDiv(a: Long, b: Long, divisor: Long): Long = BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++    private fun mulDiv(a: Long, b: Long, divisor: Long): Long = BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).toLongExactCompat()
+ }
+diff --git a/app/src/main/java/ir/sabou/inventory/data/repository/LocalProcurementRepository.kt b/app/src/main/java/ir/sabou/inventory/data/repository/LocalProcurementRepository.kt
+index c1f772a..8318bf4 100644
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/LocalProcurementRepository.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/LocalProcurementRepository.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+ import androidx.room.withTransaction
+@@ -681,7 +682,7 @@ class LocalProcurementRepository(
+-            .longValueExact()
++            .toLongExactCompat()
+@@ -689,5 +690,5 @@ class LocalProcurementRepository(
+-    }.longValueExact()
++    }.toLongExactCompat()
+ }
+diff --git a/app/src/main/java/ir/sabou/inventory/data/repository/LocalProfessionalSalesRepository.kt b/app/src/main/java/ir/sabou/inventory/data/repository/LocalProfessionalSalesRepository.kt
+index 1de2d02..1a20a32 100644
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/LocalProfessionalSalesRepository.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/LocalProfessionalSalesRepository.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+@@ -829,7 +830,7 @@ class LocalProfessionalSalesRepository(
+-        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).toLongExactCompat()
+     }
+ }
+diff --git a/app/src/main/java/ir/sabou/inventory/data/repository/ProcurementInvoiceMatchingService.kt b/app/src/main/java/ir/sabou/inventory/data/repository/ProcurementInvoiceMatchingService.kt
+index b702bc1..9c5a331 100644
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/ProcurementInvoiceMatchingService.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/ProcurementInvoiceMatchingService.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+@@ -205,7 +206,7 @@ class ProcurementInvoiceMatchingService(
+-                .longValueExact()
++                .toLongExactCompat()
+         }
+diff --git a/app/src/main/java/ir/sabou/inventory/data/repository/SalesRecipeCostSnapshotService.kt b/app/src/main/java/ir/sabou/inventory/data/repository/SalesRecipeCostSnapshotService.kt
+index a7835cf..7da9e19 100644
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/SalesRecipeCostSnapshotService.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/SalesRecipeCostSnapshotService.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.data.repository
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+@@ -95,7 +96,7 @@ class SalesRecipeCostSnapshotService(
+-        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).toLongExactCompat()
+     }
+ }
+diff --git a/app/src/main/java/ir/sabou/inventory/domain/inventory/InventoryReplenishmentModels.kt b/app/src/main/java/ir/sabou/inventory/domain/inventory/InventoryReplenishmentModels.kt
+index 6a43d62..4876283 100644
+--- a/app/src/main/java/ir/sabou/inventory/domain/inventory/InventoryReplenishmentModels.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/inventory/InventoryReplenishmentModels.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.domain.inventory
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+ import ir.sabou.inventory.core.MoneyRial
+@@ -177,7 +178,7 @@ object InventoryReplenishmentCalculator {
+-            .longValueExact()
++            .toLongExactCompat()
+@@ -199,7 +200,7 @@ object InventoryReplenishmentCalculator {
+-        val suggestedLong = suggested.longValueExact()
++        val suggestedLong = suggested.toLongExactCompat()
+@@ -211,15 +212,15 @@ object InventoryReplenishmentCalculator {
+-            availableMicros = available.longValueExact(),
++            availableMicros = available.toLongExactCompat(),
+@@
+-            averageDailyUsageMicros = daily.longValueExact(),
++            averageDailyUsageMicros = daily.toLongExactCompat(),
+@@
+-            leadTimeDemandMicros = leadTimeDemand.longValueExact(),
+-            reorderPointMicros = reorderPoint.longValueExact(),
+-            targetStockMicros = targetStock.longValueExact(),
+-            projectedAtDeliveryMicros = projectedAtDelivery.min(QuantityMicros.MAX_VALUE.toBigInteger()).longValueExact(),
++            leadTimeDemandMicros = leadTimeDemand.toLongExactCompat(),
++            reorderPointMicros = reorderPoint.toLongExactCompat(),
++            targetStockMicros = targetStock.toLongExactCompat(),
++            projectedAtDeliveryMicros = projectedAtDelivery.min(QuantityMicros.MAX_VALUE.toBigInteger()).toLongExactCompat(),
+diff --git a/app/src/main/java/ir/sabou/inventory/domain/operations/UnitConversion.kt b/app/src/main/java/ir/sabou/inventory/domain/operations/UnitConversion.kt
+index 467dc0e..a31c55e 100644
+--- a/app/src/main/java/ir/sabou/inventory/domain/operations/UnitConversion.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/operations/UnitConversion.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.domain.operations
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+@@ -28,7 +29,7 @@ object UnitConversion {
+-        return result[0].longValueExact()
++        return result[0].toLongExactCompat()
+ }
+diff --git a/app/src/main/java/ir/sabou/inventory/domain/purchase/ProcurementModels.kt b/app/src/main/java/ir/sabou/inventory/domain/purchase/ProcurementModels.kt
+index b9394c2..1ed4682 100644
+--- a/app/src/main/java/ir/sabou/inventory/domain/purchase/ProcurementModels.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/purchase/ProcurementModels.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.domain.purchase
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+@@ -427,7 +428,7 @@ object ProcurementMath {
+-            val quantity = rounded.longValueExact()
++            val quantity = rounded.toLongExactCompat()
+             require(quantity > 0L)
+diff --git a/app/src/main/java/ir/sabou/inventory/domain/sales/SalesCalculator.kt b/app/src/main/java/ir/sabou/inventory/domain/sales/SalesCalculator.kt
+index e142200..8bc03a0 100644
+--- a/app/src/main/java/ir/sabou/inventory/domain/sales/SalesCalculator.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/sales/SalesCalculator.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.domain.sales
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+@@ -85,7 +86,7 @@ object SalesCalculator {
+-        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).toLongExactCompat()
+     }
+ }
+diff --git a/app/src/main/java/ir/sabou/inventory/ui/InputParsers.kt b/app/src/main/java/ir/sabou/inventory/ui/InputParsers.kt
+index 63d61cd..ad50f91 100644
+--- a/app/src/main/java/ir/sabou/inventory/ui/InputParsers.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/InputParsers.kt
+@@ -1,5 +1,6 @@
+ package ir.sabou.inventory.ui
+ 
++import ir.sabou.inventory.core.toLongExactCompat
+@@ -70,7 +71,7 @@ fun parseQuantityMicros(input: String): Long =
+-        .longValueExact()
++        .toLongExactCompat()
+diff --git a/app/src/test/java/ir/sabou/inventory/core/BigIntegerCompatTest.kt b/app/src/test/java/ir/sabou/inventory/core/BigIntegerCompatTest.kt
+new file mode 100644
+index 0000000..f127c56
+--- /dev/null
++++ b/app/src/test/java/ir/sabou/inventory/core/BigIntegerCompatTest.kt
+@@ -0,0 +1,34 @@
++package ir.sabou.inventory.core
++
++import java.math.BigInteger
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertThrows
++import org.junit.Test
++
++class BigIntegerCompatTest {
++    @Test
++    fun `converts values inside Long range exactly`() {
++        assertEquals(Long.MIN_VALUE, BigInteger.valueOf(Long.MIN_VALUE).toLongExactCompat())
++        assertEquals(0L, BigInteger.ZERO.toLongExactCompat())
++        assertEquals(Long.MAX_VALUE, BigInteger.valueOf(Long.MAX_VALUE).toLongExactCompat())
++    }
++
++    @Test
++    fun `rejects values above Long range`() {
++        val value = BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE)
++        assertThrows(ArithmeticException::class.java) { value.toLongExactCompat() }
++    }
++
++    @Test
++    fun `rejects values below Long range`() {
++        val value = BigInteger.valueOf(Long.MIN_VALUE).subtract(BigInteger.ONE)
++        assertThrows(ArithmeticException::class.java) { value.toLongExactCompat() }
++    }
++}
