@@ -1,0 +1,55 @@
+name: Package Fix17 Tested Source
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dashboard-ux2-fix1-ci]
+    paths:
+      - '.github/workflows/package-fix17-source.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package-source:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_ZIP: Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip
+    steps:
+      - uses: actions/checkout@v6
+      - name: Reconstruct source through fix17
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _project && mkdir -p _project
+          unzip -q "$SOURCE_ZIP" -d _project
+          PROJECT_DIR="$(find _project -maxdepth 2 -name settings.gradle.kts -printf '%h\n' | head -n 1)"
+          test -n "$PROJECT_DIR"
+          cd "$PROJECT_DIR"
+          patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621_compilefix.patch"
+          cat "$GITHUB_WORKSPACE"/_ci/personnel21.patch.gz.b64.* | base64 --decode --ignore-garbage | gzip -dc | patch --forward --batch -p1
+          for p in personnel21-fix2.patch personnel21-fix3.patch personnel21-fix4.patch personnel21-fix5.patch; do patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/$p"; done
+          cat "$GITHUB_WORKSPACE"/_ci/dashboard-ux2-v2.patch.gz.b64.* | base64 --decode --ignore-garbage > "$RUNNER_TEMP/dashboard-ux2.patch.gz"
+          gzip -t "$RUNNER_TEMP/dashboard-ux2.patch.gz"
+          gzip -dc "$RUNNER_TEMP/dashboard-ux2.patch.gz" | patch --forward --batch -p1
+          for n in $(seq 1 17); do python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix${n}.py"; done
+          chmod +x gradlew
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+      - name: Package exact reconstructed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/Sabou-Fix17-SOURCE.zip"
+          cd "$PROJECT_DIR"
+          zip -qr "$OUT" . \
+            -x '.git/*' '.gradle/*' '.idea/*' '*/build/*' 'build/*' 'local.properties' '*.jks' '*.keystore'
+          unzip -tq "$OUT"
+          sha256sum "$OUT" | tee "$GITHUB_WORKSPACE/Sabou-Fix17-SOURCE.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sabou-Fix17-SOURCE-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            Sabou-Fix17-SOURCE.zip
+            Sabou-Fix17-SOURCE.sha256
