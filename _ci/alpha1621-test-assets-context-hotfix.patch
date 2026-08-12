@@ -1,0 +1,63 @@
+diff --git aa/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration44To47Test.kt bb/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration44To47Test.kt
+index 2bad991..4e7f11d 100644
+--- aa/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration44To47Test.kt
++++ bb/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration44To47Test.kt
+@@ -6,6 +6,7 @@ import androidx.sqlite.db.SupportSQLiteOpenHelper
+ import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.platform.app.InstrumentationRegistry
+ import org.json.JSONObject
+ import org.junit.After
+ import org.junit.Assert.assertEquals
+@@ -71,7 +72,7 @@ class EnterpriseCompletionMigration44To47Test {
+     }
+ 
+     private fun createRealV44Database() {
+-        val root = context.assets
++        val root = InstrumentationRegistry.getInstrumentation().context.assets
+             .open("ir.sabou.inventory.data.db.AppDatabase/44.json")
+             .bufferedReader()
+             .use { JSONObject(it.readText()).getJSONObject("database") }
+diff --git aa/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration46To47Test.kt bb/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration46To47Test.kt
+index 51c7aa7..594cfa5 100644
+--- aa/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration46To47Test.kt
++++ bb/app/src/androidTest/java/ir/sabou/inventory/data/db/EnterpriseCompletionMigration46To47Test.kt
+@@ -6,6 +6,7 @@ import androidx.sqlite.db.SupportSQLiteOpenHelper
+ import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.platform.app.InstrumentationRegistry
+ import org.json.JSONObject
+ import org.junit.After
+ import org.junit.Assert.assertEquals
+@@ -47,7 +48,7 @@ class EnterpriseCompletionMigration46To47Test {
+     }
+ 
+     private fun createRealV46Database() {
+-        val root = context.assets
++        val root = InstrumentationRegistry.getInstrumentation().context.assets
+             .open("ir.sabou.inventory.data.db.AppDatabase/46.json")
+             .bufferedReader()
+             .use { JSONObject(it.readText()).getJSONObject("database") }
+diff --git aa/app/src/androidTest/java/ir/sabou/inventory/data/db/FullMigration1ToCurrentTest.kt bb/app/src/androidTest/java/ir/sabou/inventory/data/db/FullMigration1ToCurrentTest.kt
+index a5d3b76..baf91cb 100644
+--- aa/app/src/androidTest/java/ir/sabou/inventory/data/db/FullMigration1ToCurrentTest.kt
++++ bb/app/src/androidTest/java/ir/sabou/inventory/data/db/FullMigration1ToCurrentTest.kt
+@@ -7,6 +7,7 @@ import androidx.sqlite.db.SupportSQLiteOpenHelper
+ import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.platform.app.InstrumentationRegistry
+ import org.json.JSONObject
+ import org.junit.After
+ import org.junit.Assert.assertEquals
+@@ -50,7 +51,7 @@ class FullMigration1ToCurrentTest {
+     }
+ 
+     private fun createVersionOneDatabase() {
+-        val root = context.assets
++        val root = InstrumentationRegistry.getInstrumentation().context.assets
+             .open("ir.sabou.inventory.data.db.AppDatabase/1.json")
+             .bufferedReader()
+             .use { JSONObject(it.readText()).getJSONObject("database") }
