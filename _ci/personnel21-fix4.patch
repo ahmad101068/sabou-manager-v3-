@@ -1,0 +1,88 @@
+diff --git a/PERSONNEL_2_1_ENGINEERING_STATUS.md b/PERSONNEL_2_1_ENGINEERING_STATUS.md
+new file mode 100644
+index 0000000..add785e
+--- /dev/null
++++ b/PERSONNEL_2_1_ENGINEERING_STATUS.md
+@@ -0,0 +1,51 @@
++# Personnel / HR / Attendance / Payroll 2.1 — Engineering Status
++
++This source is an engineering pass over Alpha162.1.1. It is **not** declared Production Ready until every mandatory gate and feature in the supplied Personnel 2.1 specification is evidenced.
++
++## Implemented in this pass
++
++- Iranian national ID checksum validation and duplicate validation path.
++- Advance creation no longer requires a preselected employee; the dialog owns employee selection.
++- Attendance correction uses an approval workflow and supports PRESENT / ABSENT / LEAVE / MISSION / HOLIDAY / OFF_DAY.
++- Shift Template and Shift Category domain/database/UI support.
++- Work Schedule and weekly day rules with materialized Planned Shifts.
++- Cross-midnight planned shifts using epoch-millis boundaries and independent business day.
++- Shift-aware AttendanceCalculationEngine with raw/payable late, early leave, raw/approved/payroll overtime.
++- Overtime review/partial approval with segregation-of-duties guard and audit path.
++- Payroll preparation materializes and consumes planned shifts; fixed 08:00–16:00 production assumption was removed from that path.
++- Contract wiring for Work Schedule and default Shift Template.
++- Payroll readiness evaluation surfaced in Employee 360.
++- Payroll payment UI selects active Treasury accounts instead of hardcoded bank_main/cash_main.
++- HR document persistence/use-case/UI baseline and employee audit timeline query/UI.
++- Fine-grained HR permissions added/enforced on new/modified commands.
++- Room database version 48 with non-destructive 47→48 migration.
++- Unit tests added for national ID, night shift, grace, early leave and overtime approval behavior.
++- AndroidTest Compose BOM dependency alignment so lint/test classpath resolves correctly.
++
++## Verified gates so far
++
++- Local static code-quality verifier: PASS.
++- Local enterprise-core verifier: PASS on schema 48.
++- Local HR/Payroll SQL migration verifier: PASS.
++- GitHub Actions compileDebugKotlin: PASS (latest completed debug compile before this status file).
++- GitHub Actions testDebugUnitTest: PASS (latest completed unit-test gate before this status file).
++
++## Mandatory items still not proven complete
++
++- Historical exported Room schema evidence for versions 45, 46 and 47 is missing; current verifier reports this explicitly.
++- A complete 8-step employee onboarding wizard is not implemented end-to-end.
++- Employee organizational master data is not fully converted from legacy free text to normalized master IDs everywhere.
++- A production-grade Loan module (request/approval/installments/settlement/treasury/payroll) is not implemented; the misleading combined Loans title was removed.
++- Payroll Policy versioning and the complete requested rule set are not fully implemented.
++- Contract changes inside one payroll period are still blocked by CONTRACT_CHANGE_WITHIN_PERIOD rather than segmented and aggregated.
++- Full Leave/Hourly Leave/Grant/Balance UX and work-calendar policy matrix are not fully proven.
++- Full Payslip Revision Wizard and before/after revision UX are not fully proven.
++- LocalHrPayrollService remains larger than the requested final responsibility split.
++- Confidential full-view re-authentication is not implemented for all sensitive HR data/document paths.
++- Required API 23 and API 35 emulator runs are not yet executed in the current verification workflow.
++- The complete requested Compose E2E scenario set is not yet implemented/executed; existing verifier currently reports 18 Compose E2E scenarios.
++- Release compile/assemble and release verification must still pass on the final versioned source.
++
++## Integrity rule
++
++Do not label this source `PERSONNEL 2.1 PRODUCTION-GRADE` until every item above is resolved and the full mandatory CI matrix is green. No test was disabled or weakened to obtain the current passing gates.
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 867c27d..211928a 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -19,8 +19,8 @@ android {
+         applicationId = "ir.sabou.inventory"
+         minSdk = 23
+         targetSdk = 36
+-        versionCode = 208
+-        versionName = "3.2.0-alpha162.1-enterprise-core-completion"
++        versionCode = 209
++        versionName = "3.2.0-alpha162.2-personnel-2.1-engineering"
+ 
+         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+         vectorDrawables.useSupportLibrary = true
+@@ -53,6 +53,7 @@ android {
+     }
+ 
+     compileOptions {
++        isCoreLibraryDesugaringEnabled = true
+         sourceCompatibility = JavaVersion.VERSION_17
+         targetCompatibility = JavaVersion.VERSION_17
+     }
+@@ -79,6 +80,7 @@ room {
+ }
+ 
+ dependencies {
++    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3")
+     implementation(libs.androidx.core.ktx)
+     implementation(libs.androidx.activity.compose)
+     implementation(libs.androidx.lifecycle.runtime)
