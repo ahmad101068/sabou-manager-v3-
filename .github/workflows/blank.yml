@@ -62,7 +62,7 @@ jobs:
           test -f "$PROJECT_DIR/gradlew" || { echo "gradlew not found in $PROJECT_DIR"; exit 1; }
           cd "$PROJECT_DIR"
           patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621_compilefix.patch"
-          cat "$GITHUB_WORKSPACE"/_ci/personnel21.patch.gz.b64.* | base64 -d | gzip -dc | patch --forward --batch -p1
+          cat "$GITHUB_WORKSPACE"/_ci/personnel21.patch.gz.b64.* | base64 --decode --ignore-garbage | gzip -dc | patch --forward --batch -p1
           base64 --decode --ignore-garbage "$GITHUB_WORKSPACE/_ci/personnel21-fix2.patch.gz.b64" | gzip -dc | patch --forward --batch -p1
           chmod +x gradlew
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
