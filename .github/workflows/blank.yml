@@ -13,6 +13,7 @@ on:
       - main
       - personnel21-ci
       - dashboard-ux2-ci
+      - dashboard-ux2-fix1-ci
     paths:
       - "Sabou-Restaurant-ERP-Alpha162.1-Enterprise-Core-Completion-SOURCE.zip"
       - "_ci/alpha1621_compilefix.patch"
@@ -22,6 +23,7 @@ on:
       - "_ci/personnel21-fix4.patch"
       - "_ci/personnel21-fix5.patch"
       - "_ci/dashboard-ux2-v2.patch.gz.b64.*"
+      - "_ci/apply-dashboard-ux2-fix1.py"
       - ".github/workflows/blank.yml"
 
 permissions:
@@ -76,6 +78,7 @@ jobs:
           gzip -t "$RUNNER_TEMP/dashboard-ux2.patch.gz"
           gzip -dc "$RUNNER_TEMP/dashboard-ux2.patch.gz" > "$RUNNER_TEMP/dashboard-ux2.patch"
           patch --forward --batch -p1 < "$RUNNER_TEMP/dashboard-ux2.patch"
+          python3 "$GITHUB_WORKSPACE/_ci/apply-dashboard-ux2-fix1.py"
           chmod +x gradlew
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
@@ -127,6 +130,7 @@ jobs:
           if [ "$STATUS" -ne 0 ]; then
             REPORT="app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt"
             if [ -f "$REPORT" ]; then
+              cp "$REPORT" "$GITHUB_WORKSPACE/lint-results-debug.txt"
               echo "===== FULL LINT REPORT ====="
               cat "$REPORT"
             fi
@@ -200,6 +204,7 @@ jobs:
             compileDebugKotlin.log
             testDebugUnitTest.log
             lintDebug.log
+            lint-results-debug.txt
             compileReleaseKotlin.log
             assembleDebug.log
             assembleDebugAndroidTest.log
