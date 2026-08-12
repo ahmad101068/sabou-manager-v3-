@@ -17,6 +17,7 @@ on:
       - "_ci/alpha1621_compilefix.patch"
       - "_ci/personnel21.patch.gz.b64.*"
       - "_ci/personnel21-fix2.patch"
+      - "_ci/personnel21-fix3.patch"
       - ".github/workflows/blank.yml"
 
 permissions:
@@ -64,6 +65,7 @@ jobs:
           patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/alpha1621_compilefix.patch"
           cat "$GITHUB_WORKSPACE"/_ci/personnel21.patch.gz.b64.* | base64 --decode --ignore-garbage | gzip -dc | patch --forward --batch -p1
           patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/personnel21-fix2.patch"
+          patch --forward --batch -p1 < "$GITHUB_WORKSPACE/_ci/personnel21-fix3.patch"
           chmod +x gradlew
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
