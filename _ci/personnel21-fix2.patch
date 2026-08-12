@@ -1,0 +1,114 @@
+diff --git a/app/src/main/java/ir/sabou/inventory/data/repository/LocalPersonnelRepository.kt b/app/src/main/java/ir/sabou/inventory/data/repository/LocalPersonnelRepository.kt
+index 422ee14..abb7a08 100644
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/LocalPersonnelRepository.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/LocalPersonnelRepository.kt
+@@ -213,7 +213,7 @@ class LocalPersonnelRepository(
+     }
+ 
+     override suspend fun saveEmployee(id: Long?, draft: EmployeeDraft): Long {
+-        val actor = authorizer.require(Permission.PERSONNEL)
++        val actor = authorizer.require(Permission.PERSONNEL_EDIT)
+         val valid = draft.validated()
+         val now = clock()
+         return database.withTransaction {
+@@ -301,7 +301,7 @@ class LocalPersonnelRepository(
+     }
+ 
+     override suspend fun transitionEmploymentStatus(id: Long, to: EmploymentStatus, terminationEpochDay: Long?) {
+-        val actor = authorizer.require(Permission.PERSONNEL)
++        val actor = authorizer.require(Permission.PERSONNEL_EDIT)
+         database.withTransaction {
+             val current = personnel.employeeById(id) ?: error("پرسنل پیدا نشد.")
+             val from = EmploymentStatus.fromStoredValue(current.status)
+@@ -320,7 +320,7 @@ class LocalPersonnelRepository(
+     }
+ 
+     override suspend fun privateProfile(employeeId: Long): EmployeePrivateProfile? {
+-        authorizer.require(Permission.EMPLOYEE_SENSITIVE_EDIT)
++        authorizer.require(Permission.PERSONNEL_CONFIDENTIAL_VIEW)
+         return hr.privateProfile(employeeId)?.toDomain()
+     }
+ 
+@@ -429,7 +429,7 @@ class LocalPersonnelRepository(
+         personnel.observeOpenAdvances().map { rows -> rows.map { it.toRecord() } }
+ 
+     override suspend fun saveContract(id: Long?, draft: EmployeeContractDraft): Long {
+-        val actor = authorizer.require(Permission.PERSONNEL)
++        val actor = authorizer.require(Permission.CONTRACT_CREATE)
+         val valid = draft.validated()
+         val now = clock()
+         return database.withTransaction {
+@@ -706,7 +706,7 @@ class LocalPersonnelRepository(
+     }
+ 
+     override suspend fun leaveBalance(employeeId: Long, leaveType: LeaveType): LeaveBalance {
+-        authorizer.require(Permission.PERSONNEL)
++        authorizer.require(Permission.PERSONNEL_VIEW)
+         val ledger = hr.leaveLedger(employeeId, leaveType.storedValue).map { row ->
+             LeaveLedgerEntry(
+                 id = row.id, employeeId = row.employeeId, leaveType = LeaveType.fromStoredValue(row.leaveType),
+@@ -795,7 +795,7 @@ class LocalPersonnelRepository(
+     }
+ 
+     override suspend fun postAdvance(draft: EmployeeAdvanceDraft): Long {
+-        val actor = authorizer.require(Permission.PERSONNEL)
++        val actor = authorizer.require(Permission.ADVANCE_CREATE)
+         val valid = draft.validated()
+         return database.withTransaction {
+             val employee = personnel.employeeById(valid.employeeId) ?: error("پرسنل پیدا نشد.")
+@@ -840,7 +840,7 @@ class LocalPersonnelRepository(
+         paymentMethod: TreasuryChannel,
+         settlementEpochDay: Long,
+     ) {
+-        val actor = authorizer.require(Permission.PERSONNEL)
++        val actor = authorizer.require(Permission.ADVANCE_SETTLE)
+         require(amountRial > 0) { "مبلغ تسویه باید بیشتر از صفر باشد." }
+         require(paymentMethod in setOf(TreasuryChannel.CASH, TreasuryChannel.BANK)) {
+             "advance_settlement_channel_unsupported"
+diff --git a/app/src/main/java/ir/sabou/inventory/data/repository/PersonnelAttendanceService.kt b/app/src/main/java/ir/sabou/inventory/data/repository/PersonnelAttendanceService.kt
+index a05ae69..ed06fb1 100644
+--- a/app/src/main/java/ir/sabou/inventory/data/repository/PersonnelAttendanceService.kt
++++ b/app/src/main/java/ir/sabou/inventory/data/repository/PersonnelAttendanceService.kt
+@@ -250,7 +250,8 @@ internal class PersonnelAttendanceService(
+             val approval = hr.overtimeApprovalById(command.approvalId) ?: error("درخواست اضافه‌کار پیدا نشد.")
+             require(approval.status == "PENDING") { "این درخواست اضافه‌کار قبلاً بررسی شده است." }
+             val valid = command.validated(approval.rawMinutes)
+-            SegregationOfDuties.requireDifferentActors("OVERTIME_APPROVAL", approval.requestedByActorId, actor.id)
++            val requesterActorId = requireNotNull(approval.requestedByActorId) { "ثبت‌کننده درخواست اضافه‌کار مشخص نیست." }
++            SegregationOfDuties.requireDifferentActors("OVERTIME_APPROVAL", requesterActorId, actor.id)
+             require(!personnel.attendanceDayLocked(approval.employeeId, approval.businessEpochDay)) {
+                 "دوره حقوق این روز قفل شده و تغییر اضافه‌کار باید از مسیر Revision انجام شود."
+             }
+diff --git a/app/src/main/java/ir/sabou/inventory/domain/security/Permission.kt b/app/src/main/java/ir/sabou/inventory/domain/security/Permission.kt
+index ce780ca..441e638 100644
+--- a/app/src/main/java/ir/sabou/inventory/domain/security/Permission.kt
++++ b/app/src/main/java/ir/sabou/inventory/domain/security/Permission.kt
+@@ -16,6 +16,7 @@ enum class Permission(val title: String) {
+     PERSONNEL_VIEW("مشاهده پرسنل"),
+     PERSONNEL_EDIT("ویرایش پرسنل"),
+     PERSONNEL_CONFIDENTIAL_VIEW("مشاهده اطلاعات محرمانه پرسنل"),
++    CONTRACT_CREATE("ثبت قرارداد"),
+     SHIFT_MANAGE("مدیریت شیفت و برنامه کاری"),
+     ATTENDANCE_EDIT("ثبت و اصلاح درخواست حضور"),
+     ATTENDANCE_CORRECTION_APPROVE("تأیید اصلاح حضور"),
+@@ -97,6 +98,7 @@ enum class UserRole(
+             Permission.PERSONNEL_VIEW,
+             Permission.PERSONNEL_EDIT,
+             Permission.PERSONNEL_CONFIDENTIAL_VIEW,
++            Permission.CONTRACT_CREATE,
+             Permission.SHIFT_MANAGE,
+             Permission.ATTENDANCE_EDIT,
+             Permission.ATTENDANCE_CORRECTION_APPROVE,
+diff --git a/app/src/main/java/ir/sabou/inventory/ui/HrPayrollScreens.kt b/app/src/main/java/ir/sabou/inventory/ui/HrPayrollScreens.kt
+index 5ce9d87..7bb3005 100644
+--- a/app/src/main/java/ir/sabou/inventory/ui/HrPayrollScreens.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/HrPayrollScreens.kt
+@@ -700,7 +700,7 @@ private fun AdvancesCenter(state: PersonnelUiState, onOpen: (EmployeeRecord) ->
+         contentPadding = PaddingValues(16.dp, 14.dp, 16.dp, 96.dp),
+         verticalArrangement = Arrangement.spacedBy(10.dp),
+     ) {
+-        item { SectionHeading("Advances & Loans", "اصل، مانده و تخصیص کسر حقوق به‌صورت مستقل") }
++        item { SectionHeading("مساعده‌ها", "اصل، مانده و تخصیص کسر حقوق به‌صورت مستقل") }
+         if (state.openAdvances.isEmpty()) item { EmptyStatePanel("مساعده باز وجود ندارد", "کسر هر Payroll از دفتر تخصیص و مانده کنترل می‌شود.") }
+         items(state.employees, key = { "advance-employee-${it.id}" }) { employee ->
+             val advances = state.openAdvances.filter { it.employeeId == employee.id }
