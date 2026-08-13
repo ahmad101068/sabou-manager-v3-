@@ -1,0 +1,12 @@
+diff --git a/app/src/main/java/ir/sabou/inventory/ui/InventoryWorkspaceScreen.kt b/app/src/main/java/ir/sabou/inventory/ui/InventoryWorkspaceScreen.kt
+--- a/app/src/main/java/ir/sabou/inventory/ui/InventoryWorkspaceScreen.kt
++++ b/app/src/main/java/ir/sabou/inventory/ui/InventoryWorkspaceScreen.kt
+@@ -392,7 +392,7 @@ private fun RecentInventoryActivity(
+     onOpen: (InventoryWorkspaceSection) -> Unit,
+ ) {
+     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+-        ErpSectionTitle("گردش اخیر", "مشاهده همه") { onOpen(InventoryWorkspaceSection.MOVEMENTS) }
++        ErpSectionTitle("گردش اخیر", "مشاهده همه", onAction = { onOpen(InventoryWorkspaceSection.MOVEMENTS) })
+         if (movements.isEmpty()) {
+             Surface(shape = RoundedCornerShape(18.dp), color = Color.White, border = BorderStroke(1.dp, ErpPalette.Border)) {
+                 Text("گردش ثبت‌شده‌ای برای نمایش وجود ندارد.", Modifier.fillMaxWidth().padding(15.dp), color = ErpPalette.Muted, style = MaterialTheme.typography.bodySmall)
