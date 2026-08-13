@@ -1,0 +1,61 @@
+package ir.sabou.inventory.ui
+
+import ir.sabou.inventory.data.repository.DashboardPeriod
+
+data class DashboardComparisonUi(
+    val period: DashboardPeriod = DashboardPeriod.TODAY,
+    val labels: DashboardPeriodLabels = DashboardPeriodLabelProvider.labels(DashboardPeriod.TODAY),
+    val salesTrend: MetricTrend = MetricTrend(0L, 0L, 0.0, TrendDirection.SAME),
+    val invoiceTrend: MetricTrend = MetricTrend(0L, 0L, 0.0, TrendDirection.SAME),
+    val expenseTrend: MetricTrend = MetricTrend(0L, 0L, 0.0, TrendDirection.SAME),
+    val salesTrendText: String = "",
+    val invoiceTrendText: String = "",
+    val expenseTrendText: String = "",
+    val performanceText: String = "در حال بارگذاری داده‌های داشبورد",
+    val loadState: DashboardComparisonLoadState = DashboardComparisonLoadState.LOADING,
+)
+
+enum class DashboardComparisonLoadState { LOADING, LOADED, EMPTY, ERROR }
+
+internal object DashboardComparisonUiFactory {
+    fun loaded(
+        period: DashboardPeriod,
+        salesCurrent: Long,
+        salesPrevious: Long,
+        invoiceCurrent: Long,
+        invoicePrevious: Long,
+        expenseCurrent: Long,
+        expensePrevious: Long,
+        hasActivity: Boolean,
+    ): DashboardComparisonUi {
+        val labels = DashboardPeriodLabelProvider.labels(period)
+        val sales = DashboardTrendCalculator.calculate(salesCurrent, salesPrevious)
+        val invoices = DashboardTrendCalculator.calculate(invoiceCurrent, invoicePrevious)
+        val expenses = DashboardTrendCalculator.calculate(expenseCurrent, expensePrevious)
+        return DashboardComparisonUi(
+            period = period,
+            labels = labels,
+            salesTrend = sales,
+            invoiceTrend = invoices,
+            expenseTrend = expenses,
+            salesTrendText = if (hasActivity) DashboardPresentationFormatter.trendText(sales, labels.comparisonSuffix) else "هنوز داده‌ای ثبت نشده",
+            invoiceTrendText = if (hasActivity) DashboardPresentationFormatter.trendText(invoices, labels.comparisonSuffix) else "هنوز داده‌ای ثبت نشده",
+            expenseTrendText = if (hasActivity) DashboardPresentationFormatter.trendText(expenses, labels.comparisonSuffix) else "هنوز داده‌ای ثبت نشده",
+            performanceText = DashboardPerformanceTextResolver.resolve(sales, hasActivity),
+            loadState = if (hasActivity) DashboardComparisonLoadState.LOADED else DashboardComparisonLoadState.EMPTY,
+        )
+    }
+
+    fun loading(period: DashboardPeriod) = DashboardComparisonUi(
+        period = period,
+        labels = DashboardPeriodLabelProvider.labels(period),
+        loadState = DashboardComparisonLoadState.LOADING,
+    )
+
+    fun error(period: DashboardPeriod) = DashboardComparisonUi(
+        period = period,
+        labels = DashboardPeriodLabelProvider.labels(period),
+        performanceText = "داده‌های داشبورد در حال حاضر در دسترس نیست",
+        loadState = DashboardComparisonLoadState.ERROR,
+    )
+}
