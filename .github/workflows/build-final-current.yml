@@ -1,0 +1,72 @@
+name: Build Current Sabou Final ERP APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Sabou-Final-ERP-SOURCE (1).zip"
+      - ".github/workflows/build-final-current.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Extract source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="Sabou-Final-ERP-SOURCE (1).zip"
+          test -f "$ZIP"
+          unzip -t "$ZIP" >/dev/null
+          rm -rf _apk_project
+          mkdir -p _apk_project
+          unzip -q "$ZIP" -d _apk_project
+          PROJECT_DIR="$(find _apk_project -maxdepth 4 -name settings.gradle.kts -printf '%h\n' | head -n 1)"
+          test -n "$PROJECT_DIR"
+          test -f "$PROJECT_DIR/gradlew"
+          chmod +x "$PROJECT_DIR/gradlew"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+
+      - name: Compile, test and lint
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain compileDebugKotlin testDebugUnitTest lintDebug --stacktrace
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon --console=plain assembleDebug --stacktrace
+          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          mkdir -p "$GITHUB_WORKSPACE/_apk_output"
+          cp "$APK" "$GITHUB_WORKSPACE/_apk_output/Sabou-Final-ERP-debug.apk"
+          sha256sum "$GITHUB_WORKSPACE/_apk_output/Sabou-Final-ERP-debug.apk" > "$GITHUB_WORKSPACE/_apk_output/Sabou-Final-ERP-debug.apk.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sabou-Final-ERP-debug-apk-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            _apk_output/Sabou-Final-ERP-debug.apk
+            _apk_output/Sabou-Final-ERP-debug.apk.sha256
