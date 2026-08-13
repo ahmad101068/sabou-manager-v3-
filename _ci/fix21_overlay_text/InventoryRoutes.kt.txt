@@ -2,3 +2,31 @@ package ir.sabou.inventory.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+
+/** Inventory-owned route group. SabouApp remains a composition root, not an inventory router. */
+@Composable
+internal fun InventoryRoutes(
+    screen: AppScreen,
+    state: InventoryWorkspaceUiState,
+    inventory: InventoryWorkspaceViewModel,
+    operationsState: OperationsUiState,
+    operations: OperationsViewModel,
+    navigate: (AppScreen) -> Unit,
+    navigateBack: () -> Unit,
+) {
+    LaunchedEffect(screen) {
+        if (screen == AppScreen.STOCK_MOVEMENTS) {
+            inventory.selectSection(InventoryWorkspaceSection.MOVEMENTS)
+        } else if (state.section == InventoryWorkspaceSection.MOVEMENTS && state.focusedItemId == null) {
+            inventory.selectSection(InventoryWorkspaceSection.OVERVIEW)
+        }
+    }
+    InventoryWorkspaceScreen(
+        state = state,
+        viewModel = inventory,
+        operationsState = operationsState,
+        operations = operations,
+        onBack = navigateBack,
+        onNavigate = navigate,
+    )
+}
