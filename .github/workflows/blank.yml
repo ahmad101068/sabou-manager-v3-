@@ -1,4 +1,4 @@
-name: Build Sabou Manager APK
+name: Build Sabou Final ERP APK
 
 on:
   workflow_dispatch:
@@ -6,30 +6,30 @@ on:
       source_zip:
         description: "Source ZIP filename"
         required: false
-        default: "Fix21.zip"
+        default: "Sabou-Final-ERP-SOURCE.zip"
         type: string
   push:
     branches:
       - main
     paths:
-      - "Fix21.zip"
+      - "Sabou-Final-ERP-SOURCE.zip"
       - ".github/workflows/blank.yml"
 
 permissions:
   contents: read
 
 concurrency:
-  group: sabou-build-apk-${{ github.ref }}
+  group: sabou-final-erp-apk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-apk:
-    name: Compile, test and build Fix21 APK
+    name: Compile, test, lint and build final ERP APK
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
 
     env:
-      DEFAULT_SOURCE_ZIP: Fix21.zip
+      DEFAULT_SOURCE_ZIP: Sabou-Final-ERP-SOURCE.zip
 
     steps:
       - name: Checkout repository
@@ -48,7 +48,7 @@ jobs:
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
           echo "Using source ZIP: $ZIP"
 
-      - name: Extract Fix21 source
+      - name: Extract final ERP source
         id: project
         shell: bash
         run: |
@@ -57,7 +57,7 @@ jobs:
           mkdir -p _apk_project
           unzip -q "${{ steps.source.outputs.zip }}" -d _apk_project
 
-          PROJECT_DIR="$(find _apk_project -maxdepth 3 -name settings.gradle.kts -printf '%h\n' | head -n 1)"
+          PROJECT_DIR="$(find _apk_project -maxdepth 4 -name settings.gradle.kts -printf '%h\n' | head -n 1)"
           test -n "$PROJECT_DIR" || { echo "Android project not found inside source ZIP"; exit 1; }
           test -f "$PROJECT_DIR/gradlew" || { echo "gradlew not found in $PROJECT_DIR"; exit 1; }
           chmod +x "$PROJECT_DIR/gradlew"
@@ -114,25 +114,25 @@ jobs:
           test -n "$APK" || { echo "assembleDebug finished but no APK was found"; exit 1; }
 
           mkdir -p _apk_output
-          cp "$APK" _apk_output/Sabou-Fix21-debug.apk
-          sha256sum _apk_output/Sabou-Fix21-debug.apk | tee _apk_output/Sabou-Fix21-debug.apk.sha256
-          ls -lh _apk_output/Sabou-Fix21-debug.apk
+          cp "$APK" _apk_output/Sabou-Final-ERP-debug.apk
+          sha256sum _apk_output/Sabou-Final-ERP-debug.apk | tee _apk_output/Sabou-Final-ERP-debug.apk.sha256
+          ls -lh _apk_output/Sabou-Final-ERP-debug.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Sabou-Fix21-debug-apk-${{ github.run_id }}
+          name: Sabou-Final-ERP-debug-apk-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
-            _apk_output/Sabou-Fix21-debug.apk
-            _apk_output/Sabou-Fix21-debug.apk.sha256
+            _apk_output/Sabou-Final-ERP-debug.apk
+            _apk_output/Sabou-Final-ERP-debug.apk.sha256
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Sabou-Fix21-build-logs-${{ github.run_id }}
+          name: Sabou-Final-ERP-build-logs-${{ github.run_id }}
           if-no-files-found: warn
           retention-days: 14
           path: |
