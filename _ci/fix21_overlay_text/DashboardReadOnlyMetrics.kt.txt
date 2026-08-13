@@ -1,0 +1,7 @@
+package ir.sabou.inventory.ui
+
+import ir.sabou.inventory.data.repository.DashboardSnapshot
+
+internal fun dashboardExpenseValue(snapshot: DashboardSnapshot): Long = snapshot.purchaseRial
+internal fun dashboardSalesValue(snapshot: DashboardSnapshot): Long = snapshot.todayProfessionalSalesRial
+internal fun dashboardInvoiceCount(snapshot: DashboardSnapshot): Long = snapshot.todayProfessionalInvoiceCount
