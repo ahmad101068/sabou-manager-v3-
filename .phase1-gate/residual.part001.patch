@@ -1,0 +1,150 @@
+diff --git a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+index b3ec6d3..132a81e 100644
+--- a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
++++ b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+@@ -58,5 +58,5 @@ class AlertRefreshWorker(context: Context, params: WorkerParameters) : Coroutine
+             )
+         }
+     }
+-    private companion object { const val CHANNEL_ID = "restaurant_management_alerts" }
++    private companion object { const val CHANNEL_ID = "restaurant-management_manager_alerts" }
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/MainActivity.kt b/app/src/main/java/ir/restaurant/management/MainActivity.kt
+index 877995e..f4bbf9d 100644
+--- a/app/src/main/java/ir/restaurant/management/MainActivity.kt
++++ b/app/src/main/java/ir/restaurant/management/MainActivity.kt
+@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.getValue
++import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.remember
+ import androidx.compose.runtime.setValue
+@@ -22,7 +23,7 @@ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.unit.dp
+ import ir.restaurant.management.ui.RestaurantManagementApp
+-import ir.restaurant.management.ui.RestaurantManagementSplash
++import ir.restaurant.management.ui.ManagementSplash
+ import ir.restaurant.management.ui.ThemePreference
+ import ir.restaurant.management.ui.CurrencyUnit
+ import ir.restaurant.management.ui.FontScalePreference
+@@ -55,6 +56,7 @@ class MainActivity : ComponentActivity() {
+         val container = (application as RestaurantManagementApplication).container
+         val preferences = getSharedPreferences("restaurant_manager_ui", MODE_PRIVATE)
+         val backupPolicyStore = BackupPolicyStore(this)
+-        var organizationName by mutableStateOf(loadOrganizationName())
+         var selectedTheme by mutableStateOf(
+             preferences.getString("theme", null)
+                 ?.let { stored -> runCatching { ThemePreference.valueOf(stored) }.getOrNull() }
+@@ -74,6 +74,7 @@ class MainActivity : ComponentActivity() {
+         MoneyDisplayPreferences.unit = selectedCurrency
+         var backupPolicy by mutableStateOf(backupPolicyStore.load())
+         setContent {
++            val organizationName by container.organizationSettings.organizationName.collectAsStateWithLifecycle()
+             val dark = when (selectedTheme) {
+                 ThemePreference.SYSTEM -> isSystemInDarkTheme()
+                 ThemePreference.LIGHT -> false
+@@ -91,17 +92,14 @@ class MainActivity : ComponentActivity() {
+                     startupResult = result
+                 }
+                 when {
+-                    startupResult == null -> RestaurantManagementSplash(visible = true, organizationName = organizationName)
++                    startupResult == null -> ManagementSplash(visible = true, organizationName = organizationName)
+                     startupResult?.isFailure == true -> StartupFailure(
+                         checkNotNull(startupResult?.exceptionOrNull()),
+                     )
+                     else -> RestaurantManagementApp(
+                             container = container,
+                             organizationName = organizationName,
+-                            onOrganizationNameChange = { value ->
+-                                organizationName = value.trim()
+-                                saveOrganizationName(organizationName)
+-                            },
++                            onOrganizationNameChange = container.organizationSettings::updateOrganizationName,
+                             themePreference = selectedTheme,
+                             currencyUnit = selectedCurrency,
+                             fontScalePreference = selectedFontScale,
+@@ -132,7 +130,7 @@ class MainActivity : ComponentActivity() {
+                             },
+                             onAppPreferencesReset = {
+                                 preferences.edit().clear().commit()
+-                                organizationName = ""
++                                container.organizationSettings.reset()
+                                 selectedTheme = ThemePreference.SYSTEM
+                                 selectedCurrency = CurrencyUnit.RIAL
+                                 MoneyDisplayPreferences.unit = CurrencyUnit.RIAL
+diff --git a/app/src/main/java/ir/restaurant/management/OrganizationIdentity.kt b/app/src/main/java/ir/restaurant/management/OrganizationIdentity.kt
+index b7fbc6e..d9a1111 100644
+--- a/app/src/main/java/ir/restaurant/management/OrganizationIdentity.kt
++++ b/app/src/main/java/ir/restaurant/management/OrganizationIdentity.kt
+@@ -1,25 +1,35 @@
+ package ir.restaurant.management
+ 
+ import android.content.Context
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.asStateFlow
+ 
+-const val DEFAULT_ORGANIZATION_TITLE = "مدیریت کافه رستوران"
+-private const val UI_PREFERENCES = "restaurant_manager_ui"
++const val DEFAULT_ORGANIZATION_TITLE = "مدیریت رستوران"
++private const val UI_PREFERENCES = "restaurant_management_ui"
+ private const val ORGANIZATION_NAME_KEY = "organization_name"
+ 
+-fun Context.loadOrganizationName(): String =
+-    getSharedPreferences(UI_PREFERENCES, Context.MODE_PRIVATE)
+-        .getString(ORGANIZATION_NAME_KEY, "")
+-        .orEmpty()
+-        .trim()
+-
+-fun Context.saveOrganizationName(value: String) {
+-    getSharedPreferences(UI_PREFERENCES, Context.MODE_PRIVATE)
+-        .edit()
+-        .putString(ORGANIZATION_NAME_KEY, value.trim())
+-        .apply()
++class OrganizationSettingsStore(context: Context) {
++    private val preferences = context.applicationContext.getSharedPreferences(UI_PREFERENCES, Context.MODE_PRIVATE)
++    private val _organizationName = MutableStateFlow(preferences.getString(ORGANIZATION_NAME_KEY, "").orEmpty().trim())
++    val organizationName: StateFlow<String> = _organizationName.asStateFlow()
++
++    fun updateOrganizationName(value: String) {
++        val normalized = value.trim()
++        require(normalized.length in 2..80) { "نام رستوران / مجموعه باید بین ۲ تا ۸۰ کاراکتر باشد." }
++        check(preferences.edit().putString(ORGANIZATION_NAME_KEY, normalized).commit()) { "ذخیره نام مجموعه انجام نشد." }
++        _organizationName.value = normalized
++    }
++
++    fun reset() {
++        check(preferences.edit().remove(ORGANIZATION_NAME_KEY).commit()) { "بازنشانی نام مجموعه انجام نشد." }
++        _organizationName.value = ""
++    }
++
++    fun displayName(): String = organizationDisplayTitle(_organizationName.value)
+ }
+ 
+-fun organizationDisplayTitle(value: String): String =
+-    value.trim().ifBlank { DEFAULT_ORGANIZATION_TITLE }
++fun organizationDisplayTitle(value: String): String = value.trim().ifBlank { DEFAULT_ORGANIZATION_TITLE }
+ 
+-fun Context.organizationDisplayName(): String = organizationDisplayTitle(loadOrganizationName())
++/** Synchronous projection for print/notification code; persistence remains owned by OrganizationSettingsStore. */
++fun Context.organizationDisplayName(): String = OrganizationSettingsStore(this).displayName()
+diff --git a/app/src/main/java/ir/restaurant/management/application/assets/AssetUseCases.kt b/app/src/main/java/ir/restaurant/management/application/assets/AssetUseCases.kt
+index 6560a6a..a3d8911 100644
+--- a/app/src/main/java/ir/restaurant/management/application/assets/AssetUseCases.kt
++++ b/app/src/main/java/ir/restaurant/management/application/assets/AssetUseCases.kt
+@@ -6,7 +6,7 @@ class AssetUseCases(private val repository: AssetRepository) {
+     val assets get() = repository.assets
+     val depreciations get() = repository.depreciations
+     suspend fun save(id: Long?, draft: AssetDraft) = repository.save(id, draft)
+-    suspend fun recognizeLegacy(id: Long) = repository.recognizeLegacyAsset(id)
++    suspend fun recognizeImported(id: Long) = repository.recognizeImportedAsset(id)
+     suspend fun dispose(id: Long) = repository.dispose(id)
+     suspend fun depreciate(draft: DepreciationDraft) = repository.postDepreciation(draft)
+     suspend fun transfer(draft: AssetTransferDraft) = repository.transfer(draft)
+diff --git a/app/src/main/java/ir/restaurant/management/application/sales/SalesHistoryUseCases.kt b/app/src/main/java/ir/restaurant/management/application/sales/SalesHistoryUseCases.kt
+index ef5ee56..2e88b87 100644
+--- a/app/src/main/java/ir/restaurant/management/application/sales/SalesHistoryUseCases.kt
++++ b/app/src/main/java/ir/restaurant/management/application/sales/SalesHistoryUseCases.kt
