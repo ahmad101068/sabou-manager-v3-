@@ -1,4 +1,4 @@
-name: Phase 1 Room Schema Toolchain Split
+name: Phase 1 Android Build Tools 35 Bootstrap
 
 on:
   push:
@@ -10,92 +10,23 @@ permissions:
   contents: read
 
 jobs:
-  toolchain:
+  sdk-part:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - uses: gradle/actions/setup-gradle@v6
-        with:
-          validate-wrappers: true
-
-      - name: Warm Android and Room build dependencies
+      - name: Stage required Android Build Tools 35.0.0
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf _toolchain_project
-          mkdir _toolchain_project
-          unzip -q "Sabou-Final-ERP-SOURCE-buildfix1.zip" -d _toolchain_project
-          PROJECT_DIR="$(find _toolchain_project -maxdepth 3 -name settings.gradle.kts -printf '%h\n' | head -n1)"
-          test -n "$PROJECT_DIR"
-          chmod +x "$PROJECT_DIR/gradlew"
-          cd "$PROJECT_DIR"
-          ./gradlew :app:compileDebugKotlin --no-daemon --console=plain
-
-      - name: Stage transparent split toolchain folders
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf _split
-          mkdir -p _split/wrapper _split/modules2/caches _split/transforms/caches _split/core/caches _split/android-sdk/build-tools
-          cp -a "$HOME/.gradle/wrapper/." _split/wrapper/
-          cp -a "$HOME/.gradle/caches/modules-2" _split/modules2/caches/
-          for d in "$HOME"/.gradle/caches/transforms-*; do
-            test -e "$d" || continue
-            cp -a "$d" _split/transforms/caches/
-          done
-          for d in "$HOME"/.gradle/caches/*; do
-            base="$(basename "$d")"
-            case "$base" in
-              modules-2|transforms-*) continue ;;
-            esac
-            cp -a "$d" _split/core/caches/
-          done
-          cp -a "$ANDROID_HOME/platforms/android-36" _split/android-sdk/
-          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n1)"
-          test -n "$BT"
-          cp -a "$ANDROID_HOME/build-tools/$BT" _split/android-sdk/build-tools/
-          cp -a "$ANDROID_HOME/licenses" _split/android-sdk/ || true
-          printf '%s\n' "$BT" > _split/android-sdk/BUILD_TOOLS_VERSION.txt
-          du -sh _split/*
-
+          test -d "$ANDROID_HOME/build-tools/35.0.0"
+          mkdir -p _sdk35/build-tools
+          cp -a "$ANDROID_HOME/build-tools/35.0.0" _sdk35/build-tools/
+          du -sh _sdk35/build-tools/35.0.0
       - uses: actions/upload-artifact@v4
         with:
-          name: phase1-gradle-wrapper
+          name: phase1-android-build-tools-35
           retention-days: 2
           compression-level: 6
-          path: _split/wrapper/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phase1-gradle-modules2
-          retention-days: 2
-          compression-level: 6
-          path: _split/modules2/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phase1-gradle-transforms
-          retention-days: 2
-          compression-level: 6
-          path: _split/transforms/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phase1-gradle-core-caches
-          retention-days: 2
-          compression-level: 6
-          path: _split/core/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phase1-android-sdk-compile
-          retention-days: 2
-          compression-level: 6
-          path: _split/android-sdk/
+          if-no-files-found: error
+          path: _sdk35/build-tools/
