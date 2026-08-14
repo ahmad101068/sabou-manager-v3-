@@ -1,49 +1,60 @@
-name: Phase 1 Room Schema Gate
+name: Phase 1 Room Schema Toolchain Bootstrap
 
 on:
   push:
     branches: [phase1-schema-gate]
     paths:
-      - "Sabou-Final-ERP-SOURCE-buildfix1.zip"
       - ".github/workflows/phase1-schema-gate.yml"
 
 permissions:
   contents: read
 
 jobs:
-  schema:
+  toolchain:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
-      - name: Extract source
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf _schema_project
-          mkdir _schema_project
-          unzip -q "Sabou-Final-ERP-SOURCE-buildfix1.zip" -d _schema_project
-          PROJECT_DIR="$(find _schema_project -maxdepth 3 -name settings.gradle.kts -printf '%h\n' | head -n1)"
-          test -n "$PROJECT_DIR"
-          chmod +x "$PROJECT_DIR/gradlew"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
+
       - uses: gradle/actions/setup-gradle@v6
         with:
           validate-wrappers: true
-      - name: Generate Room schema
+
+      - name: Warm Android and Room build dependencies
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf _toolchain_project
+          mkdir _toolchain_project
+          unzip -q "Sabou-Final-ERP-SOURCE-buildfix1.zip" -d _toolchain_project
+          PROJECT_DIR="$(find _toolchain_project -maxdepth 3 -name settings.gradle.kts -printf '%h\n' | head -n1)"
+          test -n "$PROJECT_DIR"
+          chmod +x "$PROJECT_DIR/gradlew"
           cd "$PROJECT_DIR"
-          ./gradlew :app:compileDebugKotlin --no-daemon --console=plain --stacktrace
-          test -f app/schemas/ir.restaurant.management.data.db.AppDatabase/49.json
+          ./gradlew :app:compileDebugKotlin --no-daemon --console=plain
+
+      - name: Stage portable build toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _phase1_toolchain/gradle _phase1_toolchain/android-sdk
+          cp -a "$HOME/.gradle/wrapper" _phase1_toolchain/gradle/
+          cp -a "$HOME/.gradle/caches" _phase1_toolchain/gradle/
+          cp -a "$ANDROID_HOME/platforms/android-36" _phase1_toolchain/android-sdk/
+          cp -a "$ANDROID_HOME/build-tools" _phase1_toolchain/android-sdk/
+          cp -a "$ANDROID_HOME/licenses" _phase1_toolchain/android-sdk/ || true
+          printf 'ANDROID_HOME=%s\n' "$ANDROID_HOME" > _phase1_toolchain/manifest.txt
+          du -sh _phase1_toolchain/*
+
       - uses: actions/upload-artifact@v4
         with:
-          name: phase1-room-schema-49
+          name: phase1-room-build-toolchain
           if-no-files-found: error
-          retention-days: 7
-          path: ${{ env.PROJECT_DIR }}/app/schemas/ir.restaurant.management.data.db.AppDatabase/49.json
+          compression-level: 6
+          retention-days: 2
+          path: _phase1_toolchain/
