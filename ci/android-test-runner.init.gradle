@@ -1,0 +1,5 @@
+allprojects {
+    plugins.withId("com.android.application") {
+        dependencies.add("androidTestImplementation", "androidx.test:runner:1.6.2")
+    }
+}
