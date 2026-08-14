@@ -1,4 +1,4 @@
-name: Phase 1 Room Schema Toolchain Bootstrap
+name: Phase 1 Room Schema Toolchain Split
 
 on:
   push:
@@ -38,23 +38,64 @@ jobs:
           cd "$PROJECT_DIR"
           ./gradlew :app:compileDebugKotlin --no-daemon --console=plain
 
-      - name: Stage portable build toolchain
+      - name: Stage transparent split toolchain folders
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p _phase1_toolchain/gradle _phase1_toolchain/android-sdk
-          cp -a "$HOME/.gradle/wrapper" _phase1_toolchain/gradle/
-          cp -a "$HOME/.gradle/caches" _phase1_toolchain/gradle/
-          cp -a "$ANDROID_HOME/platforms/android-36" _phase1_toolchain/android-sdk/
-          cp -a "$ANDROID_HOME/build-tools" _phase1_toolchain/android-sdk/
-          cp -a "$ANDROID_HOME/licenses" _phase1_toolchain/android-sdk/ || true
-          printf 'ANDROID_HOME=%s\n' "$ANDROID_HOME" > _phase1_toolchain/manifest.txt
-          du -sh _phase1_toolchain/*
+          rm -rf _split
+          mkdir -p _split/wrapper _split/modules2/caches _split/transforms/caches _split/core/caches _split/android-sdk/build-tools
+          cp -a "$HOME/.gradle/wrapper/." _split/wrapper/
+          cp -a "$HOME/.gradle/caches/modules-2" _split/modules2/caches/
+          for d in "$HOME"/.gradle/caches/transforms-*; do
+            test -e "$d" || continue
+            cp -a "$d" _split/transforms/caches/
+          done
+          for d in "$HOME"/.gradle/caches/*; do
+            base="$(basename "$d")"
+            case "$base" in
+              modules-2|transforms-*) continue ;;
+            esac
+            cp -a "$d" _split/core/caches/
+          done
+          cp -a "$ANDROID_HOME/platforms/android-36" _split/android-sdk/
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n1)"
+          test -n "$BT"
+          cp -a "$ANDROID_HOME/build-tools/$BT" _split/android-sdk/build-tools/
+          cp -a "$ANDROID_HOME/licenses" _split/android-sdk/ || true
+          printf '%s\n' "$BT" > _split/android-sdk/BUILD_TOOLS_VERSION.txt
+          du -sh _split/*
 
       - uses: actions/upload-artifact@v4
         with:
-          name: phase1-room-build-toolchain
-          if-no-files-found: error
-          compression-level: 6
+          name: phase1-gradle-wrapper
           retention-days: 2
-          path: _phase1_toolchain/
+          compression-level: 6
+          path: _split/wrapper/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase1-gradle-modules2
+          retention-days: 2
+          compression-level: 6
+          path: _split/modules2/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase1-gradle-transforms
+          retention-days: 2
+          compression-level: 6
+          path: _split/transforms/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase1-gradle-core-caches
+          retention-days: 2
+          compression-level: 6
+          path: _split/core/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase1-android-sdk-compile
+          retention-days: 2
+          compression-level: 6
+          path: _split/android-sdk/
