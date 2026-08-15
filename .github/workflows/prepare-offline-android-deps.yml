@@ -281,7 +281,7 @@ jobs:
           tar -C "$STAGE" -czf "$OUT/android-sdk-api36-linux.tar.gz" .
           sha256sum "$OUT/android-sdk-api36-linux.tar.gz" > "$OUT/android-sdk-api36-linux.sha256"
 
-      - name: Package Gradle and complete project cache
+      - name: Package and split complete Gradle cache
         shell: bash
         run: |
           set -euo pipefail
@@ -301,8 +301,16 @@ jobs:
           Verified by successful online and --offline assemble/unit-test/androidTest-assemble builds.
           EOF
 
-          tar -C "$STAGE" -czf "$OUT/gradle-phase2-complete-offline.tar.gz" .
-          sha256sum "$OUT/gradle-phase2-complete-offline.tar.gz" > "$OUT/gradle-phase2-complete-offline.sha256"
+          ARCHIVE="$OUT/gradle-phase2-complete-offline.tar.gz"
+          tar -C "$STAGE" -czf "$ARCHIVE" .
+          sha256sum "$ARCHIVE" > "$OUT/gradle-phase2-complete-offline.sha256"
+          split -b 250M -d -a 2 "$ARCHIVE" "$ARCHIVE.part"
+          test -f "$ARCHIVE.part00"
+          test -f "$ARCHIVE.part01"
+          test -f "$ARCHIVE.part02"
+          test -f "$ARCHIVE.part03"
+          rm "$ARCHIVE"
+          ls -lh "$OUT"/gradle-phase2-complete-offline*
 
       - name: Upload Android SDK artifact
         uses: actions/upload-artifact@v4
@@ -315,13 +323,47 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-      - name: Upload complete Gradle cache artifact
+      - name: Upload Gradle cache manifest
         uses: actions/upload-artifact@v4
         with:
-          name: gradle-phase2-complete-offline
-          path: |
-            ${{ runner.temp }}/offline-artifacts/gradle-phase2-complete-offline.tar.gz
-            ${{ runner.temp }}/offline-artifacts/gradle-phase2-complete-offline.sha256
+          name: gradle-phase2-complete-offline-manifest
+          path: ${{ runner.temp }}/offline-artifacts/gradle-phase2-complete-offline.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload Gradle cache part 00
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-phase2-complete-offline-part00
+          path: ${{ runner.temp }}/offline-artifacts/gradle-phase2-complete-offline.tar.gz.part00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload Gradle cache part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-phase2-complete-offline-part01
+          path: ${{ runner.temp }}/offline-artifacts/gradle-phase2-complete-offline.tar.gz.part01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload Gradle cache part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-phase2-complete-offline-part02
+          path: ${{ runner.temp }}/offline-artifacts/gradle-phase2-complete-offline.tar.gz.part02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload Gradle cache part 03
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-phase2-complete-offline-part03
+          path: ${{ runner.temp }}/offline-artifacts/gradle-phase2-complete-offline.tar.gz.part03
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
