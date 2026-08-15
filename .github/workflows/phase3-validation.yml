@@ -1,0 +1,80 @@
+name: Phase 3 Final Validation
+
+on:
+  push:
+    branches: [phase3-final-validation]
+    paths:
+      - "phase3-ci-candidate.zip"
+      - ".github/workflows/phase3-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: true
+      - name: Extract candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf phase3-src
+          mkdir phase3-src
+          unzip -q phase3-ci-candidate.zip -d phase3-src
+          chmod +x phase3-src/gradlew
+      - name: Generate Room schema 55
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd phase3-src
+          ./gradlew --no-daemon --console=plain :app:kspDebugKotlin --stacktrace
+          test -f app/schemas/ir.restaurant.management.data.db.AppDatabase/55.json
+      - name: Static verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd phase3-src
+          python scripts/verify-dashboard-ux.py
+          python scripts/verify-branch-port-migration.py
+          python scripts/verify-documentation.py
+          python scripts/verify-code-quality.py
+          python scripts/verify-pre-phase3-standardization.py
+          python scripts/verify-repository-hygiene.py
+          python scripts/verify-security.py
+      - name: Compile and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd phase3-src
+          ./gradlew --no-daemon --console=plain :app:compileDebugKotlin :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin --stacktrace
+      - name: Lint and debug build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd phase3-src
+          ./gradlew --no-daemon --console=plain :app:lintDebug :app:assembleDebug --stacktrace
+      - name: Collect evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          if [ -f phase3-src/app/schemas/ir.restaurant.management.data.db.AppDatabase/55.json ]; then cp phase3-src/app/schemas/ir.restaurant.management.data.db.AppDatabase/55.json evidence/55.json; fi
+          if [ -d phase3-src/app/build/reports ]; then cp -a phase3-src/app/build/reports evidence/build-reports; fi
+          if [ -d phase3-src/app/build/test-results ]; then cp -a phase3-src/app/build/test-results evidence/test-results; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase3-validation-evidence-${{ github.run_id }}
+          path: evidence
+          if-no-files-found: warn
+          retention-days: 7
