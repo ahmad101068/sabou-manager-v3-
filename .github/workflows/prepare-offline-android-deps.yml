@@ -43,22 +43,33 @@ jobs:
             "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
             -o "$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip"
           unzip -q "$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip" -d "$RUNNER_TEMP/gradle"
+          "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin/gradle" --version
           echo "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
-          gradle --version
 
       - name: Install Android SDK API 36 packages
         shell: bash
         run: |
           set -euo pipefail
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager \
+
+          SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager was not found under $ANDROID_SDK_ROOT/cmdline-tools"
+            find "$ANDROID_SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print || true
+            exit 1
+          fi
+          echo "Using sdkmanager: $SDKMANAGER"
+          chmod +x "$SDKMANAGER"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;${BUILD_TOOLS_VERSION}"
+
           test -f "$ANDROID_SDK_ROOT/platforms/android-${ANDROID_API}/android.jar"
           test -x "$ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}/aapt2"
-          adb version
+          "$ANDROID_SDK_ROOT/platform-tools/adb" version
 
       - name: Resolve AGP 8.13.0 and Kotlin plugin into an isolated cache
         shell: bash
@@ -125,10 +136,13 @@ jobs:
           EOF
 
           cd "$RUNNER_TEMP/offline-bootstrap"
-          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" gradle --no-daemon --stacktrace :app:assembleDebug
+          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" \
+            "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin/gradle" \
+            --no-daemon --stacktrace :app:assembleDebug
 
-          # Prove the freshly populated cache really supports an offline Gradle invocation.
-          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" gradle --offline --no-daemon :app:assembleDebug
+          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" \
+            "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin/gradle" \
+            --offline --no-daemon :app:assembleDebug
 
       - name: Package Android SDK subset
         shell: bash
@@ -137,10 +151,13 @@ jobs:
           OUT="$RUNNER_TEMP/offline-artifacts"
           STAGE="$RUNNER_TEMP/android-sdk-api36-linux"
           rm -rf "$OUT" "$STAGE"
-          mkdir -p "$OUT" "$STAGE/android-sdk"
+          mkdir -p \
+            "$OUT" \
+            "$STAGE/android-sdk/platforms" \
+            "$STAGE/android-sdk/build-tools"
 
-          cp -a "$ANDROID_SDK_ROOT/platforms" "$STAGE/android-sdk/"
-          cp -a "$ANDROID_SDK_ROOT/build-tools" "$STAGE/android-sdk/"
+          cp -a "$ANDROID_SDK_ROOT/platforms/android-${ANDROID_API}" "$STAGE/android-sdk/platforms/"
+          cp -a "$ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}" "$STAGE/android-sdk/build-tools/"
           cp -a "$ANDROID_SDK_ROOT/platform-tools" "$STAGE/android-sdk/"
           if [ -d "$ANDROID_SDK_ROOT/licenses" ]; then
             cp -a "$ANDROID_SDK_ROOT/licenses" "$STAGE/android-sdk/"
@@ -166,6 +183,7 @@ jobs:
           set -euo pipefail
           OUT="$RUNNER_TEMP/offline-artifacts"
           STAGE="$RUNNER_TEMP/gradle-agp-8.13-offline"
+          rm -rf "$STAGE"
           mkdir -p "$STAGE"
 
           cp -a "$OFFLINE_GRADLE_HOME" "$STAGE/gradle-user-home"
