@@ -1,0 +1,51 @@
+name: Prepare Android Build Tools 35
+
+on:
+  push:
+    branches:
+      - tools/offline-android-deps
+    paths:
+      - .github/workflows/prepare-android-build-tools-35.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate sdkmanager and install Build Tools 35.0.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' 2>/dev/null | sort -V | tail -n 1 || true)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "build-tools;35.0.0"
+          test -x "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt2"
+
+      - name: Package Build Tools 35.0.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/android-build-tools-35"
+          mkdir -p "$STAGE/build-tools"
+          cp -a "$ANDROID_SDK_ROOT/build-tools/35.0.0" "$STAGE/build-tools/"
+          tar -C "$STAGE" -czf "$RUNNER_TEMP/android-build-tools-35.0.0-linux.tar.gz" .
+          sha256sum "$RUNNER_TEMP/android-build-tools-35.0.0-linux.tar.gz" > "$RUNNER_TEMP/android-build-tools-35.0.0-linux.sha256"
+
+      - name: Upload Build Tools artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-tools-35.0.0-linux
+          path: |
+            ${{ runner.temp }}/android-build-tools-35.0.0-linux.tar.gz
+            ${{ runner.temp }}/android-build-tools-35.0.0-linux.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
