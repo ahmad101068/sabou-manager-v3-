@@ -1,0 +1,41 @@
+name: Prepare Gradle 8.13
+
+on:
+  push:
+    branches:
+      - phase3-validation-20260816
+    paths:
+      - .github/workflows/prepare-gradle-8-13.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download and verify Gradle 8.13
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-delay 3 https://services.gradle.org/distributions/gradle-8.13-bin.zip -o "$RUNNER_TEMP/gradle-8.13-bin.zip"
+          echo '20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78  '"$RUNNER_TEMP/gradle-8.13-bin.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/gradle-8.13-bin.zip" -d "$RUNNER_TEMP/gradle-dist"
+          "$RUNNER_TEMP/gradle-dist/gradle-8.13/bin/gradle" --version
+      - name: Package Gradle distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C "$RUNNER_TEMP/gradle-dist" -czf "$RUNNER_TEMP/gradle-8.13-linux.tar.gz" gradle-8.13
+          sha256sum "$RUNNER_TEMP/gradle-8.13-linux.tar.gz" > "$RUNNER_TEMP/gradle-8.13-linux.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gradle-8.13-linux
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            ${{ runner.temp }}/gradle-8.13-linux.tar.gz
+            ${{ runner.temp }}/gradle-8.13-linux.tar.gz.sha256
