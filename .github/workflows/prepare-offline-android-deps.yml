@@ -73,6 +73,12 @@ jobs:
           rm -rf "$OFFLINE_GRADLE_HOME" "$PROJECT"
           mkdir -p "$OFFLINE_GRADLE_HOME" "$PROJECT/app/src/main" "$PROJECT/app/schemas"
 
+          cat > "$PROJECT/gradle.properties" <<'EOF'
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          EOF
+
           cat > "$PROJECT/settings.gradle.kts" <<'EOF'
           pluginManagement {
               repositories {
