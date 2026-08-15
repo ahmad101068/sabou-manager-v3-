@@ -1,0 +1,208 @@
+name: Prepare Offline Android Dependencies
+
+on:
+  push:
+    branches:
+      - tools/offline-android-deps
+    paths:
+      - .github/workflows/prepare-offline-android-deps.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Build offline Android SDK and AGP cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      GRADLE_VERSION: "8.13"
+      AGP_VERSION: "8.13.0"
+      KOTLIN_VERSION: "2.1.20"
+      ANDROID_API: "36"
+      BUILD_TOOLS_VERSION: "36.0.0"
+      OFFLINE_GRADLE_HOME: ${{ github.workspace }}/offline-gradle-home
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Gradle 8.13
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-delay 3 \
+            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+            -o "$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip"
+          unzip -q "$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip" -d "$RUNNER_TEMP/gradle"
+          echo "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+          gradle --version
+
+      - name: Install Android SDK API 36 packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;${BUILD_TOOLS_VERSION}"
+          test -f "$ANDROID_SDK_ROOT/platforms/android-${ANDROID_API}/android.jar"
+          test -x "$ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}/aapt2"
+          adb version
+
+      - name: Resolve AGP 8.13.0 and Kotlin plugin into an isolated cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OFFLINE_GRADLE_HOME" "$RUNNER_TEMP/offline-bootstrap"
+          mkdir -p "$OFFLINE_GRADLE_HOME" "$RUNNER_TEMP/offline-bootstrap/app/src/main/java/offline/bootstrap"
+
+          cat > "$RUNNER_TEMP/offline-bootstrap/settings.gradle.kts" <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "offline-bootstrap"
+          include(":app")
+          EOF
+
+          cat > "$RUNNER_TEMP/offline-bootstrap/build.gradle.kts" <<EOF
+          plugins {
+              id("com.android.application") version "${AGP_VERSION}" apply false
+              id("org.jetbrains.kotlin.android") version "${KOTLIN_VERSION}" apply false
+          }
+          EOF
+
+          cat > "$RUNNER_TEMP/offline-bootstrap/app/build.gradle.kts" <<EOF
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "offline.bootstrap"
+              compileSdk = ${ANDROID_API}
+
+              defaultConfig {
+                  applicationId = "offline.bootstrap"
+                  minSdk = 23
+                  targetSdk = ${ANDROID_API}
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+          }
+          EOF
+
+          cat > "$RUNNER_TEMP/offline-bootstrap/app/src/main/AndroidManifest.xml" <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="OfflineBootstrap" />
+          </manifest>
+          EOF
+
+          cat > "$RUNNER_TEMP/offline-bootstrap/app/src/main/java/offline/bootstrap/Bootstrap.kt" <<'EOF'
+          package offline.bootstrap
+          object Bootstrap
+          EOF
+
+          cd "$RUNNER_TEMP/offline-bootstrap"
+          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" gradle --no-daemon --stacktrace :app:assembleDebug
+
+          # Prove the freshly populated cache really supports an offline Gradle invocation.
+          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" gradle --offline --no-daemon :app:assembleDebug
+
+      - name: Package Android SDK subset
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/offline-artifacts"
+          STAGE="$RUNNER_TEMP/android-sdk-api36-linux"
+          rm -rf "$OUT" "$STAGE"
+          mkdir -p "$OUT" "$STAGE/android-sdk"
+
+          cp -a "$ANDROID_SDK_ROOT/platforms" "$STAGE/android-sdk/"
+          cp -a "$ANDROID_SDK_ROOT/build-tools" "$STAGE/android-sdk/"
+          cp -a "$ANDROID_SDK_ROOT/platform-tools" "$STAGE/android-sdk/"
+          if [ -d "$ANDROID_SDK_ROOT/licenses" ]; then
+            cp -a "$ANDROID_SDK_ROOT/licenses" "$STAGE/android-sdk/"
+          fi
+
+          cat > "$STAGE/README.txt" <<EOF
+          Offline Android SDK subset for this project.
+          API: ${ANDROID_API}
+          Build Tools: ${BUILD_TOOLS_VERSION}
+          Platform Tools: included
+
+          After extraction, set:
+            ANDROID_HOME=/path/to/android-sdk
+            ANDROID_SDK_ROOT=/path/to/android-sdk
+          EOF
+
+          tar -C "$STAGE" -czf "$OUT/android-sdk-api36-linux.tar.gz" .
+          sha256sum "$OUT/android-sdk-api36-linux.tar.gz" > "$OUT/android-sdk-api36-linux.sha256"
+
+      - name: Package Gradle 8.13 + AGP cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/offline-artifacts"
+          STAGE="$RUNNER_TEMP/gradle-agp-8.13-offline"
+          mkdir -p "$STAGE"
+
+          cp -a "$OFFLINE_GRADLE_HOME" "$STAGE/gradle-user-home"
+          cp -a "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}" "$STAGE/gradle-${GRADLE_VERSION}"
+
+          cat > "$STAGE/README.txt" <<EOF
+          Offline Gradle/Android plugin bundle.
+          Gradle: ${GRADLE_VERSION}
+          Android Gradle Plugin: ${AGP_VERSION}
+          Kotlin Android plugin: ${KOTLIN_VERSION}
+
+          Example:
+            export GRADLE_USER_HOME=/path/to/gradle-user-home
+            /path/to/gradle-${GRADLE_VERSION}/bin/gradle --offline <task>
+          EOF
+
+          tar -C "$STAGE" -czf "$OUT/gradle-8.13-agp-8.13.0-offline.tar.gz" .
+          sha256sum "$OUT/gradle-8.13-agp-8.13.0-offline.tar.gz" > "$OUT/gradle-8.13-agp-8.13.0-offline.sha256"
+
+      - name: Upload Android SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-sdk-api36-linux
+          path: |
+            ${{ runner.temp }}/offline-artifacts/android-sdk-api36-linux.tar.gz
+            ${{ runner.temp }}/offline-artifacts/android-sdk-api36-linux.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload Gradle/AGP offline artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-8.13-agp-8.13.0-offline
+          path: |
+            ${{ runner.temp }}/offline-artifacts/gradle-8.13-agp-8.13.0-offline.tar.gz
+            ${{ runner.temp }}/offline-artifacts/gradle-8.13-agp-8.13.0-offline.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
