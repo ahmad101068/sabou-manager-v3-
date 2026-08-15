@@ -71,7 +71,12 @@ jobs:
           set -euo pipefail
           PROJECT="$RUNNER_TEMP/offline-phase2-deps"
           rm -rf "$OFFLINE_GRADLE_HOME" "$PROJECT"
-          mkdir -p "$OFFLINE_GRADLE_HOME" "$PROJECT/app/src/main" "$PROJECT/app/schemas"
+          mkdir -p \
+            "$OFFLINE_GRADLE_HOME" \
+            "$PROJECT/app/src/main/java/offline/phase2" \
+            "$PROJECT/app/src/test/java/offline/phase2" \
+            "$PROJECT/app/src/androidTest/java/offline/phase2" \
+            "$PROJECT/app/schemas"
 
           cat > "$PROJECT/gradle.properties" <<'EOF'
           android.useAndroidX=true
@@ -133,21 +138,15 @@ jobs:
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
               }
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
+              kotlinOptions { jvmTarget = "17" }
               buildFeatures {
                   compose = true
                   buildConfig = true
               }
-              testOptions {
-                  execution = "ANDROIDX_TEST_ORCHESTRATOR"
-              }
+              testOptions { execution = "ANDROIDX_TEST_ORCHESTRATOR" }
           }
 
-          room {
-              schemaDirectory("$projectDir/schemas")
-          }
+          room { schemaDirectory("$projectDir/schemas") }
 
           dependencies {
               coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3")
@@ -184,27 +183,6 @@ jobs:
               debugImplementation("androidx.compose.ui:ui-tooling")
               debugImplementation("androidx.compose.ui:ui-test-manifest")
           }
-
-          tasks.register("resolveOfflineDependencies") {
-              doLast {
-                  val selected = configurations
-                      .filter { configuration ->
-                          configuration.isCanBeResolved && (
-                              configuration.name.contains("classpath", ignoreCase = true) ||
-                              configuration.name.contains("ksp", ignoreCase = true) ||
-                              configuration.name == "coreLibraryDesugaring" ||
-                              configuration.name == "androidTestUtil"
-                          )
-                      }
-                      .sortedBy { it.name }
-
-                  selected.forEach { configuration ->
-                      println("Resolving ${configuration.name}")
-                      val files = configuration.resolve()
-                      println("Resolved ${configuration.name}: ${files.size} files")
-                  }
-              }
-          }
           EOF
 
           cat > "$PROJECT/app/src/main/AndroidManifest.xml" <<'EOF'
@@ -213,7 +191,52 @@ jobs:
           </manifest>
           EOF
 
-      - name: Resolve complete project dependency set
+          cat > "$PROJECT/app/src/main/java/offline/phase2/OfflineDb.kt" <<'EOF'
+          package offline.phase2
+
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.room.Database
+          import androidx.room.Entity
+          import androidx.room.PrimaryKey
+          import androidx.room.RoomDatabase
+
+          @Entity
+          data class OfflineEntity(@PrimaryKey val id: Long)
+
+          @Database(entities = [OfflineEntity::class], version = 1, exportSchema = true)
+          abstract class OfflineDb : RoomDatabase()
+
+          @Composable
+          fun OfflineUi() { Text("offline") }
+          EOF
+
+          cat > "$PROJECT/app/src/test/java/offline/phase2/OfflineUnitTest.kt" <<'EOF'
+          package offline.phase2
+
+          import org.junit.Assert.assertTrue
+          import org.junit.Test
+
+          class OfflineUnitTest {
+              @Test fun dependenciesResolve() { assertTrue(true) }
+          }
+          EOF
+
+          cat > "$PROJECT/app/src/androidTest/java/offline/phase2/OfflineAndroidTest.kt" <<'EOF'
+          package offline.phase2
+
+          import androidx.test.ext.junit.runners.AndroidJUnit4
+          import org.junit.Assert.assertTrue
+          import org.junit.Test
+          import org.junit.runner.RunWith
+
+          @RunWith(AndroidJUnit4::class)
+          class OfflineAndroidTest {
+              @Test fun dependenciesResolve() { assertTrue(true) }
+          }
+          EOF
+
+      - name: Resolve and verify complete dependency set online and offline
         shell: bash
         run: |
           set -euo pipefail
@@ -222,13 +245,11 @@ jobs:
           cd "$PROJECT"
 
           GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" "$GRADLE" --no-daemon --stacktrace \
-            :app:resolveOfflineDependencies \
             :app:assembleDebug \
             :app:testDebugUnitTest \
             :app:assembleDebugAndroidTest
 
           GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" "$GRADLE" --offline --no-daemon \
-            :app:resolveOfflineDependencies \
             :app:assembleDebug \
             :app:testDebugUnitTest \
             :app:assembleDebugAndroidTest
@@ -245,9 +266,7 @@ jobs:
           cp -a "$ANDROID_SDK_ROOT/platforms/android-${ANDROID_API}" "$STAGE/android-sdk/platforms/"
           cp -a "$ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}" "$STAGE/android-sdk/build-tools/"
           cp -a "$ANDROID_SDK_ROOT/platform-tools" "$STAGE/android-sdk/"
-          if [ -d "$ANDROID_SDK_ROOT/licenses" ]; then
-            cp -a "$ANDROID_SDK_ROOT/licenses" "$STAGE/android-sdk/"
-          fi
+          if [ -d "$ANDROID_SDK_ROOT/licenses" ]; then cp -a "$ANDROID_SDK_ROOT/licenses" "$STAGE/android-sdk/"; fi
 
           cat > "$STAGE/README.txt" <<EOF
           Offline Android SDK subset for Phase 2 verification.
@@ -276,7 +295,7 @@ jobs:
           Gradle: ${GRADLE_VERSION}
           AGP: ${AGP_VERSION}
           Kotlin: ${KOTLIN_VERSION}
-          Includes Compose plugin/dependencies, KSP, Room, AndroidX, SQLCipher and test dependencies.
+          Verified by successful online and --offline assemble/unit-test/androidTest-assemble builds.
           EOF
 
           tar -C "$STAGE" -czf "$OUT/gradle-phase2-complete-offline.tar.gz" .
