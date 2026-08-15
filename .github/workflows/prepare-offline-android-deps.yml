@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   prepare:
-    name: Build offline Android SDK and AGP cache
+    name: Build complete offline Android SDK and Gradle cache
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -44,21 +44,16 @@ jobs:
             -o "$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip"
           unzip -q "$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip" -d "$RUNNER_TEMP/gradle"
           "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin/gradle" --version
-          echo "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
 
       - name: Install Android SDK API 36 packages
         shell: bash
         run: |
           set -euo pipefail
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-
           SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' 2>/dev/null | sort -V | tail -n 1 || true)"
           if [ -z "$SDKMANAGER" ]; then
             echo "sdkmanager was not found under $ANDROID_SDK_ROOT/cmdline-tools"
-            find "$ANDROID_SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print || true
             exit 1
           fi
-          echo "Using sdkmanager: $SDKMANAGER"
 
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" \
@@ -70,14 +65,15 @@ jobs:
           test -x "$ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}/aapt2"
           "$ANDROID_SDK_ROOT/platform-tools/adb" version
 
-      - name: Resolve AGP 8.13.0 and Kotlin plugin into an isolated cache
+      - name: Create dependency mirror project matching Phase 2
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$OFFLINE_GRADLE_HOME" "$RUNNER_TEMP/offline-bootstrap"
-          mkdir -p "$OFFLINE_GRADLE_HOME" "$RUNNER_TEMP/offline-bootstrap/app/src/main"
+          PROJECT="$RUNNER_TEMP/offline-phase2-deps"
+          rm -rf "$OFFLINE_GRADLE_HOME" "$PROJECT"
+          mkdir -p "$OFFLINE_GRADLE_HOME" "$PROJECT/app/src/main" "$PROJECT/app/schemas"
 
-          cat > "$RUNNER_TEMP/offline-bootstrap/settings.gradle.kts" <<'EOF'
+          cat > "$PROJECT/settings.gradle.kts" <<'EOF'
           pluginManagement {
               repositories {
                   google()
@@ -92,50 +88,144 @@ jobs:
                   mavenCentral()
               }
           }
-          rootProject.name = "offline-bootstrap"
+          rootProject.name = "phase2-offline-dependency-mirror"
           include(":app")
           EOF
 
-          cat > "$RUNNER_TEMP/offline-bootstrap/build.gradle.kts" <<EOF
+          cat > "$PROJECT/build.gradle.kts" <<'EOF'
           plugins {
-              id("com.android.application") version "${AGP_VERSION}" apply false
-              id("org.jetbrains.kotlin.android") version "${KOTLIN_VERSION}" apply false
+              id("com.android.application") version "8.13.0" apply false
+              id("org.jetbrains.kotlin.android") version "2.1.20" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.1.20" apply false
+              id("com.google.devtools.ksp") version "2.1.20-2.0.1" apply false
+              id("androidx.room") version "2.8.4" apply false
           }
           EOF
 
-          cat > "$RUNNER_TEMP/offline-bootstrap/app/build.gradle.kts" <<EOF
+          cat > "$PROJECT/app/build.gradle.kts" <<'EOF'
           plugins {
               id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+              id("com.google.devtools.ksp")
+              id("androidx.room")
           }
 
           android {
-              namespace = "offline.bootstrap"
-              compileSdk = ${ANDROID_API}
-
+              namespace = "offline.phase2"
+              compileSdk = 36
               defaultConfig {
-                  applicationId = "offline.bootstrap"
+                  applicationId = "offline.phase2"
                   minSdk = 23
-                  targetSdk = ${ANDROID_API}
+                  targetSdk = 36
                   versionCode = 1
                   versionName = "1.0"
+                  testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+              }
+              compileOptions {
+                  isCoreLibraryDesugaringEnabled = true
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+              buildFeatures {
+                  compose = true
+                  buildConfig = true
+              }
+              testOptions {
+                  execution = "ANDROIDX_TEST_ORCHESTRATOR"
+              }
+          }
+
+          room {
+              schemaDirectory("$projectDir/schemas")
+          }
+
+          dependencies {
+              coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3")
+              implementation("androidx.core:core-ktx:1.17.0")
+              implementation("androidx.activity:activity-compose:1.11.0")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
+              implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
+              implementation("androidx.navigation:navigation-compose:2.9.8")
+              implementation(platform("androidx.compose:compose-bom:2026.06.00"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-tooling-preview")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-extended")
+              implementation("androidx.room:room-runtime:2.8.4")
+              implementation("androidx.room:room-ktx:2.8.4")
+              implementation("androidx.work:work-runtime-ktx:2.11.2")
+              implementation("androidx.datastore:datastore-preferences:1.2.1")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+              implementation("net.zetetic:sqlcipher-android:4.17.0")
+              implementation("androidx.sqlite:sqlite:2.6.2")
+              ksp("androidx.room:room-compiler:2.8.4")
+
+              testImplementation("junit:junit:4.13.2")
+              testImplementation(kotlin("test"))
+              androidTestImplementation("junit:junit:4.13.2")
+              androidTestImplementation("androidx.test:core:1.6.1")
+              androidTestImplementation("androidx.test.ext:junit:1.2.1")
+              androidTestImplementation("androidx.sqlite:sqlite-framework:2.6.2")
+              androidTestImplementation(platform("androidx.compose:compose-bom:2026.06.00"))
+              androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+              androidTestUtil("androidx.test:orchestrator:1.6.1")
+              debugImplementation("androidx.compose.ui:ui-tooling")
+              debugImplementation("androidx.compose.ui:ui-test-manifest")
+          }
+
+          tasks.register("resolveOfflineDependencies") {
+              doLast {
+                  val selected = configurations
+                      .filter { configuration ->
+                          configuration.isCanBeResolved && (
+                              configuration.name.contains("classpath", ignoreCase = true) ||
+                              configuration.name.contains("ksp", ignoreCase = true) ||
+                              configuration.name == "coreLibraryDesugaring" ||
+                              configuration.name == "androidTestUtil"
+                          )
+                      }
+                      .sortedBy { it.name }
+
+                  selected.forEach { configuration ->
+                      println("Resolving ${configuration.name}")
+                      val files = configuration.resolve()
+                      println("Resolved ${configuration.name}: ${files.size} files")
+                  }
               }
           }
           EOF
 
-          cat > "$RUNNER_TEMP/offline-bootstrap/app/src/main/AndroidManifest.xml" <<'EOF'
+          cat > "$PROJECT/app/src/main/AndroidManifest.xml" <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <application android:label="OfflineBootstrap" />
+              <application android:label="Phase2OfflineDeps" />
           </manifest>
           EOF
 
-          cd "$RUNNER_TEMP/offline-bootstrap"
-          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" \
-            "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin/gradle" \
-            --no-daemon --stacktrace :app:assembleDebug
+      - name: Resolve complete project dependency set
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT="$RUNNER_TEMP/offline-phase2-deps"
+          GRADLE="$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin/gradle"
+          cd "$PROJECT"
 
-          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" \
-            "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin/gradle" \
-            --offline --no-daemon :app:assembleDebug
+          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" "$GRADLE" --no-daemon --stacktrace \
+            :app:resolveOfflineDependencies \
+            :app:assembleDebug \
+            :app:testDebugUnitTest \
+            :app:assembleDebugAndroidTest
+
+          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" "$GRADLE" --offline --no-daemon \
+            :app:resolveOfflineDependencies \
+            :app:assembleDebug \
+            :app:testDebugUnitTest \
+            :app:assembleDebugAndroidTest
 
       - name: Package Android SDK subset
         shell: bash
@@ -144,10 +234,7 @@ jobs:
           OUT="$RUNNER_TEMP/offline-artifacts"
           STAGE="$RUNNER_TEMP/android-sdk-api36-linux"
           rm -rf "$OUT" "$STAGE"
-          mkdir -p \
-            "$OUT" \
-            "$STAGE/android-sdk/platforms" \
-            "$STAGE/android-sdk/build-tools"
+          mkdir -p "$OUT" "$STAGE/android-sdk/platforms" "$STAGE/android-sdk/build-tools"
 
           cp -a "$ANDROID_SDK_ROOT/platforms/android-${ANDROID_API}" "$STAGE/android-sdk/platforms/"
           cp -a "$ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}" "$STAGE/android-sdk/build-tools/"
@@ -157,25 +244,21 @@ jobs:
           fi
 
           cat > "$STAGE/README.txt" <<EOF
-          Offline Android SDK subset for this project.
+          Offline Android SDK subset for Phase 2 verification.
           API: ${ANDROID_API}
           Build Tools: ${BUILD_TOOLS_VERSION}
           Platform Tools: included
-
-          After extraction, set:
-            ANDROID_HOME=/path/to/android-sdk
-            ANDROID_SDK_ROOT=/path/to/android-sdk
           EOF
 
           tar -C "$STAGE" -czf "$OUT/android-sdk-api36-linux.tar.gz" .
           sha256sum "$OUT/android-sdk-api36-linux.tar.gz" > "$OUT/android-sdk-api36-linux.sha256"
 
-      - name: Package Gradle 8.13 + AGP cache
+      - name: Package Gradle and complete project cache
         shell: bash
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/offline-artifacts"
-          STAGE="$RUNNER_TEMP/gradle-agp-8.13-offline"
+          STAGE="$RUNNER_TEMP/gradle-phase2-offline"
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
 
@@ -183,18 +266,15 @@ jobs:
           cp -a "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}" "$STAGE/gradle-${GRADLE_VERSION}"
 
           cat > "$STAGE/README.txt" <<EOF
-          Offline Gradle/Android plugin bundle.
+          Complete offline Gradle cache for the Phase 2 dependency set.
           Gradle: ${GRADLE_VERSION}
-          Android Gradle Plugin: ${AGP_VERSION}
-          Kotlin Android plugin: ${KOTLIN_VERSION}
-
-          Example:
-            export GRADLE_USER_HOME=/path/to/gradle-user-home
-            /path/to/gradle-${GRADLE_VERSION}/bin/gradle --offline <task>
+          AGP: ${AGP_VERSION}
+          Kotlin: ${KOTLIN_VERSION}
+          Includes Compose plugin/dependencies, KSP, Room, AndroidX, SQLCipher and test dependencies.
           EOF
 
-          tar -C "$STAGE" -czf "$OUT/gradle-8.13-agp-8.13.0-offline.tar.gz" .
-          sha256sum "$OUT/gradle-8.13-agp-8.13.0-offline.tar.gz" > "$OUT/gradle-8.13-agp-8.13.0-offline.sha256"
+          tar -C "$STAGE" -czf "$OUT/gradle-phase2-complete-offline.tar.gz" .
+          sha256sum "$OUT/gradle-phase2-complete-offline.tar.gz" > "$OUT/gradle-phase2-complete-offline.sha256"
 
       - name: Upload Android SDK artifact
         uses: actions/upload-artifact@v4
@@ -207,13 +287,13 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-      - name: Upload Gradle/AGP offline artifact
+      - name: Upload complete Gradle cache artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gradle-8.13-agp-8.13.0-offline
+          name: gradle-phase2-complete-offline
           path: |
-            ${{ runner.temp }}/offline-artifacts/gradle-8.13-agp-8.13.0-offline.tar.gz
-            ${{ runner.temp }}/offline-artifacts/gradle-8.13-agp-8.13.0-offline.sha256
+            ${{ runner.temp }}/offline-artifacts/gradle-phase2-complete-offline.tar.gz
+            ${{ runner.temp }}/offline-artifacts/gradle-phase2-complete-offline.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
