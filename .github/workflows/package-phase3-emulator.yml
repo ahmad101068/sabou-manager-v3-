@@ -46,22 +46,37 @@ jobs:
           ARCHIVE="$OUT/phase3-api35-emulator-sdk.tar.gz"
           tar -C "$STAGE" -czf "$ARCHIVE" .
           sha256sum "$ARCHIVE" > "$OUT/phase3-api35-emulator-sdk.sha256"
-          split -b 180M -d -a 2 "$ARCHIVE" "$ARCHIVE.part"
+          split -b 350M -d -a 2 "$ARCHIVE" "$ARCHIVE.part"
           rm "$ARCHIVE"
+          for n in 00 01 02 03 04 05 06; do test -f "$OUT/phase3-api35-emulator-sdk.tar.gz.part$n"; done
           ls -lh "$OUT"
 
       - name: Upload manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: phase3-api35-emulator-manifest
+          name: phase3-api35-emulator-manifest-v2
           path: ${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.sha256
           compression-level: 0
           retention-days: 7
 
-      - name: Upload emulator parts
+      - name: Upload part 00
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: phase3-api35-emulator-parts
-          path: ${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.tar.gz.part*
-          compression-level: 0
-          retention-days: 7
+        with: { name: phase3-api35-emulator-part00, path: '${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.tar.gz.part00', compression-level: 0, retention-days: 7 }
+      - name: Upload part 01
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: phase3-api35-emulator-part01, path: '${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.tar.gz.part01', compression-level: 0, retention-days: 7 }
+      - name: Upload part 02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: phase3-api35-emulator-part02, path: '${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.tar.gz.part02', compression-level: 0, retention-days: 7 }
+      - name: Upload part 03
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: phase3-api35-emulator-part03, path: '${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.tar.gz.part03', compression-level: 0, retention-days: 7 }
+      - name: Upload part 04
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: phase3-api35-emulator-part04, path: '${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.tar.gz.part04', compression-level: 0, retention-days: 7 }
+      - name: Upload part 05
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: phase3-api35-emulator-part05, path: '${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.tar.gz.part05', compression-level: 0, retention-days: 7 }
+      - name: Upload part 06
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: phase3-api35-emulator-part06, path: '${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.tar.gz.part06', compression-level: 0, retention-days: 7 }
