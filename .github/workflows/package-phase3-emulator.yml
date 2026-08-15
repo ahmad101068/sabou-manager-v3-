@@ -1,0 +1,67 @@
+name: Package Phase 3 Android Emulator
+
+on:
+  push:
+    branches:
+      - tools/offline-android-deps
+    paths:
+      - .github/workflows/package-phase3-emulator.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Install API 35 emulator system image
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "emulator" \
+            "system-images;android-35;google_apis;x86_64"
+          test -x "$ANDROID_SDK_ROOT/emulator/emulator"
+          test -d "$ANDROID_SDK_ROOT/system-images/android-35/google_apis/x86_64"
+
+      - name: Package emulator SDK subset
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/phase3-emulator-sdk"
+          OUT="$RUNNER_TEMP/phase3-emulator-out"
+          rm -rf "$STAGE" "$OUT"
+          mkdir -p "$STAGE/android-sdk/system-images/android-35/google_apis" "$STAGE/android-sdk/cmdline-tools" "$OUT"
+          cp -a "$ANDROID_SDK_ROOT/emulator" "$STAGE/android-sdk/"
+          cp -a "$ANDROID_SDK_ROOT/platform-tools" "$STAGE/android-sdk/"
+          cp -a "$ANDROID_SDK_ROOT/system-images/android-35/google_apis/x86_64" "$STAGE/android-sdk/system-images/android-35/google_apis/"
+          cp -a "$ANDROID_SDK_ROOT/cmdline-tools"/* "$STAGE/android-sdk/cmdline-tools/"
+          if [ -d "$ANDROID_SDK_ROOT/licenses" ]; then cp -a "$ANDROID_SDK_ROOT/licenses" "$STAGE/android-sdk/"; fi
+          ARCHIVE="$OUT/phase3-api35-emulator-sdk.tar.gz"
+          tar -C "$STAGE" -czf "$ARCHIVE" .
+          sha256sum "$ARCHIVE" > "$OUT/phase3-api35-emulator-sdk.sha256"
+          split -b 180M -d -a 2 "$ARCHIVE" "$ARCHIVE.part"
+          rm "$ARCHIVE"
+          ls -lh "$OUT"
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3-api35-emulator-manifest
+          path: ${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.sha256
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload emulator parts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3-api35-emulator-parts
+          path: ${{ runner.temp }}/phase3-emulator-out/phase3-api35-emulator-sdk.tar.gz.part*
+          compression-level: 0
+          retention-days: 7
