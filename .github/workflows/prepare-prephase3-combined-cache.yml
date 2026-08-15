@@ -1,0 +1,328 @@
+name: Prepare Pre-Phase3 Combined Offline Cache
+
+on:
+  push:
+    branches:
+      - tools/offline-android-deps
+    paths:
+      - .github/workflows/prepare-prephase3-combined-cache.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Resolve build and lint dependencies in one Gradle cache
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      GRADLE_VERSION: "8.13"
+      OFFLINE_GRADLE_HOME: ${{ github.workspace }}/prephase3-gradle-home
+
+    steps:
+      - name: Checkout tooling branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Gradle 8.13
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-delay 3 \
+            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+            -o "$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip"
+          unzip -q "$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip" -d "$RUNNER_TEMP/gradle"
+          "$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin/gradle" --version
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' 2>/dev/null | sort -V | tail -n 1)"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "build-tools;36.0.0"
+
+      - name: Create dependency mirror matching approved V54 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT="$RUNNER_TEMP/prephase3-deps"
+          rm -rf "$OFFLINE_GRADLE_HOME" "$PROJECT"
+          mkdir -p \
+            "$OFFLINE_GRADLE_HOME" \
+            "$PROJECT/app/src/main/java/offline/prephase3" \
+            "$PROJECT/app/src/test/java/offline/prephase3" \
+            "$PROJECT/app/src/androidTest/java/offline/prephase3" \
+            "$PROJECT/app/schemas"
+
+          cat > "$PROJECT/gradle.properties" <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          org.gradle.parallel=false
+          org.gradle.caching=true
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          EOF
+
+          cat > "$PROJECT/settings.gradle.kts" <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "prephase3-offline-dependency-mirror"
+          include(":app")
+          EOF
+
+          cat > "$PROJECT/build.gradle.kts" <<'EOF'
+          plugins {
+              id("com.android.application") version "8.13.0" apply false
+              id("org.jetbrains.kotlin.android") version "2.1.20" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.1.20" apply false
+              id("com.google.devtools.ksp") version "2.1.20-2.0.1" apply false
+              id("androidx.room") version "2.8.4" apply false
+          }
+          EOF
+
+          cat > "$PROJECT/app/build.gradle.kts" <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+              id("com.google.devtools.ksp")
+              id("androidx.room")
+          }
+
+          android {
+              namespace = "offline.prephase3"
+              compileSdk = 36
+              defaultConfig {
+                  applicationId = "offline.prephase3"
+                  minSdk = 23
+                  targetSdk = 36
+                  versionCode = 209
+                  versionName = "1.0.0"
+                  testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+              }
+              compileOptions {
+                  isCoreLibraryDesugaringEnabled = true
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              buildFeatures {
+                  compose = true
+                  buildConfig = true
+              }
+              testOptions { execution = "ANDROIDX_TEST_ORCHESTRATOR" }
+          }
+
+          room { schemaDirectory("$projectDir/schemas") }
+
+          dependencies {
+              coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3")
+              implementation("androidx.core:core-ktx:1.17.0")
+              implementation("androidx.activity:activity-compose:1.11.0")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
+              implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
+              implementation("androidx.navigation:navigation-compose:2.9.8")
+              implementation(platform("androidx.compose:compose-bom:2026.06.00"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-tooling-preview")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-extended")
+              implementation("androidx.room:room-runtime:2.8.4")
+              implementation("androidx.room:room-ktx:2.8.4")
+              implementation("androidx.work:work-runtime-ktx:2.11.2")
+              implementation("androidx.datastore:datastore-preferences:1.2.1")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+              implementation("net.zetetic:sqlcipher-android:4.17.0")
+              implementation("androidx.sqlite:sqlite:2.6.2")
+              ksp("androidx.room:room-compiler:2.8.4")
+
+              testImplementation("junit:junit:4.13.2")
+              testImplementation(kotlin("test"))
+              androidTestImplementation("junit:junit:4.13.2")
+              androidTestImplementation("androidx.test:core:1.6.1")
+              androidTestImplementation("androidx.test.ext:junit:1.2.1")
+              androidTestImplementation("androidx.sqlite:sqlite-framework:2.6.2")
+              androidTestImplementation(platform("androidx.compose:compose-bom:2026.06.00"))
+              androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+              androidTestUtil("androidx.test:orchestrator:1.6.1")
+              debugImplementation("androidx.compose.ui:ui-tooling")
+              debugImplementation("androidx.compose.ui:ui-test-manifest")
+          }
+          EOF
+
+          cat > "$PROJECT/app/src/main/AndroidManifest.xml" <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="PrePhase3OfflineDeps" />
+          </manifest>
+          EOF
+
+          cat > "$PROJECT/app/src/main/java/offline/prephase3/OfflineDb.kt" <<'EOF'
+          package offline.prephase3
+
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.room.Database
+          import androidx.room.Entity
+          import androidx.room.PrimaryKey
+          import androidx.room.RoomDatabase
+
+          @Entity
+          data class OfflineEntity(@PrimaryKey val id: Long)
+
+          @Database(entities = [OfflineEntity::class], version = 1, exportSchema = true)
+          abstract class OfflineDb : RoomDatabase()
+
+          @Composable
+          fun OfflineUi() { Text("offline") }
+          EOF
+
+          cat > "$PROJECT/app/src/test/java/offline/prephase3/OfflineUnitTest.kt" <<'EOF'
+          package offline.prephase3
+
+          import org.junit.Assert.assertTrue
+          import org.junit.Test
+
+          class OfflineUnitTest {
+              @Test fun dependenciesResolve() { assertTrue(true) }
+          }
+          EOF
+
+          cat > "$PROJECT/app/src/androidTest/java/offline/prephase3/OfflineAndroidTest.kt" <<'EOF'
+          package offline.prephase3
+
+          import androidx.test.ext.junit.runners.AndroidJUnit4
+          import org.junit.Assert.assertTrue
+          import org.junit.Test
+          import org.junit.runner.RunWith
+
+          @RunWith(AndroidJUnit4::class)
+          class OfflineAndroidTest {
+              @Test fun dependenciesResolve() { assertTrue(true) }
+          }
+          EOF
+
+      - name: Resolve build, test-compile, and lint dependencies online then offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT="$RUNNER_TEMP/prephase3-deps"
+          GRADLE="$RUNNER_TEMP/gradle/gradle-${GRADLE_VERSION}/bin/gradle"
+          cd "$PROJECT"
+
+          TASKS=(
+            :app:assembleDebug
+            :app:testDebugUnitTest
+            :app:assembleDebugAndroidTest
+            :app:lintDebug
+            :app:lintRelease
+          )
+
+          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" "$GRADLE" --no-daemon --max-workers=1 "${TASKS[@]}"
+          GRADLE_USER_HOME="$OFFLINE_GRADLE_HOME" "$GRADLE" --offline --no-daemon --max-workers=1 "${TASKS[@]}"
+
+      - name: Package and split combined Gradle user home
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/prephase3-cache-artifacts"
+          mkdir -p "$OUT"
+          ARCHIVE="$OUT/prephase3-combined-gradle-home.tar.gz"
+          tar -C "$OFFLINE_GRADLE_HOME" -czf "$ARCHIVE" .
+          sha256sum "$ARCHIVE" > "$OUT/prephase3-combined-gradle-home.sha256"
+          split -b 150M -d -a 2 "$ARCHIVE" "$ARCHIVE.part"
+          rm "$ARCHIVE"
+          for n in 00 01 02 03 04 05 06 07; do
+            test -e "$ARCHIVE.part$n" || : > "$ARCHIVE.part$n"
+          done
+          ls -lh "$OUT"
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prephase3-combined-cache-manifest
+          path: ${{ runner.temp }}/prephase3-cache-artifacts/prephase3-combined-gradle-home.sha256
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload part 00
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prephase3-combined-cache-part00
+          path: ${{ runner.temp }}/prephase3-cache-artifacts/prephase3-combined-gradle-home.tar.gz.part00
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 01
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prephase3-combined-cache-part01
+          path: ${{ runner.temp }}/prephase3-cache-artifacts/prephase3-combined-gradle-home.tar.gz.part01
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prephase3-combined-cache-part02
+          path: ${{ runner.temp }}/prephase3-cache-artifacts/prephase3-combined-gradle-home.tar.gz.part02
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 03
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prephase3-combined-cache-part03
+          path: ${{ runner.temp }}/prephase3-cache-artifacts/prephase3-combined-gradle-home.tar.gz.part03
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 04
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prephase3-combined-cache-part04
+          path: ${{ runner.temp }}/prephase3-cache-artifacts/prephase3-combined-gradle-home.tar.gz.part04
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 05
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prephase3-combined-cache-part05
+          path: ${{ runner.temp }}/prephase3-cache-artifacts/prephase3-combined-gradle-home.tar.gz.part05
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 06
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prephase3-combined-cache-part06
+          path: ${{ runner.temp }}/prephase3-cache-artifacts/prephase3-combined-gradle-home.tar.gz.part06
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 07
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prephase3-combined-cache-part07
+          path: ${{ runner.temp }}/prephase3-cache-artifacts/prephase3-combined-gradle-home.tar.gz.part07
+          compression-level: 0
+          retention-days: 7
