@@ -75,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf "$OFFLINE_GRADLE_HOME" "$RUNNER_TEMP/offline-bootstrap"
-          mkdir -p "$OFFLINE_GRADLE_HOME" "$RUNNER_TEMP/offline-bootstrap/app/src/main/java/offline/bootstrap"
+          mkdir -p "$OFFLINE_GRADLE_HOME" "$RUNNER_TEMP/offline-bootstrap/app/src/main"
 
           cat > "$RUNNER_TEMP/offline-bootstrap/settings.gradle.kts" <<'EOF'
           pluginManagement {
@@ -106,7 +106,6 @@ jobs:
           cat > "$RUNNER_TEMP/offline-bootstrap/app/build.gradle.kts" <<EOF
           plugins {
               id("com.android.application")
-              id("org.jetbrains.kotlin.android")
           }
 
           android {
@@ -127,11 +126,6 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <application android:label="OfflineBootstrap" />
           </manifest>
-          EOF
-
-          cat > "$RUNNER_TEMP/offline-bootstrap/app/src/main/java/offline/bootstrap/Bootstrap.kt" <<'EOF'
-          package offline.bootstrap
-          object Bootstrap
           EOF
 
           cd "$RUNNER_TEMP/offline-bootstrap"
