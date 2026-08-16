@@ -38,6 +38,8 @@ jobs:
             phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt \
             phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt \
             phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+          echo '--- PATCHED CRM CONTEXT ---'
+          nl -ba phase3-source/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt | sed -n '110,380p'
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
