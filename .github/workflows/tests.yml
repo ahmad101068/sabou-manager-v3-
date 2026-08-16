@@ -76,6 +76,8 @@ jobs:
           api-level: ${{ matrix.api-level }}
           arch: x86_64
           target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
           disable-animations: true
           script: cd "$GITHUB_WORKSPACE/phase3-source" && gradle --no-daemon :app:connectedDebugAndroidTest
       - name: Summarize connected JUnit evidence
@@ -121,12 +123,10 @@ jobs:
           api-level: 35
           arch: x86_64
           target: google_apis_ps16k
+          ram-size: 3072M
+          heap-size: 512M
           disable-animations: true
-          script: |
-            page_size="$(adb shell getconf PAGE_SIZE | tr -d '\r')"
-            test "$page_size" = "16384"
-            cd "$GITHUB_WORKSPACE/phase3-source"
-            gradle --no-daemon :app:connectedDebugAndroidTest
+          script: page_size="$(adb shell getconf PAGE_SIZE | tr -d '\r')" && echo "RUNTIME_PAGE_SIZE=$page_size" && test "$page_size" = "16384" && cd "$GITHUB_WORKSPACE/phase3-source" && gradle --no-daemon :app:connectedDebugAndroidTest
       - name: Summarize 16KB connected JUnit evidence
         working-directory: phase3-source
         run: python3 scripts/summarize-test-results.py app/build/outputs/androidTest-results/connected --label CONNECTED_16KB
