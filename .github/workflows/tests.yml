@@ -25,6 +25,8 @@ jobs:
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
           git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
           git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
+          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
+          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
           grep -Fq 'const val DATABASE_NAME = "restaurant_management.db"' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt
           grep -Fq 'QuantityMicros.positive(1_000_000L)' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
           grep -Fq 'fun inventoryHome_showsInventoryContext_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
@@ -37,9 +39,8 @@ jobs:
             phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt \
             phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt \
             phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
-          echo '--- PATCHED CRM CONTEXT ---'
-          nl -ba phase3-source/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt | sed -n '110,380p'
+            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt \
+            phase3-source/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -81,6 +82,8 @@ jobs:
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
           git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
           git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
+          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
+          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
           grep -Fq 'const val DATABASE_NAME = "restaurant_management.db"' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt
           grep -Fq 'QuantityMicros.positive(1_000_000L)' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
           grep -Fq 'fun inventoryHome_showsInventoryContext_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
@@ -93,7 +96,8 @@ jobs:
             phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt \
             phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt \
             phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt \
+            phase3-source/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -146,6 +150,8 @@ jobs:
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
           git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
           git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
+          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
+          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
           grep -Fq 'const val DATABASE_NAME = "restaurant_management.db"' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt
           grep -Fq 'QuantityMicros.positive(1_000_000L)' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
           grep -Fq 'fun inventoryHome_showsInventoryContext_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
@@ -158,7 +164,8 @@ jobs:
             phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt \
             phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt \
             phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt \
+            phase3-source/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
