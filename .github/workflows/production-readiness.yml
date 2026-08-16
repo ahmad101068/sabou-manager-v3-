@@ -21,18 +21,13 @@ jobs:
       - name: Extract exact Part 3B candidate
         run: |
           set -euo pipefail
-          cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
-          unzip -t phase3-part3b-ci-source.zip >/dev/null
-          mkdir phase3-source
-          unzip -q phase3-part3b-ci-source.zip -d phase3-source
-          git -C phase3-source apply "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
-          chmod +x phase3-source/gradlew
+          bash .github/scripts/reconstruct-part3b-candidate.sh
           cd phase3-source
           git init
           git config user.name "Part 3B Schema Drift Gate"
           git config user.email "part3b-schema-gate@local.invalid"
           git add -A
-          git commit -m "Exact extracted Part 3B candidate"
+          git commit -m "Exact reconstructed Part 3B candidate"
       - name: Set up JDK 17
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
@@ -87,7 +82,7 @@ jobs:
       - name: Inspect Android artifacts and record evidence
         working-directory: phase3-source
         env:
-          SOURCE_COMMIT: 15210f75eed7aed5b7afa02b7431697314d14c4a
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha }}
         run: |
           bash scripts/inspect-android-artifacts.sh
           mkdir -p build/evidence
