@@ -117,3 +117,20 @@ index 7f7b7dd..7ef4e62 100644
          database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
          authorizer = SessionAuthorizer(database)
          security = LocalSecurityRepository(database, clock = { now }, authorizer = authorizer)
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+index 4935299..cd0d492 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+@@ -244,6 +244,12 @@ class Phase2CorrectionIntegrationTest {
+         assertTrue(brief.profitability.isEstimatedProfitAvailable)
+         assertEquals(brief.profitability.revenueRial, home.revenueRial)
+         assertEquals(brief.profitability.grossProfitRial, home.grossProfitRial)
++        assertEquals(
++            brief.foodCost.actualLedgerCostRial
++                ?.times(10_000L)
++                ?.div(brief.profitability.revenueRial),
++            home.foodCostBasisPoints,
++        )
+         assertEquals(brief.profitability.estimatedOperatingProfitRial, home.estimatedOperatingProfitRial)
+         assertEquals(brief.liquidity.newReceivablesRial, home.newReceivablesRial)
+         assertEquals(brief.liquidity.oldReceivableCollectionsRial, home.collectionsRial)
