@@ -64,9 +64,12 @@ jobs:
           python3 scripts/test-verify-documentation.py
           python3 scripts/test-verify-room-schema.py
           python3 scripts/test-verify-pre-phase3-standardization.py
-      - name: Android Lint Debug and Release
+      - name: Android Lint Debug
         working-directory: phase3-source
-        run: gradle --no-daemon :app:lintDebug :app:lintRelease
+        run: gradle --no-daemon :app:lintDebug
+      - name: Android Lint Release
+        working-directory: phase3-source
+        run: gradle --no-daemon :app:lintRelease
       - name: Compile Debug
         working-directory: phase3-source
         run: gradle --no-daemon :app:compileDebugKotlin
@@ -79,7 +82,7 @@ jobs:
       - name: Inspect Android artifacts and record evidence
         working-directory: phase3-source
         env:
-          SOURCE_COMMIT: 43eae6189de5be21a3cba34989a5aca5a528d58d
+          SOURCE_COMMIT: c4d45428aafd44d544d0c6c3b292944a940d20f5
         run: |
           bash scripts/inspect-android-artifacts.sh
           mkdir -p build/evidence
