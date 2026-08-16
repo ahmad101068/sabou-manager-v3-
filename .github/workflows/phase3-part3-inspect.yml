@@ -1,0 +1,34 @@
+name: Phase 3 Part 3 Baseline Inspect
+
+on:
+  push:
+    branches: [ phase3-part3-final ]
+    paths: [ '.github/workflows/phase3-part3-inspect.yml' ]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Inspect existing source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _inspect && mkdir _inspect
+          unzip -q Sabou-Final-ERP-SOURCE-buildfix1.zip -d _inspect
+          P="$(find _inspect -name settings.gradle.kts -printf '%h\n' | head -n 1)"
+          test -n "$P"
+          echo "PROJECT=$P"
+          for f in \
+            app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt \
+            app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt \
+            app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt \
+            app/schemas/ir.restaurant.management.data.db.AppDatabase/55.json \
+            PHASE-3-PART-2-REPORT.md; do
+            if [ -f "$P/$f" ]; then sha256sum "$P/$f"; else echo "MISSING $f"; fi
+          done
+          grep -R "version = 55" -n "$P/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt" || true
