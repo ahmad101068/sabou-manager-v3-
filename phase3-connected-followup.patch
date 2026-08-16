@@ -10,9 +10,12 @@ diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt b/app/sr
          item {
              ErpDashboardHero(
                  eyebrow = "مانده دریافتنی مشتریان",
-@@ -350,4 +349,5 @@ internal fun CrmScreen(
+@@ -349,7 +348,8 @@ internal fun CrmScreen(
+                 }
              }
          }
      }
  }
 +}
+ 
+ private data class BranchReceivableSummary(
