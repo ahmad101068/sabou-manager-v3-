@@ -22,6 +22,7 @@ jobs:
           SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)"
           test -x "$SDKMANAGER"
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+
       - name: Install emulator and API 36 image
         shell: bash
         run: |
@@ -32,6 +33,7 @@ jobs:
           "$SDKMANAGER" "platform-tools" "emulator" "system-images;android-36;google_apis;x86_64"
           test -x "$ANDROID_SDK_ROOT/emulator/emulator"
           test -f "$ANDROID_SDK_ROOT/system-images/android-36/google_apis/x86_64/system.img"
+
       - name: Package runtime
         shell: bash
         run: |
@@ -46,8 +48,10 @@ jobs:
           sha256sum "$OUT/api36-emulator-runtime.tar.gz" > "$OUT/api36-emulator-runtime.sha256"
           split -b 200M -d -a 2 "$OUT/api36-emulator-runtime.tar.gz" "$OUT/api36-emulator-runtime.tar.gz.part"
           rm "$OUT/api36-emulator-runtime.tar.gz"
-          for n in 00 01 02 03 04 05 06 07 08 09; do test -e "$OUT/api36-emulator-runtime.tar.gz.part$n" || : > "$OUT/api36-emulator-runtime.tar.gz.part$n"; done
+          for n in 00 01 02 03 04 05 06 07 08 09 10; do test -e "$OUT/api36-emulator-runtime.tar.gz.part$n" || : > "$OUT/api36-emulator-runtime.tar.gz.part$n"; done
+          test ! -e "$OUT/api36-emulator-runtime.tar.gz.part11"
           ls -lh "$OUT"
+
       - name: Upload manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -56,6 +60,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
       - name: Upload part 00
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -133,6 +138,14 @@ jobs:
         with:
           name: api36-emulator-runtime-part09
           path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part09
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part10
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part10
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
