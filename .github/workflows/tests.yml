@@ -1,0 +1,119 @@
+name: Phase 3 Part 3B Runtime and Business Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  jvm-business-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Extract exact Part 3B candidate
+        run: |
+          set -euo pipefail
+          cat phase3-ci-parts/part-* > phase3-part3b-ci-source.zip
+          mkdir phase3-source
+          unzip -q phase3-part3b-ci-source.zip -d phase3-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '8.13'
+      - name: JVM unit, business, performance, and instrumentation compile
+        working-directory: phase3-source
+        run: gradle --no-daemon :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+      - name: Upload JVM evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3-jvm-tests-${{ github.sha }}
+          path: |
+            phase3-source/app/build/test-results/testDebugUnitTest/**
+            phase3-source/app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: error
+          retention-days: 14
+
+  connected-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [23, 35]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Extract exact Part 3B candidate
+        run: |
+          set -euo pipefail
+          cat phase3-ci-parts/part-* > phase3-part3b-ci-source.zip
+          mkdir phase3-source
+          unzip -q phase3-part3b-ci-source.zip -d phase3-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '8.13'
+      - name: Connected instrumentation and migration suite
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: cd "$GITHUB_WORKSPACE/phase3-source" && gradle --no-daemon :app:connectedDebugAndroidTest
+      - name: Upload connected evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3-connected-api-${{ matrix.api-level }}-${{ github.sha }}
+          path: |
+            phase3-source/app/build/outputs/androidTest-results/connected/**
+            phase3-source/app/build/reports/androidTests/connected/**
+          if-no-files-found: error
+          retention-days: 14
+
+  connected-16kb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Extract exact Part 3B candidate
+        run: |
+          set -euo pipefail
+          cat phase3-ci-parts/part-* > phase3-part3b-ci-source.zip
+          mkdir phase3-source
+          unzip -q phase3-part3b-ci-source.zip -d phase3-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '8.13'
+      - name: Connected 16KB runtime suite
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis_16k
+          disable-animations: true
+          script: cd "$GITHUB_WORKSPACE/phase3-source" && gradle --no-daemon :app:connectedDebugAndroidTest
+      - name: Upload 16KB runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3-connected-16kb-${{ github.sha }}
+          path: |
+            phase3-source/app/build/outputs/androidTest-results/connected/**
+            phase3-source/app/build/reports/androidTests/connected/**
+          if-no-files-found: error
+          retention-days: 14

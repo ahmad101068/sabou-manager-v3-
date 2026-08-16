@@ -1,0 +1,97 @@
+name: Phase 3 Part 3B Production Readiness
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout verification branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Extract exact Part 3B candidate
+        run: |
+          set -euo pipefail
+          cat phase3-ci-parts/part-* > phase3-part3b-ci-source.zip
+          unzip -t phase3-part3b-ci-source.zip >/dev/null
+          mkdir phase3-source
+          unzip -q phase3-part3b-ci-source.zip -d phase3-source
+          chmod +x phase3-source/gradlew
+          cd phase3-source
+          git init
+          git config user.name "Part 3B Schema Drift Gate"
+          git config user.email "part3b-schema-gate@local.invalid"
+          git add -A
+          git commit -m "Exact extracted Part 3B candidate"
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '8.13'
+      - name: Clean
+        working-directory: phase3-source
+        run: gradle --no-daemon clean
+      - name: Generate Room schema through KSP
+        working-directory: phase3-source
+        run: gradle --no-daemon :app:kspDebugKotlin
+      - name: Verify committed Room schema has no drift
+        working-directory: phase3-source
+        run: git diff --exit-code -- app/schemas
+      - name: Run all static verification gates
+        working-directory: phase3-source
+        run: |
+          python3 scripts/verify-room-schema.py
+          python3 scripts/verify-dashboard-ux.py
+          python3 scripts/verify-pre-phase3-standardization.py
+          python3 scripts/verify-documentation.py
+          bash scripts/verify-foundation.sh
+          python3 scripts/verify-code-quality.py
+          python3 scripts/verify-repository-hygiene.py
+          python3 scripts/verify-security.py
+          python3 scripts/verify-phase3-ui-foundation.py
+          python3 scripts/verify-phase3-performance.py
+          python3 scripts/test-verify-documentation.py
+          python3 scripts/test-verify-room-schema.py
+          python3 scripts/test-verify-pre-phase3-standardization.py
+      - name: Android Lint Debug and Release
+        working-directory: phase3-source
+        run: gradle --no-daemon :app:lintDebug :app:lintRelease
+      - name: Compile Debug
+        working-directory: phase3-source
+        run: gradle --no-daemon :app:compileDebugKotlin
+      - name: Assemble Debug
+        working-directory: phase3-source
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Assemble unsigned Release and AAB
+        working-directory: phase3-source
+        run: gradle --no-daemon :app:assembleRelease :app:bundleRelease
+      - name: Inspect Android artifacts and record evidence
+        working-directory: phase3-source
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          bash scripts/inspect-android-artifacts.sh
+          mkdir -p build/evidence
+          find app/build/outputs -type f \( -name '*.apk' -o -name '*.aab' \) -print0 | sort -z | xargs -0 sha256sum | tee build/evidence/artifact-sha256.txt
+          printf '%s\n' "$SOURCE_COMMIT" | tee build/evidence/source-commit.txt
+      - name: Upload production-readiness evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3-production-readiness-${{ github.sha }}
+          path: |
+            phase3-source/app/build/outputs/**/*.apk
+            phase3-source/app/build/outputs/**/*.aab
+            phase3-source/app/build/reports/lint-results-*.html
+            phase3-source/app/build/reports/lint-results-*.xml
+            phase3-source/build/evidence/**
+          if-no-files-found: error
+          retention-days: 14
