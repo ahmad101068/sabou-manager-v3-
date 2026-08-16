@@ -1,0 +1,76 @@
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt b/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
+index a8dfb36..e50f27c 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
+@@ -121,10 +121,10 @@ interface BusinessOperationsDao {
+         SELECT
+           COALESCE((SELECT SUM(d.theoreticalCostRial) FROM daily_sales_summaries d WHERE d.branchId=:branchId AND d.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND d.status='POSTED' AND d.reversedAtEpochDay IS NULL),0) theoreticalCostRial,
+           COALESCE((SELECT -SUM(sm.valueDeltaRial) FROM stock_movements sm JOIN daily_sales_summaries ds ON ds.id=sm.referenceId WHERE sm.referenceType='DAILY_SALES' AND sm.movementType='DAILY_SALES_CONSUMPTION' AND sm.valueDeltaRial<0 AND ds.branchId=:branchId AND ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND ds.reversedAtEpochDay IS NULL),0) standardSalesLedgerCostRial,
+-          COALESCE((SELECT -SUM(sm.valueDeltaRial) FROM stock_movements sm JOIN daily_sales_summaries ds ON sm.referenceType='DAILY_SALES' AND ds.id=sm.referenceId WHERE sm.movementType='WASTE' AND sm.valueDeltaRial<0 AND sm.movementEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.branchId=:branchId),0) wasteCostRial,
+-          COALESCE((SELECT -SUM(sm.valueDeltaRial) FROM stock_movements sm JOIN daily_sales_summaries ds ON sm.referenceType='DAILY_SALES' AND ds.id=sm.referenceId WHERE sm.movementType IN ('INVENTORY_COUNT','COUNT_VARIANCE','INVENTORY_ADJUSTMENT') AND sm.valueDeltaRial<0 AND sm.movementEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.branchId=:branchId),0) negativeAdjustmentCostRial,
+-          COALESCE((SELECT SUM(sm.valueDeltaRial) FROM stock_movements sm JOIN daily_sales_summaries ds ON sm.referenceType='DAILY_SALES' AND ds.id=sm.referenceId WHERE sm.movementType IN ('INVENTORY_COUNT','COUNT_VARIANCE','INVENTORY_ADJUSTMENT') AND sm.valueDeltaRial>0 AND sm.movementEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.branchId=:branchId),0) positiveAdjustmentCostRial,
+-          COALESCE((SELECT COUNT(*) FROM stock_movements sm JOIN daily_sales_summaries ds ON sm.referenceType='DAILY_SALES' AND ds.id=sm.referenceId WHERE sm.movementType IN ('WASTE','INVENTORY_COUNT','COUNT_VARIANCE','INVENTORY_ADJUSTMENT') AND sm.movementEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND sm.valueDeltaRial!=0 AND ds.branchId=:branchId),0) actualEvidenceCount
++          COALESCE((SELECT -SUM(sm.valueDeltaRial) FROM stock_movements sm JOIN storage_locations sl ON sl.id=sm.locationId WHERE sm.movementType='WASTE' AND sm.valueDeltaRial<0 AND sm.movementEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND sl.branchId=:branchId),0) wasteCostRial,
++          COALESCE((SELECT -SUM(sm.valueDeltaRial) FROM stock_movements sm JOIN storage_locations sl ON sl.id=sm.locationId WHERE sm.movementType IN ('INVENTORY_COUNT','COUNT_VARIANCE','INVENTORY_ADJUSTMENT') AND sm.valueDeltaRial<0 AND sm.movementEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND sl.branchId=:branchId),0) negativeAdjustmentCostRial,
++          COALESCE((SELECT SUM(sm.valueDeltaRial) FROM stock_movements sm JOIN storage_locations sl ON sl.id=sm.locationId WHERE sm.movementType IN ('INVENTORY_COUNT','COUNT_VARIANCE','INVENTORY_ADJUSTMENT') AND sm.valueDeltaRial>0 AND sm.movementEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND sl.branchId=:branchId),0) positiveAdjustmentCostRial,
++          COALESCE((SELECT COUNT(*) FROM stock_movements sm JOIN storage_locations sl ON sl.id=sm.locationId WHERE sm.movementType IN ('WASTE','INVENTORY_COUNT','COUNT_VARIANCE','INVENTORY_ADJUSTMENT') AND sm.movementEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND sm.valueDeltaRial!=0 AND sl.branchId=:branchId),0) actualEvidenceCount
+     """) suspend fun foodCostVariance(branchId:Long,fromEpochDay:Long,toEpochDay:Long):FoodCostVarianceRow
+     @Query("SELECT id,name,stockMicros,reorderPointMicros FROM inventory_items WHERE isActive=1 AND alertEnabled=1 AND reorderPointMicros>0 AND stockMicros<=reorderPointMicros ORDER BY name") suspend fun lowStockRows():List<LowStockRow>
+     @Query("SELECT COALESCE(SUM(actualCashRial-expectedCashRial),0) FROM sales_cash_reconciliations WHERE businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay") suspend fun cashVariance(fromEpochDay:Long,toEpochDay:Long):Long
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/CostControlReadService.kt b/app/src/main/java/ir/restaurant/management/data/repository/CostControlReadService.kt
+index 72ecdfa..d5ae49f 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/CostControlReadService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/CostControlReadService.kt
+@@ -37,9 +37,10 @@ class LocalCostControlReadService(
+         require(branchId > 0 && fromEpochDay > 0 && toEpochDay >= fromEpochDay)
+         CanonicalBranchResolver(database).requireExisting(branchId)
+         val row = database.businessOperationsDao().foodCostVariance(branchId,fromEpochDay,toEpochDay)
+-        // The DAO only includes actual movements that carry an explicit DAILY_SALES reference whose
+-        // summary belongs to this branch. Unscoped legacy movements are excluded instead of being
+-        // silently assigned to Branch 1.
++        // Standard sales consumption is scoped through its DAILY_SALES document. Independent actual
++        // evidence (waste/count/adjustment) is scoped through the canonical storage location branch.
++        // Legacy movements without a canonical location remain excluded instead of being fabricated
++        // as Branch 1 evidence.
+         if (row.actualEvidenceCount <= 0L) return ConsumptionCostVariance(
+             branchId, fromEpochDay, toEpochDay, row.theoreticalCostRial, null, null, null,
+             ActualCostDataQuality.ACTUAL_NOT_AVAILABLE,
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt b/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt
+index bf8fd3d..3d820d7 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt
+@@ -230,7 +230,7 @@ internal fun ErpBottomNavigation(
+             val isSelected = selectedTopLevel == destination
+             NavigationBarItem(
+                 selected = isSelected,
+-                onClick = { if (!isSelected) onNavigate(destination) },
++                onClick = { onNavigate(destination) },
+                 icon = { Icon(icon, contentDescription = label, modifier = Modifier.size(21.dp)) },
+                 label = { Text(label, fontSize = 11.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
+                 modifier = Modifier.testTag("nav_${destination.name.lowercase()}"),
+diff --git a/app/src/main/java/ir/restaurant/management/ui/NavigationHubScreens.kt b/app/src/main/java/ir/restaurant/management/ui/NavigationHubScreens.kt
+index 42d83da..7be1afc 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/NavigationHubScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/NavigationHubScreens.kt
+@@ -206,7 +206,7 @@ internal fun MainTopLevelNavigation(selected: AppScreen, navigate: (AppScreen) -
+         destinations.forEach { (destination, label, icon) ->
+             NavigationBarItem(
+                 selected = selectedTopLevel == destination,
+-                onClick = { if (selectedTopLevel != destination) navigate(destination) },
++                onClick = { navigate(destination) },
+                 icon = { Icon(icon, contentDescription = label) },
+                 label = { Text(label) },
+                 modifier = Modifier.testTag("nav_${destination.name.lowercase()}"),
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ResponsiveErpLayout.kt b/app/src/main/java/ir/restaurant/management/ui/ResponsiveErpLayout.kt
+index 04142be..0393b65 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ResponsiveErpLayout.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ResponsiveErpLayout.kt
+@@ -120,7 +120,7 @@ private fun ErpNavigationRail(
+                 val isSelected = selectedTopLevel == destination.screen
+                 NavigationRailItem(
+                     selected = isSelected,
+-                    onClick = { if (!isSelected) onNavigate(destination.screen) },
++                    onClick = { onNavigate(destination.screen) },
+                     icon = { Icon(destination.icon, contentDescription = destination.label) },
+                     label = { Text(destination.label, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
+                     alwaysShowLabel = expanded,
