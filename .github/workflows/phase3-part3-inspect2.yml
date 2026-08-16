@@ -1,0 +1,19 @@
+name: Phase 3 Part 3 Baseline Layout Inspect
+on:
+  push:
+    branches: [ phase3-part3-final ]
+    paths: [ '.github/workflows/phase3-part3-inspect2.yml' ]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _inspect && mkdir _inspect
+          unzip -q Sabou-Final-ERP-SOURCE-buildfix1.zip -d _inspect
+          find _inspect -maxdepth 6 -type f | sort | head -n 120
+          find _inspect -name AppDatabase.kt -o -name DashboardScreen.kt -o -name ManagementDataGrid.kt -o -name '55.json' -o -name 'PHASE-3-PART-2-REPORT.md' | sort | while read -r f; do sha256sum "$f"; done
