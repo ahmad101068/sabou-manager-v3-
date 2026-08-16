@@ -18,29 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Extract exact Part 3B candidate
-        run: |
-          set -euo pipefail
-          cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
-          mkdir phase3-source
-          unzip -q phase3-part3b-ci-source.zip -d phase3-source
-          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
-          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
-          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
-          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
-          grep -Fq 'const val DATABASE_NAME = "restaurant_management.db"' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt
-          grep -Fq 'QuantityMicros.positive(1_000_000L)' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
-          grep -Fq 'fun inventoryHome_showsInventoryContext_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
-          grep -Fq 'module_INVENTORY_موجودی' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
-          if grep -Fq 'fun inventoryHome_showsInventoryKpis_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt; then
-            echo '::error::Old connected-test source remains after patch application'
-            exit 1
-          fi
-          sha256sum \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt \
-            phase3-source/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+        run: bash .github/scripts/reconstruct-part3b-candidate.sh
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -75,29 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Extract exact Part 3B candidate
-        run: |
-          set -euo pipefail
-          cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
-          mkdir phase3-source
-          unzip -q phase3-part3b-ci-source.zip -d phase3-source
-          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
-          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
-          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
-          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
-          grep -Fq 'const val DATABASE_NAME = "restaurant_management.db"' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt
-          grep -Fq 'QuantityMicros.positive(1_000_000L)' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
-          grep -Fq 'fun inventoryHome_showsInventoryContext_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
-          grep -Fq 'module_INVENTORY_موجودی' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
-          if grep -Fq 'fun inventoryHome_showsInventoryKpis_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt; then
-            echo '::error::Old connected-test source remains after patch application'
-            exit 1
-          fi
-          sha256sum \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt \
-            phase3-source/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+        run: bash .github/scripts/reconstruct-part3b-candidate.sh
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -143,29 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Extract exact Part 3B candidate
-        run: |
-          set -euo pipefail
-          cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
-          mkdir phase3-source
-          unzip -q phase3-part3b-ci-source.zip -d phase3-source
-          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
-          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
-          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
-          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-connected-followup.patch"
-          grep -Fq 'const val DATABASE_NAME = "restaurant_management.db"' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt
-          grep -Fq 'QuantityMicros.positive(1_000_000L)' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
-          grep -Fq 'fun inventoryHome_showsInventoryContext_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
-          grep -Fq 'module_INVENTORY_موجودی' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
-          if grep -Fq 'fun inventoryHome_showsInventoryKpis_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt; then
-            echo '::error::Old connected-test source remains after patch application'
-            exit 1
-          fi
-          sha256sum \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt \
-            phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt \
-            phase3-source/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+        run: bash .github/scripts/reconstruct-part3b-candidate.sh
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
