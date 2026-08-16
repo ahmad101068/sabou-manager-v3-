@@ -64,6 +64,9 @@ jobs:
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
           git -C phase3-source apply "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
+          grep -Fq 'const val DATABASE_NAME = "restaurant_management.db"' phase3-source/app/src/main/java/ir/restaurant/management/data/BackupManager.kt
+          grep -Fq 'QuantityMicros.positive(1_000_000L)' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
+          grep -Fq 'fun inventoryHome_showsInventoryContext_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -71,6 +74,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           gradle-version: '8.13'
+      - name: Clean connected candidate outputs
+        working-directory: phase3-source
+        run: gradle --no-daemon clean
       - name: Enable KVM acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -85,7 +91,7 @@ jobs:
           ram-size: 3072M
           heap-size: 512M
           disable-animations: true
-          script: cd "$GITHUB_WORKSPACE/phase3-source" && gradle --no-daemon :app:connectedDebugAndroidTest
+          script: cd "$GITHUB_WORKSPACE/phase3-source" && gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
       - name: Summarize connected JUnit evidence
         working-directory: phase3-source
         run: python3 scripts/summarize-test-results.py app/build/outputs/androidTest-results/connected --label CONNECTED_API_${{ matrix.api-level }}
@@ -112,6 +118,9 @@ jobs:
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
           git -C phase3-source apply "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
+          grep -Fq 'const val DATABASE_NAME = "restaurant_management.db"' phase3-source/app/src/main/java/ir/restaurant/management/data/BackupManager.kt
+          grep -Fq 'QuantityMicros.positive(1_000_000L)' phase3-source/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
+          grep -Fq 'fun inventoryHome_showsInventoryContext_withoutFinancialKpis()' phase3-source/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -119,6 +128,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           gradle-version: '8.13'
+      - name: Clean 16KB candidate outputs
+        working-directory: phase3-source
+        run: gradle --no-daemon clean
       - name: Enable KVM acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -133,7 +145,23 @@ jobs:
           ram-size: 3072M
           heap-size: 512M
           disable-animations: true
-          script: page_size="$(adb shell getconf PAGE_SIZE | tr -d '\r')" && echo "RUNTIME_PAGE_SIZE=$page_size" && test "$page_size" = "16384" && cd "$GITHUB_WORKSPACE/phase3-source" && gradle --no-daemon :app:connectedDebugAndroidTest
+          script: |
+            set -eu
+            page_size="$(adb shell getconf PAGE_SIZE | tr -d '\r')"
+            echo "RUNTIME_PAGE_SIZE=$page_size"
+            test "$page_size" = "16384"
+            cd "$GITHUB_WORKSPACE/phase3-source"
+            set +e
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            status=$?
+            set -e
+            if [ "$status" -ne 0 ]; then
+              mkdir -p app/build/evidence
+              adb shell pm list instrumentation > app/build/evidence/16kb-instrumentation.txt 2>&1 || true
+              adb shell getprop > app/build/evidence/16kb-getprop.txt 2>&1 || true
+              adb logcat -d -v threadtime > app/build/evidence/16kb-logcat.txt 2>&1 || true
+            fi
+            exit "$status"
       - name: Summarize 16KB connected JUnit evidence
         working-directory: phase3-source
         run: python3 scripts/summarize-test-results.py app/build/outputs/androidTest-results/connected --label CONNECTED_16KB
@@ -145,5 +173,6 @@ jobs:
           path: |
             phase3-source/app/build/outputs/androidTest-results/connected/**
             phase3-source/app/build/reports/androidTests/connected/**
+            phase3-source/app/build/evidence/**
           if-no-files-found: error
           retention-days: 14
