@@ -1,0 +1,25 @@
+name: CRM Patch Diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  crm-patch-context:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Reconstruct and print patched CRM source
+        run: |
+          set -euo pipefail
+          cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
+          mkdir phase3-source
+          unzip -q phase3-part3b-ci-source.zip -d phase3-source
+          git apply --check --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
+          git apply --directory=phase3-source "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
+          echo '--- PATCHED CRM CONTEXT ---'
+          nl -ba phase3-source/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt | sed -n '110,380p'
