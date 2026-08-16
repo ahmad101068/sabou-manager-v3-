@@ -17,7 +17,7 @@ jobs:
       - name: Extract exact Part 3B candidate
         run: |
           set -euo pipefail
-          cat phase3-ci-parts/part-* > phase3-part3b-ci-source.zip
+          cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
           unzip -t phase3-part3b-ci-source.zip >/dev/null
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
@@ -37,6 +37,8 @@ jobs:
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           gradle-version: '8.13'
+      - name: Install static verification prerequisites
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Clean
         working-directory: phase3-source
         run: gradle --no-daemon clean
@@ -77,7 +79,7 @@ jobs:
       - name: Inspect Android artifacts and record evidence
         working-directory: phase3-source
         env:
-          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_COMMIT: 43eae6189de5be21a3cba34989a5aca5a528d58d
         run: |
           bash scripts/inspect-android-artifacts.sh
           mkdir -p build/evidence

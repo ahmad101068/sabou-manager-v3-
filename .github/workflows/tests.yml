@@ -16,7 +16,7 @@ jobs:
       - name: Extract exact Part 3B candidate
         run: |
           set -euo pipefail
-          cat phase3-ci-parts/part-* > phase3-part3b-ci-source.zip
+          cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -29,6 +29,9 @@ jobs:
       - name: JVM unit, business, performance, and instrumentation compile
         working-directory: phase3-source
         run: gradle --no-daemon :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+      - name: Summarize JVM JUnit evidence
+        working-directory: phase3-source
+        run: python3 scripts/summarize-test-results.py app/build/test-results/testDebugUnitTest --label JVM
       - name: Upload JVM evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -52,7 +55,7 @@ jobs:
       - name: Extract exact Part 3B candidate
         run: |
           set -euo pipefail
-          cat phase3-ci-parts/part-* > phase3-part3b-ci-source.zip
+          cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -70,6 +73,9 @@ jobs:
           target: google_apis
           disable-animations: true
           script: cd "$GITHUB_WORKSPACE/phase3-source" && gradle --no-daemon :app:connectedDebugAndroidTest
+      - name: Summarize connected JUnit evidence
+        working-directory: phase3-source
+        run: python3 scripts/summarize-test-results.py app/build/outputs/androidTest-results/connected --label CONNECTED_API_${{ matrix.api-level }}
       - name: Upload connected evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -89,7 +95,7 @@ jobs:
       - name: Extract exact Part 3B candidate
         run: |
           set -euo pipefail
-          cat phase3-ci-parts/part-* > phase3-part3b-ci-source.zip
+          cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -104,9 +110,16 @@ jobs:
         with:
           api-level: 35
           arch: x86_64
-          target: google_apis_16k
+          target: google_apis_ps16k
           disable-animations: true
-          script: cd "$GITHUB_WORKSPACE/phase3-source" && gradle --no-daemon :app:connectedDebugAndroidTest
+          script: |
+            page_size="$(adb shell getconf PAGE_SIZE | tr -d '\r')"
+            test "$page_size" = "16384"
+            cd "$GITHUB_WORKSPACE/phase3-source"
+            gradle --no-daemon :app:connectedDebugAndroidTest
+      - name: Summarize 16KB connected JUnit evidence
+        working-directory: phase3-source
+        run: python3 scripts/summarize-test-results.py app/build/outputs/androidTest-results/connected --label CONNECTED_16KB
       - name: Upload 16KB runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
