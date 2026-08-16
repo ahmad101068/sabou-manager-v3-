@@ -21,6 +21,7 @@ jobs:
           unzip -t phase3-part3b-ci-source.zip >/dev/null
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
+          git -C phase3-source apply "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
           chmod +x phase3-source/gradlew
           cd phase3-source
           git init
