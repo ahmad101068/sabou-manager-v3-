@@ -19,6 +19,7 @@ jobs:
           cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
+          git -C phase3-source apply "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -58,6 +59,7 @@ jobs:
           cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
+          git -C phase3-source apply "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -105,6 +107,7 @@ jobs:
           cat phase3-ci-v2-parts/part-* > phase3-part3b-ci-source.zip
           mkdir phase3-source
           unzip -q phase3-part3b-ci-source.zip -d phase3-source
+          git -C phase3-source apply "$GITHUB_WORKSPACE/phase3-junit-lifecycle.patch"
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
