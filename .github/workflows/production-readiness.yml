@@ -87,7 +87,7 @@ jobs:
       - name: Inspect Android artifacts and record evidence
         working-directory: phase3-source
         env:
-          SOURCE_COMMIT: 398a4ce3de3d809f89492c85675a03cddb4c9409
+          SOURCE_COMMIT: 940b452aa654706d1fa66481fe0b25de729dd861
         run: |
           bash scripts/inspect-android-artifacts.sh
           mkdir -p build/evidence
