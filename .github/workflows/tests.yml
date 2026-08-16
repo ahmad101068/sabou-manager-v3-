@@ -139,23 +139,7 @@ jobs:
           ram-size: 3072M
           heap-size: 512M
           disable-animations: true
-          script: |
-            set -eu
-            page_size="$(adb shell getconf PAGE_SIZE | tr -d '\r')"
-            echo "RUNTIME_PAGE_SIZE=$page_size"
-            test "$page_size" = "16384"
-            cd "$GITHUB_WORKSPACE/phase3-source"
-            set +e
-            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
-            status=$?
-            set -e
-            if [ "$status" -ne 0 ]; then
-              mkdir -p app/build/evidence
-              adb shell pm list instrumentation > app/build/evidence/16kb-instrumentation.txt 2>&1 || true
-              adb shell getprop > app/build/evidence/16kb-getprop.txt 2>&1 || true
-              adb logcat -d -v threadtime > app/build/evidence/16kb-logcat.txt 2>&1 || true
-            fi
-            exit "$status"
+          script: bash "$GITHUB_WORKSPACE/.github/scripts/run-connected-16kb.sh"
       - name: Summarize 16KB connected JUnit evidence
         working-directory: phase3-source
         run: python3 scripts/summarize-test-results.py app/build/outputs/androidTest-results/connected --label CONNECTED_16KB
