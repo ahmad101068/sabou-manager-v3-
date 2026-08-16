@@ -1,0 +1,138 @@
+name: Prepare API36 Emulator Runtime
+
+on:
+  push:
+    branches: [tools/offline-android-deps]
+    paths:
+      - .github/workflows/prepare-api36-emulator-runtime.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Locate sdkmanager
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+      - name: Install emulator and API 36 image
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +o pipefail
+          yes | "$SDKMANAGER" --licenses >/dev/null
+          set -o pipefail
+          "$SDKMANAGER" "platform-tools" "emulator" "system-images;android-36;google_apis;x86_64"
+          test -x "$ANDROID_SDK_ROOT/emulator/emulator"
+          test -f "$ANDROID_SDK_ROOT/system-images/android-36/google_apis/x86_64/system.img"
+      - name: Package runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/api36-runtime"
+          OUT="$RUNNER_TEMP/api36-out"
+          mkdir -p "$STAGE/android-sdk/system-images/android-36/google_apis" "$OUT"
+          cp -a "$ANDROID_SDK_ROOT/emulator" "$STAGE/android-sdk/"
+          cp -a "$ANDROID_SDK_ROOT/platform-tools" "$STAGE/android-sdk/"
+          cp -a "$ANDROID_SDK_ROOT/system-images/android-36/google_apis/x86_64" "$STAGE/android-sdk/system-images/android-36/google_apis/"
+          tar -C "$STAGE" -czf "$OUT/api36-emulator-runtime.tar.gz" .
+          sha256sum "$OUT/api36-emulator-runtime.tar.gz" > "$OUT/api36-emulator-runtime.sha256"
+          split -b 200M -d -a 2 "$OUT/api36-emulator-runtime.tar.gz" "$OUT/api36-emulator-runtime.tar.gz.part"
+          rm "$OUT/api36-emulator-runtime.tar.gz"
+          for n in 00 01 02 03 04 05 06 07 08 09; do test -e "$OUT/api36-emulator-runtime.tar.gz.part$n" || : > "$OUT/api36-emulator-runtime.tar.gz.part$n"; done
+          ls -lh "$OUT"
+      - name: Upload manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-manifest
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 00
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part00
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 01
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part01
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part02
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 03
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part03
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 04
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part04
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part04
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 05
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part05
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part05
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 06
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part06
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part06
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 07
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part07
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part07
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 08
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part08
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part08
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 09
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api36-emulator-runtime-part09
+          path: ${{ runner.temp }}/api36-out/api36-emulator-runtime.tar.gz.part09
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
