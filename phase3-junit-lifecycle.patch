@@ -1,0 +1,119 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/AccountingBranchScopeMigration52To53Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/AccountingBranchScopeMigration52To53Test.kt
+index ae1e51a..9737f2f 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/AccountingBranchScopeMigration52To53Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/AccountingBranchScopeMigration52To53Test.kt
+@@ -17,7 +17,9 @@ class AccountingBranchScopeMigration52To53Test {
+     private val databaseName = "accounting-branch-scope-migration-52-53.db"
+ 
+     @After
+-    fun cleanUp() = context.deleteDatabase(databaseName)
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun backfillsOnlyDeterministicNumericRelationsAndLeavesUnknownLegacyUnassigned() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration48To49Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration48To49Test.kt
+index 3d8a9d4..d25609c 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration48To49Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration48To49Test.kt
+@@ -16,7 +16,10 @@ class Migration48To49Test {
+     private val context = ApplicationProvider.getApplicationContext<Context>()
+     private val databaseName = "migration-48-49.db"
+ 
+-    @After fun cleanUp() = context.deleteDatabase(databaseName)
++    @After
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun removesOperationalRestaurantTablesAndPreservesPostedSalesHistory() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration49To50Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration49To50Test.kt
+index a31edc7..3c4fa55 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration49To50Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration49To50Test.kt
+@@ -17,7 +17,10 @@ class Migration49To50Test {
+     private val context = ApplicationProvider.getApplicationContext<Context>()
+     private val databaseName = "migration-49-50.db"
+ 
+-    @After fun cleanUp() = context.deleteDatabase(databaseName)
++    @After
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun preservesHistoricalDailySalesAndBuildsCanonicalSettlementRows() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration51To52Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration51To52Test.kt
+index 21bf98d..7d5f5ca 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration51To52Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration51To52Test.kt
+@@ -16,7 +16,10 @@ class Migration51To52Test {
+     private val context = ApplicationProvider.getApplicationContext<Context>()
+     private val databaseName = "migration-51-52.db"
+ 
+-    @After fun cleanUp() = context.deleteDatabase(databaseName)
++    @After
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun repairsLegacyNetSalesAndMakesClosureIdentityBranchSafe() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration53To54Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration53To54Test.kt
+index 3f25560..e9e9b1f 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration53To54Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration53To54Test.kt
+@@ -19,7 +19,9 @@ class Migration53To54Test {
+     private val databaseName = "branch-canonicalization-migration-53-54.db"
+ 
+     @After
+-    fun cleanUp() = context.deleteDatabase(databaseName)
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun legacyPlaceholderDailySalesDoesNotCreateCanonicalBranch() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration54To55Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration54To55Test.kt
+index 80088d9..cf14e79 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration54To55Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration54To55Test.kt
+@@ -17,7 +17,9 @@ class Migration54To55Test {
+     private val databaseName = "migration-54-55.db"
+ 
+     @After
+-    fun cleanUp() = context.deleteDatabase(databaseName)
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun migrationCreatesStableAliasesWithoutRewritingHistoricalRows() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt
+index d7f06c4..0749992 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt
+@@ -46,7 +46,7 @@ class EnterprisePermissionIntegrationTest {
+     private var storekeeperId: Long = 0
+ 
+     @Before
+-    fun setUp() = runBlocking {
++    fun setUp(): Unit = runBlocking {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+         authorizer = SessionAuthorizer(database)
+         security = LocalSecurityRepository(database, authorizer = authorizer, clock = { ++now })
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+index 7f7b7dd..7ef4e62 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+@@ -41,7 +41,7 @@ class InventoryWasteWorkflowIntegrationTest {
+     private var now = 1_910_000_000_000L
+ 
+     @Before
+-    fun setUp() = runBlocking {
++    fun setUp(): Unit = runBlocking {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+         authorizer = SessionAuthorizer(database)
+         security = LocalSecurityRepository(database, clock = { now }, authorizer = authorizer)
