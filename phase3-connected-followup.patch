@@ -1,0 +1,18 @@
+diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+--- a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+@@ -209,8 +209,7 @@ internal fun CrmScreen(
+                     emptyMessage = "مطالبه بازی برای این شعبه وجود ندارد.",
+                     onRowClick = { collectingReceivable = it },
+                 )
+             }
+-        }
+         item {
+             ErpDashboardHero(
+                 eyebrow = "مانده دریافتنی مشتریان",
+@@ -350,4 +349,5 @@ internal fun CrmScreen(
+             }
+         }
+     }
+ }
++}
