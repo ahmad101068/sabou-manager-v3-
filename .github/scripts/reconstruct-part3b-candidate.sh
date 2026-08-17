@@ -20,6 +20,7 @@ patches=(
   phase3-runtime-e2e-scroll-tests.patch
   phase3-runtime-remaining.patch
   phase3-runtime-dashboard-security-final.patch
+  phase3-runtime-security-box-import.patch
 )
 
 for patch in "${patches[@]}"; do
@@ -53,6 +54,8 @@ grep -Fq 'testTag("home_kpi_section")' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt"
 grep -Fq 'useUnmergedTree = true' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt"
+grep -Fq 'import androidx.compose.foundation.layout.Box' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt"
 grep -Fq 'testTag(if (state.users.isEmpty()) "security_users_empty" else "security_users_loaded")' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt"
 grep -Fq 'testTag("security_user_${user.id}")' \
