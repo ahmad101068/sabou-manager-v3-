@@ -1,0 +1,13 @@
+diff --git a/scripts/verify-phase3-ui-foundation.py b/scripts/verify-phase3-ui-foundation.py
+index f1d0644..e7d4af6 100755
+--- a/scripts/verify-phase3-ui-foundation.py
++++ b/scripts/verify-phase3-ui-foundation.py
+@@ -16,7 +16,7 @@ require(Path('app/src/main/java/ir/restaurant/management/ui/ResponsiveErpLayout.
+ require(Path('app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt'), ['ManagementDataGrid','MobileSmartRow','AdaptiveManagementList','GridSummaryFooter'])
+ require(Path('app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt'), ['MANAGEMENT_ISSUES','MANAGEMENT_TASKS','CHECKLISTS','DAILY_BRIEF','CanonicalBranchSelector','AdaptiveManagementList','ChecklistItemDialog'])
+ require(Path('app/src/main/java/ir/restaurant/management/ui/NavigationHubScreens.kt'), ['خانه' if False else 'مسائل مدیریتی','وظایف','چک‌لیست‌ها','گزارش روزانه مدیریت','فروش روزانه','مطالبات'])
+-require(Path('app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt'), ['home_management_overview','Revenue','Gross Profit','Food Cost %','Estimated Operating Profit','New Receivables','Collections','Critical Issues','Overdue Tasks'])
++require(Path('app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt'), ['home_management_overview','HomeRevenueTrendCard','home_no_branch_state','درآمد','سود ناخالص','درصد بهای مواد غذایی','سود عملیاتی تخمینی','مطالبات جدید','وصول مطالبات','مسائل بحرانی','وظایف معوق'])
+ 
+ dashboard=(ROOT/'app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt').read_text(encoding='utf-8')
+ for forbidden in ['val revenue =', 'val grossProfit =', 'val foodCostPercent =', 'از گزارش روزانه', 'از مرکز وظایف', 'بعداً تکمیل می‌شود']:
