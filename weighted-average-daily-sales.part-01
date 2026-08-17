@@ -1,0 +1,94 @@
++            InventoryItemEntity(
++                name = "ماده چندمحله",
++                category = "مواد اولیه",
++                unit = "واحد",
++                stockMicros = 10_000_000L,
++                inventoryValueRial = 1_100_000L,
++                trackLot = false,
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        database.inventoryBalanceDao().initialize(
++            InventoryBalanceEntity(
++                itemId = itemId,
++                locationId = sourceLocationId,
++                onHandMicros = 2_000_000L,
++                inventoryValueRial = 200_000L,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        database.inventoryBalanceDao().initialize(
++            InventoryBalanceEntity(
++                itemId = itemId,
++                locationId = branchLocationId,
++                onHandMicros = 8_000_000L,
++                inventoryValueRial = 900_000L,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        val menuId = database.recipeDao().insertMenuItem(
++            MenuItemEntity(name = "منوی چندمحله", salePriceRial = 500L, createdAtEpochMillis = now, updatedAtEpochMillis = now),
++        )
++        val recipeId = database.recipeDao().insertVersion(
++            RecipeVersionEntity(
++                menuItemId = menuId,
++                revisionNo = 1,
++                effectiveFromEpochDay = 1,
++                createdBy = "TEST",
++                createdAtEpochMillis = now,
++            ),
++        )
++        database.recipeDao().insertVersionIngredients(
++            listOf(RecipeVersionIngredientEntity(recipeId, itemId, 1_000_000L)),
++        )
++
++        val saleId = sales.post(
++            DailySalesDraft(
++                businessEpochDay = day,
++                discountRial = 0,
++                serviceRial = 0,
++                taxRial = 0,
++                cashRial = 0,
++                cardRial = 0,
++                transferRial = 0,
++                lines = listOf(DailyMenuSaleDraft(menuId, 1_000_000L, 500L)),
++                branchId = 1L,
++                settlements = listOf(DailySalesSettlementDraft(SalesSettlementType.CASH, 500L)),
++            ),
++        )
++
++        val movement = database.stockMovementDao().dailySalesConsumptions(saleId).single()
++        assertEquals(sourceLocationId, movement.locationId)
++        assertEquals(-100_000L, movement.valueDeltaRial)
++        assertEquals(100_000L, database.dailySalesDao().summary(saleId)?.theoreticalCostRial)
++        assertEquals(1_000_000L, database.inventoryBalanceDao().byKey(itemId, sourceLocationId)?.onHandMicros)
++        assertEquals(100_000L, database.inventoryBalanceDao().byKey(itemId, sourceLocationId)?.inventoryValueRial)
++        assertEquals(8_000_000L, database.inventoryBalanceDao().byKey(itemId, branchLocationId)?.onHandMicros)
++        assertEquals(900_000L, database.inventoryBalanceDao().byKey(itemId, branchLocationId)?.inventoryValueRial)
++        assertEquals(9_000_000L, database.inventoryDao().byId(itemId)?.stockMicros)
++        assertEquals(1_000_000L, database.inventoryDao().byId(itemId)?.inventoryValueRial)
++    }
++
+     private suspend fun postBranchMaintenanceExpense(branchId: Long, amountRial: Long) {
+         val repository = LocalAssetRepository(database, clock = { ++now }, authorizer = authorizer)
+         val assetId = repository.save(
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+index e0f78da..91312e4 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+@@ -47,6 +47,7 @@ import ir.restaurant.management.domain.inventory.InventoryCommandContext
+ import ir.restaurant.management.domain.inventory.InventoryMovementType
+ import ir.restaurant.management.domain.inventory.InventoryReasonCode
+ import ir.restaurant.management.domain.inventory.InventoryReferenceType
++import ir.restaurant.management.domain.inventory.WeightedAverageInventoryValuationService
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.asViolation
+ import java.math.BigInteger
+@@ -76,7 +77,30 @@ class LocalDailySalesRepository(
+         }
+     }
+ 
+-    private data class Consumption(val item: InventoryItemEntity, val quantity: Long, val cost: Long)
++    private data class ConsumptionNeed(
++        val item: InventoryItemEntity,
