@@ -11,6 +11,10 @@ rm -rf "${workspace}/${target}"
 mkdir -p "${workspace}/${target}"
 unzip -q "${archive}" -d "${workspace}/${target}"
 
+# The procurement UAT patch is stored as text fragments to keep connector writes
+# lossless. Concatenation is byte-preserving and is verified by git apply --check.
+cat "${workspace}"/post-ci-uat-procurement.part-* > "${workspace}/post-ci-uat-procurement.patch"
+
 patches=(
   phase3-junit-lifecycle.patch
   phase3-connected-followup.patch
@@ -22,6 +26,11 @@ patches=(
   phase3-runtime-dashboard-security-final.patch
   phase3-runtime-security-box-import.patch
   phase3-runtime-inventory-count-close-sync.patch
+  post-ci-uat-branch.patch
+  post-ci-uat-purchase.patch
+  post-ci-uat-home.patch
+  post-ci-uat-procurement.patch
+  post-ci-uat-contract.patch
 )
 
 for patch in "${patches[@]}"; do
@@ -85,6 +94,24 @@ grep -Fq 'app.container.securityRepository.currentUser.first() == null' \
 grep -Fq 'onAllNodesWithTag("security_users_loaded")' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt"
 
+# Post-CI UAT gates: fail closed if the candidate misses any requested correction.
+grep -Fq 'testTag("${tag}_dialog")' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/CanonicalBranchSelector.kt"
+grep -Fq 'purchaseBoundary().post(draft)' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/application/procurement/ProcurementUseCases.kt"
+grep -Fq 'numbering.next(DocumentNumberType.PURCHASE)' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt"
+grep -Fq 'HomeRevenueTrendCard' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt"
+grep -Fq '(6L downTo 0L)' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt"
+grep -Fq 'procurement_rejection_dialog' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt"
+grep -Fq 'Permission.PURCHASE_APPROVE' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt"
+test -s "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt"
+test -s "${source_root}/app/src/test/java/ir/restaurant/management/ui/PostCiUatCorrectionContractTest.kt"
+
 if grep -Fq 'fun inventoryHome_showsInventoryKpis_withoutFinancialKpis()' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt"; then
   echo '::error::Old connected-test source remains after patch application'
@@ -100,6 +127,7 @@ sha256sum \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt" \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt"
 
