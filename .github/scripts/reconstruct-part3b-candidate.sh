@@ -21,6 +21,7 @@ patches=(
   phase3-runtime-remaining.patch
   phase3-runtime-dashboard-security-final.patch
   phase3-runtime-security-box-import.patch
+  phase3-runtime-inventory-count-close-sync.patch
 )
 
 for patch in "${patches[@]}"; do
@@ -76,6 +77,8 @@ grep -Fq 'testTag("security_user_${user.id}")' \
 grep -Fq '"وظایف مدیریتی", "اقدام، مسئول، سررسید و چرخه تأیید"' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt"
 grep -Fq 'Counts workspace as the manager instead of relying on stale owner-session UI state.' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt"
+grep -Fq 'composeRule.onAllNodesWithTag("inventory_count_close").fetchSemanticsNodes().isNotEmpty()' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt"
 grep -Fq 'app.container.securityRepository.currentUser.first() == null' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt"
