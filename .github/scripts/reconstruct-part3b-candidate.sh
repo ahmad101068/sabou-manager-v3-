@@ -32,6 +32,7 @@ patches=(
   post-ci-uat-procurement.patch
   post-ci-uat-procurement-compile-fix.patch
   post-ci-uat-contract.patch
+  post-ci-uat-verifier-fix.patch
 )
 
 for patch in "${patches[@]}"; do
@@ -114,6 +115,10 @@ grep -Fq 'import androidx.compose.material3.Surface' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt"
 grep -Fq 'r.note, r.createdAtEpochMillis' \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt"
+grep -Fq 'home_no_branch_state' \
+  "${source_root}/scripts/verify-phase3-ui-foundation.py"
+grep -Fq 'سود عملیاتی تخمینی' \
+  "${source_root}/scripts/verify-phase3-ui-foundation.py"
 test -s "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt"
 test -s "${source_root}/app/src/test/java/ir/restaurant/management/ui/PostCiUatCorrectionContractTest.kt"
 
@@ -132,6 +137,7 @@ sha256sum \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt" \
+  "${source_root}/scripts/verify-phase3-ui-foundation.py" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt" \
