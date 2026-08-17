@@ -1,0 +1,30 @@
+name: Phase 3 Part 3B Source Diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  source-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Reconstruct exact runtime candidate
+        run: bash .github/scripts/reconstruct-part3b-candidate.sh
+      - name: Upload exact source diagnostic
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3-exact-patched-source-${{ github.event.pull_request.head.sha }}
+          path: |
+            phase3-source/app/src/main/**
+            phase3-source/app/src/androidTest/**
+            phase3-source/app/src/test/**
+            phase3-source/app/build.gradle.kts
+            phase3-source/build.gradle.kts
+            phase3-source/settings.gradle.kts
+          if-no-files-found: error
+          retention-days: 2
