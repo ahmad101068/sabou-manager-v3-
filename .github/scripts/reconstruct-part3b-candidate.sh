@@ -15,6 +15,10 @@ unzip -q "${archive}" -d "${workspace}/${target}"
 # lossless. Concatenation is byte-preserving and is verified by git apply --check.
 cat "${workspace}"/post-ci-uat-procurement.part-* > "${workspace}/post-ci-uat-procurement.patch"
 
+# Daily Sales weighted-average correction is also stored as text fragments so the
+# exact source/test patch can be reconstructed losslessly before fail-closed apply.
+cat "${workspace}"/weighted-average-daily-sales.part-* > "${workspace}/weighted-average-daily-sales.patch"
+
 patches=(
   phase3-junit-lifecycle.patch
   phase3-connected-followup.patch
@@ -34,6 +38,7 @@ patches=(
   post-ci-uat-test-harness-fix.patch
   post-ci-uat-contract.patch
   post-ci-uat-verifier-fix.patch
+  weighted-average-daily-sales.patch
 )
 
 for patch in "${patches[@]}"; do
@@ -124,6 +129,22 @@ grep -Fq 'performScrollTo().assertIsEnabled().performClick()' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt"
 test -s "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt"
 test -s "${source_root}/app/src/test/java/ir/restaurant/management/ui/PostCiUatCorrectionContractTest.kt"
+
+# Weighted-average Daily Sales gates: aggregate quantity first, value the exact source
+# location once, pin the movement to that location, and keep deterministic remainder tests.
+grep -Fq 'WeightedAverageInventoryValuationService.issueValue(' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt"
+grep -Fq 'locationId = consumption.locationId' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt"
+grep -Fq 'dailySalesWeightedAverageAggregatesIngredientBeforeRoundingAndClearsResidualValue' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt"
+grep -Fq 'dailySalesWeightedAverageUsesExactSourceLocationInsteadOfAggregateItemAverage' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt"
+if grep -Fq 'val cost=if(item.stockMicros==0L) 0L else mulDiv(item.inventoryValueRial,needed,item.stockMicros)' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt"; then
+  echo '::error::Old per-line aggregate-item Daily Sales valuation remains'
+  exit 1
+fi
 
 if grep -Fq 'fun inventoryHome_showsInventoryKpis_withoutFinancialKpis()' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt"; then
