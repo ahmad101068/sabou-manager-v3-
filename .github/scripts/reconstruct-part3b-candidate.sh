@@ -19,6 +19,7 @@ patches=(
   phase3-runtime-dashboard-auth-tests.patch
   phase3-runtime-e2e-scroll-tests.patch
   phase3-runtime-remaining.patch
+  phase3-runtime-dashboard-security-final.patch
 )
 
 for patch in "${patches[@]}"; do
@@ -50,6 +51,10 @@ grep -Fq 'private var branchLocationId = 0L' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt"
 grep -Fq 'testTag("home_kpi_section")' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt"
+grep -Fq 'useUnmergedTree = true' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt"
+grep -Fq 'testTag(if (state.users.isEmpty()) "security_users_empty" else "security_users_loaded")' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt"
 grep -Fq 'testTag("security_user_${user.id}")' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt"
 grep -Fq '"وظایف مدیریتی", "اقدام، مسئول، سررسید و چرخه تأیید"' \
@@ -57,6 +62,8 @@ grep -Fq '"وظایف مدیریتی", "اقدام، مسئول، سررسید �
 grep -Fq 'Counts workspace as the manager instead of relying on stale owner-session UI state.' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt"
 grep -Fq 'app.container.securityRepository.currentUser.first() == null' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt"
+grep -Fq 'onAllNodesWithTag("security_users_loaded")' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt"
 
 if grep -Fq 'fun inventoryHome_showsInventoryKpis_withoutFinancialKpis()' \
