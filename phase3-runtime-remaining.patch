@@ -45,15 +45,6 @@ index ff6e479..f4de2b6 100644
                  deviceId = "test",
                  unitCostRial = 50_000_000L,
                  reasonCode = "WASTE",
-@@ -489,7 +502,7 @@ class Phase2CorrectionIntegrationTest {
-             RecipeVersionEntity(menuItemId=menuId,revisionNo=1,effectiveFromEpochDay=1,preparationWasteBasisPoints=0,cookingWasteBasisPoints=0,createdBy="TEST",createdAtEpochMillis=now),
-         )
-         database.recipeDao().insertVersionIngredients(listOf(RecipeVersionIngredientEntity(recipeId,itemId,1_000_000L)))
--        val locationId = requireNotNull(database.managementControlDao().defaultLocationId())
-+        val locationId = branchLocationId
-         database.inventoryLotDao().insert(
-             InventoryLotEntity(itemId=itemId,locationId=locationId,lotCode="CORR-LOT",receivedEpochDay=day-10,expiryEpochDay=null,quantityMicros=10_000_000L,unitCostRial=48_000_000L,barcode=null,createdByActorId=1,createdAtEpochMillis=now,updatedAtEpochMillis=now),
-         )
 diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
 index e60656e..6ff7b8a 100644
 --- a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
