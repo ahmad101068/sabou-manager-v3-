@@ -1,0 +1,22 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+index 9980dda..7896d5c 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+@@ -13,6 +13,7 @@ import androidx.compose.ui.test.performClick
+ import androidx.compose.ui.test.performScrollTo
+ import androidx.compose.ui.test.performScrollToNode
+ import ir.restaurant.management.MainActivity
++import ir.restaurant.management.domain.branch.BranchDraft
+ import ir.restaurant.management.RestaurantManagementApplication
+ import ir.restaurant.management.domain.operations.AppUserRecord
+ import ir.restaurant.management.domain.operations.UserDraft
+@@ -48,6 +49,9 @@ class DashboardNavigationSettingsUx2ComposeTest {
+                 security.users.first().first { it.username == OWNER_USERNAME }
+             }
+             if (security.currentUser.first()?.id != resolved.id) security.switchUser(resolved.id, OWNER_PIN)
++            if (app.container.branchRepository.listActive().isEmpty()) {
++                app.container.branchRepository.create(BranchDraft(name = "شعبه UX2", code = "UX2"))
++            }
+             resolved
+         }
+         composeRule.waitUntil(15_000) { composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() }
