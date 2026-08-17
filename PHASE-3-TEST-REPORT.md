@@ -68,6 +68,15 @@ REGRESSION_TEST=Existing Inventory Count E2E.
 FILES_CHANGED=EnterpriseCoreComposeE2ETest.kt
 RESULT_AFTER_FIX=Targeted regression PASS.
 
+### Inventory Count post-submit UI synchronization on 16KB full suite
+BUG_EVIDENCE=Final 16KB full suite discovered 173 tests and reached 158/173 with zero failures before Inventory Count E2E failed because `inventory_count_close` was not yet present immediately after the service reached PENDING_APPROVAL. API23/API35 full suites and the targeted 16KB regression passed.
+FAILING_TEST=EnterpriseCoreComposeE2ETest.inventoryCount_uiRecordApproveAndPost_reachesPostedWithoutChangingExactBalance
+ROOT_CAUSE=The test synchronized only to the service status transition; on the slower 16KB full-suite execution, Compose had not yet published the dialog state that renders the Close action.
+MINIMAL_FIX=Keep the existing 10-second wait and require both PENDING_APPROVAL service status and the real `inventory_count_close` semantics node before clicking. No timeout increase, retry, lifecycle bypass, or Inventory business change.
+REGRESSION_TEST=Existing Inventory Count E2E in the full connected 16KB suite.
+FILES_CHANGED=EnterpriseCoreComposeE2ETest.kt
+RESULT_AFTER_FIX=PENDING same-commit full verification; fail-closed until the final 16KB suite passes.
+
 ### Authentication / user-list publication / logout
 BUG_EVIDENCE=API23/16KB could scroll before the Lazy user list was published; 16KB logout UI could reappear before repository currentUser reached null.
 FAILING_TEST=StartupAuthenticationBoundaryComposeTest owner/cashier boundary tests.
