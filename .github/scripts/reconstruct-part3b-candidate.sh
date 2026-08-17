@@ -18,6 +18,7 @@ patches=(
   phase3-runtime-ui-semantics.patch
   phase3-runtime-dashboard-auth-tests.patch
   phase3-runtime-e2e-scroll-tests.patch
+  phase3-runtime-remaining.patch
 )
 
 for patch in "${patches[@]}"; do
@@ -45,6 +46,18 @@ grep -Fq 'rowTestTag = { "crm_select_${it.id}" }' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt"
 grep -Fq 'testTag("recipe_list")' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/RecipeScreens.kt"
+grep -Fq 'private var branchLocationId = 0L' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt"
+grep -Fq 'testTag("home_kpi_section")' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt"
+grep -Fq 'testTag("security_user_${user.id}")' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt"
+grep -Fq '"وظایف مدیریتی", "اقدام، مسئول، سررسید و چرخه تأیید"' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt"
+grep -Fq 'Counts workspace as the manager instead of relying on stale owner-session UI state.' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt"
+grep -Fq 'app.container.securityRepository.currentUser.first() == null' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt"
 
 if grep -Fq 'fun inventoryHome_showsInventoryKpis_withoutFinancialKpis()' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt"; then
@@ -56,5 +69,10 @@ sha256sum \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt" \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt" \
-  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt"
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt" \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt"
