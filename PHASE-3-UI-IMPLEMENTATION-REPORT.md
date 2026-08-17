@@ -11,6 +11,11 @@ Only test-proven UI/navigation/synchronization defects were changed. No large UI
 - Inventory Count post-submit verification now keeps the existing 10-second bound while synchronizing to both PENDING_APPROVAL service state and the real Close-action semantics node before interaction; no timeout increase or business-flow bypass was introduced.
 - Security user rows expose stable item-root test tags and a users-loaded marker so tests synchronize to real state publication.
 - Logout verification waits for both the public login surface and repository session teardown within the existing timeout.
+- Canonical branch selector now uses a bounded Dialog/LazyColumn instead of lazy content inside DropdownMenu, preventing the UAT-proven popup measurement crash and keeping active branchId as identity.
+- Home no longer silently selects a single active branch; management KPIs and the real seven-day revenue chart require explicit branchId selection and show a clear no-branch state otherwise.
+- Procurement renders a compact/expanded workflow stepper, requires a rejection reason, disables unauthorized approval actions, and communicates owner-only final approval while preserving the domain permission boundary.
+- Purchase success feedback is sourced from the persisted/allocated internal document number rather than a pre-validation placeholder.
+- Full-suite UX2 fixtures create a test branch only when the Fresh Install fixture has none; application behavior is not modified to satisfy tests.
 
 ## Preserved contracts
 - Owner management information remains available according to permissions.
@@ -20,4 +25,4 @@ Only test-proven UI/navigation/synchronization defects were changed. No large UI
 - Inventory Count record → submit → approve → post workflow and exact-balance assertion remain unchanged.
 
 ## Final verification rule
-UI implementation is considered verified only if the same-commit API23, API35 and 16KB connected suites all pass with zero required failures/skips. Otherwise `PHASE 3 PART 3B NOT COMPLETE`.
+UI implementation is considered verified only if the same-commit 177-test API23, API35 and 16KB connected suites all pass with zero required failures/skips. Otherwise `PHASE 3 PART 3B NOT COMPLETE`.

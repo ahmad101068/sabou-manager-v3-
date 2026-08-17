@@ -4,24 +4,24 @@
 Fail-closed: the final values below are verified only if `Phase 3 Part 3B Runtime and Business Tests` completes successfully on the exact same source commit that contains this report. Otherwise this report's status is `PHASE 3 PART 3B NOT COMPLETE`.
 
 ## Final required result
-API 23:
-- TOTAL=173
-- PASS=173
-- FAIL=0
-- SKIP=0
+API 23 (final candidate contract):
+- EXPECTED_DISCOVERED=177
+- REQUIRED_PASS=177
+- REQUIRED_FAIL=0
+- REQUIRED_SKIP=0
 
-API 35:
-- TOTAL=173
-- PASS=173
-- FAIL=0
-- SKIP=0
+API 35 (final candidate contract):
+- EXPECTED_DISCOVERED=177
+- REQUIRED_PASS=177
+- REQUIRED_FAIL=0
+- REQUIRED_SKIP=0
 
-16KB:
+16KB (final candidate contract):
 - PAGE_SIZE=16384
-- TOTAL=173
-- PASS=173
-- FAIL=0
-- SKIP=0
+- EXPECTED_DISCOVERED=177
+- REQUIRED_PASS=177
+- REQUIRED_FAIL=0
+- REQUIRED_SKIP=0
 
 JVM:
 - TOTAL=342
@@ -85,6 +85,46 @@ MINIMAL_FIX=Add stable user-card/users-loaded test hooks; wait within existing 1
 REGRESSION_TEST=Existing ownerWithPayrollPermission and cashierWithoutPayrollPermission tests.
 FILES_CHANGED=SecurityScreens.kt; StartupAuthenticationBoundaryComposeTest.kt
 RESULT_AFTER_FIX=Targeted regression PASS on API23/API35/16KB.
+
+## Post-CI UAT correction bug records
+### Branch selector crash / canonical branch identity
+BUG_EVIDENCE=Opening the operational branch selector could crash on Compose measurement when a lazy scrolling list was hosted inside DropdownMenu; stale/disabled selections could also remain display-valid.
+ROOT_CAUSE=Nested lazy content was measured through the popup path with invalid height constraints, and selection display was resolved against all branches instead of active branches.
+MINIMAL_FIX=Replace the popup list with a bounded Dialog/Surface + LazyColumn, resolve selection only from active branches, preserve branchId as canonical identity, and keep an explicit empty state.
+REGRESSION_TEST=PostCiUatCorrectionComposeTest.branchSelector_opensWithoutCrash_selectsCanonicalId_andHandlesEmptyState plus full connected suites.
+
+### Purchase internal invoice numbering
+BUG_EVIDENCE=A purchase draft with a blank internal invoice number was rejected before the repository allocator could issue the canonical unique number.
+ROOT_CAUSE=ProcurementUseCases prepared/validated the draft before the transactional LocalPurchaseRepository numbering boundary.
+MINIMAL_FIX=Delegate posting to purchaseBoundary().post(draft); allocate DocumentNumberType.PURCHASE inside the existing database transaction and return the persisted number.
+REGRESSION_TEST=BranchPurchasePostingIntegrationTest.blankInternalInvoiceNumber_isAllocatedUniquelyAndPersisted and PostCiUatCorrectionContractTest.
+
+### Home explicit branch + real seven-day revenue
+BUG_EVIDENCE=Home silently selected the only active branch, conflicting with UAT explicit-branch requirements; the trend surface did not have a canonical real seven-day management series.
+ROOT_CAUSE=DashboardViewModel contained a single-active-branch fallback and Home lacked a dedicated seven-day DailyManagementBrief read-model series.
+MINIMAL_FIX=Remove hidden fallback, keep no-branch state until explicit branchId selection, and compose seven real daily management read models for the revenue chart.
+REGRESSION_TEST=DashboardNavigationSettingsUx2ComposeTest.homeRequiresExplicitBranchBeforeCanonicalManagementKpis and PostCiUatCorrectionContractTest.
+
+### Procurement approve/reject UX and authorization
+BUG_EVIDENCE=Reject invoked review without a reason although the use case requires a reason; approval controls did not fully express PURCHASE_APPROVE / owner-only second-stage constraints.
+ROOT_CAUSE=UI callback shape omitted rejection note/completion and rendered actions without the complete canonical permission state.
+MINIMAL_FIX=Add required rejection-reason dialog, pass note to the use case, disable unauthorized actions, enforce owner-only final approval in UI while preserving the domain authorization boundary, and prevent duplicate submission while busy.
+REGRESSION_TEST=PostCiUatCorrectionComposeTest.procurementApproveAndReject_arePermissionAware_andRejectPersistsReasonThroughCallback plus full connected suites.
+
+### Procurement projection / Compose compile defect
+BUG_EVIDENCE=The first post-CI candidate failed compile with unresolved requisition note/createdAtEpochMillis and missing Material3 Surface import.
+ROOT_CAUSE=Procurement DAO projection did not select the newly consumed fields and the workflow stepper patch omitted one import.
+MINIMAL_FIX=Extend the existing SELECT projection only and add the missing import; no schema or migration change.
+REGRESSION_TEST=JVM/business instrumentation compile gate and full connected suites.
+
+### Dashboard full-suite fixture after explicit-branch policy
+BUG_EVIDENCE=Full API35 run executed 177 tests and only the three legacy Dashboard role tests timed out waiting for home_choose_branch because a Fresh Install had no active branch fixture.
+ROOT_CAUSE=The legacy UX2 test helper assumed at least one active branch; the product correctly no longer auto-creates or auto-selects one.
+MINIMAL_FIX=Test-only setup creates one deterministic active UX2 branch when none exists; each scenario still selects branchId explicitly through real UI. Product code and branch policy are unchanged.
+REGRESSION_TEST=The three existing Dashboard role tests plus the explicit-branch UAT test in the full connected suites.
+
+## Final validity rule for this report
+The numeric result is accepted only from GitHub Actions on the same final SOURCE_COMMIT/HEAD_SHA that produced the handoff ZIP. Older 173-test evidence is historical baseline evidence and must not be presented as the final post-CI UAT result.
 
 ## Non-blocking warnings
 ExperimentalCoroutinesApi opt-in warnings, deprecated AutoMirrored icons, deprecated status/navigation bar APIs and deprecated Compose test APIs remain NON_BLOCKING_WARNING unless a final required gate proves otherwise.
