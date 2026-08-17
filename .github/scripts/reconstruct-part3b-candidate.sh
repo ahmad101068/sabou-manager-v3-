@@ -31,6 +31,19 @@ done
 source_root="${workspace}/${target}"
 chmod +x "${source_root}/gradlew"
 
+reports=(
+  PHASE-3-FINAL-AUDIT-REPORT.md
+  PHASE-3-TEST-REPORT.md
+  PHASE-3-MIGRATION-REPORT.md
+  PHASE-3-UI-IMPLEMENTATION-REPORT.md
+  PHASE-3-PERFORMANCE-REPORT.md
+  PHASE-3-CI-REPORT.md
+)
+for report in "${reports[@]}"; do
+  test -s "${workspace}/${report}"
+  cp "${workspace}/${report}" "${source_root}/${report}"
+done
+
 # Fail closed if any known pre-fix source remains or the current evidence-backed fixes are missing.
 grep -Fq 'const val DATABASE_NAME = "restaurant_management.db"' \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt"
@@ -86,3 +99,12 @@ sha256sum \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt"
+
+(
+  cd "${source_root}"
+  find . -type f ! -path './PART3B-CANDIDATE-SHA256SUMS.txt' -print0 \
+    | sort -z \
+    | xargs -0 sha256sum > PART3B-CANDIDATE-SHA256SUMS.txt
+)
+candidate_sha256="$(sha256sum "${source_root}/PART3B-CANDIDATE-SHA256SUMS.txt" | awk '{print $1}')"
+echo "CANDIDATE_SHA256=${candidate_sha256}"
