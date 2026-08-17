@@ -30,6 +30,7 @@ patches=(
   post-ci-uat-purchase.patch
   post-ci-uat-home.patch
   post-ci-uat-procurement.patch
+  post-ci-uat-procurement-compile-fix.patch
   post-ci-uat-contract.patch
 )
 
@@ -109,6 +110,10 @@ grep -Fq 'procurement_rejection_dialog' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt"
 grep -Fq 'Permission.PURCHASE_APPROVE' \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt"
+grep -Fq 'import androidx.compose.material3.Surface' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt"
+grep -Fq 'r.note, r.createdAtEpochMillis' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt"
 test -s "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt"
 test -s "${source_root}/app/src/test/java/ir/restaurant/management/ui/PostCiUatCorrectionContractTest.kt"
 
@@ -120,9 +125,11 @@ fi
 
 sha256sum \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt" \
   "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt" \
