@@ -1,0 +1,190 @@
+diff --git a/app/src/main/java/ir/restaurant/management/ui/CanonicalBranchSelector.kt b/app/src/main/java/ir/restaurant/management/ui/CanonicalBranchSelector.kt
+index 5ff7ec1..7b261af 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/CanonicalBranchSelector.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/CanonicalBranchSelector.kt
+@@ -1,25 +1,31 @@
+ package ir.restaurant.management.ui
+ 
++import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.fillMaxWidth
+ import androidx.compose.foundation.layout.heightIn
++import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.foundation.lazy.items
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.outlined.ArrowDropDown
+-import androidx.compose.material3.DropdownMenu
+-import androidx.compose.material3.DropdownMenuItem
++import androidx.compose.material3.Button
+ import androidx.compose.material3.Icon
++import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.OutlinedButton
++import androidx.compose.material3.Surface
+ import androidx.compose.material3.Text
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.remember
++import androidx.compose.runtime.saveable.rememberSaveable
+ import androidx.compose.runtime.setValue
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.platform.testTag
+ import androidx.compose.ui.unit.dp
++import androidx.compose.ui.window.Dialog
+ import ir.restaurant.management.domain.branch.BranchRecord
+ 
+ /** Canonical operational selector: branchId is identity; branch name is display-only. */
+@@ -34,46 +40,87 @@ internal fun CanonicalBranchSelector(
+     enabled: Boolean = true,
+     tag: String = "canonical_branch_selector",
+ ) {
+-    var expanded by remember { mutableStateOf(false) }
++    var expanded by rememberSaveable { mutableStateOf(false) }
+     val activeBranches = remember(branches) { branches.filter { it.isActive } }
+-    val selected = selectedBranchId?.let { id -> branches.firstOrNull { it.id == id } }
++    val selected = selectedBranchId?.let { id -> activeBranches.firstOrNull { it.id == id } }
+     val display = when {
+         selected != null -> selected.name
+         allowAllBranches && selectedBranchId == null -> "همه شعب"
+-        branches.isEmpty() -> "شعبه‌ای تعریف نشده"
++        activeBranches.isEmpty() -> "شعبه‌ای تعریف نشده"
+         else -> "انتخاب شعبه"
+     }
+ 
+     Box(modifier.fillMaxWidth()) {
+         OutlinedButton(
+             onClick = { expanded = true },
+-            enabled = enabled && (branches.isNotEmpty() || allowAllBranches),
++            enabled = enabled,
+             modifier = Modifier.fillMaxWidth().testTag(tag),
+         ) {
+             Text("$label: $display", modifier = Modifier.weight(1f))
+             Icon(Icons.Outlined.ArrowDropDown, contentDescription = "انتخاب شعبه")
+         }
+-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+-            LazyColumn(Modifier.heightIn(max = 320.dp)) {
+-                if (allowAllBranches) {
+-                    item(key = "all-branches") {
+-                        DropdownMenuItem(
+-                            text = { Text("همه شعب") },
+-                            onClick = {
+-                                expanded = false
+-                                onBranchSelected(null)
+-                            },
++    }
++
++    if (expanded) {
++        Dialog(onDismissRequest = { expanded = false }) {
++            Surface(
++                modifier = Modifier.fillMaxWidth().testTag("${tag}_dialog"),
++                shape = MaterialTheme.shapes.extraLarge,
++                tonalElevation = 6.dp,
++            ) {
++                Column(
++                    Modifier.padding(18.dp),
++                    verticalArrangement = Arrangement.spacedBy(12.dp),
++                ) {
++                    Text(label, style = MaterialTheme.typography.titleMedium)
++                    if (activeBranches.isEmpty() && !allowAllBranches) {
++                        Text(
++                            "هنوز شعبه‌ای تعریف نشده است.",
++                            modifier = Modifier.fillMaxWidth().testTag("${tag}_empty"),
++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                         )
++                    } else {
++                        LazyColumn(
++                            modifier = Modifier
++                                .fillMaxWidth()
++                                .heightIn(max = 320.dp)
++                                .testTag("${tag}_options"),
++                            verticalArrangement = Arrangement.spacedBy(6.dp),
++                        ) {
++                            if (allowAllBranches) {
++                                item(key = "all-branches") {
++                                    OutlinedButton(
++                                        onClick = {
++                                            expanded = false
++                                            onBranchSelected(null)
++                                        },
++                                        modifier = Modifier.fillMaxWidth().testTag("${tag}_all"),
++                                    ) { Text("همه شعب") }
++                                }
++                            }
++                            items(activeBranches, key = { it.id }) { branch ->
++                                val isSelected = selectedBranchId == branch.id
++                                if (isSelected) {
++                                    Button(
++                                        onClick = { expanded = false },
++                                        modifier = Modifier.fillMaxWidth().testTag("${tag}_branch_${branch.id}"),
++                                    ) { Text(branch.name) }
++                                } else {
++                                    OutlinedButton(
++                                        onClick = {
++                                            expanded = false
++                                            onBranchSelected(branch.id)
++                                        },
++                                        modifier = Modifier.fillMaxWidth().testTag("${tag}_branch_${branch.id}"),
++                                    ) { Text(branch.name) }
++                                }
++                            }
++                        }
+                     }
+-                }
+-                items(activeBranches, key = { it.id }) { branch ->
+-                    DropdownMenuItem(
+-                        text = { Text(branch.name) },
+-                        onClick = {
+-                            expanded = false
+-                            onBranchSelected(branch.id)
+-                        },
+-                    )
++                    OutlinedButton(
++                        onClick = { expanded = false },
++                        modifier = Modifier.fillMaxWidth().testTag("${tag}_close"),
++                    ) { Text("بستن") }
+                 }
+             }
+         }
+ diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+index 8e7093b..811e51b 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+@@ -86,8 +86,8 @@ internal fun CrmScreen(
+     val receivableSummary = receivableSummary(state.openReceivables, currentLocalEpochDay())
+ 
+     LaunchedEffect(activeBranches, state.selectedReceivableBranchId) {
+-        if (state.selectedReceivableBranchId !in activeBranches.map { it.id }) {
+-            onSelectReceivableBranch(activeBranches.firstOrNull()?.id)
++        if (state.selectedReceivableBranchId != null && state.selectedReceivableBranchId !in activeBranches.map { it.id }) {
++            onSelectReceivableBranch(null)
+         }
+     }
+ 
+ diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
+index 68950a2..74c2113 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
+@@ -294,7 +294,7 @@ private fun InventoryLocationDialog(
+     var code by rememberSaveable { mutableStateOf("") }
+     var name by rememberSaveable { mutableStateOf("") }
+     val activeBranches = remember(branches) { branches.filter { it.isActive } }
+-    var selectedBranchId by remember(activeBranches) { mutableStateOf(activeBranches.singleOrNull()?.id) }
++    var selectedBranchId by rememberSaveable { mutableStateOf<Long?>(null) }
+     var type by rememberSaveable { mutableStateOf(InventoryLocationType.WAREHOUSE) }
+     var error by remember { mutableStateOf<String?>(null) }
+     AlertDialog(
+ diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
+index 642f795..f781e4e 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
+@@ -71,7 +71,7 @@ internal fun ManagementWorkflowRoute(
+ ) {
+     val activeBranches = branches.filter { it.isActive }
+     LaunchedEffect(activeBranches, state.selectedBranchId) {
+-        if (state.selectedBranchId == null && activeBranches.isNotEmpty()) workflow.selectBranch(activeBranches.first().id)
++        if (state.selectedBranchId != null && state.selectedBranchId !in activeBranches.map { it.id }) workflow.selectBranch(null)
+     }
+     when (screen) {
+         AppScreen.MANAGEMENT_ISSUES -> ManagementIssuesScreen(state, issues, activeBranches, tasks, employees, currentUser, workflow, navigateTopLevel, navigateBack)
