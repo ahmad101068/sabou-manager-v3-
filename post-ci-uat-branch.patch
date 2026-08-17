@@ -147,7 +147,7 @@ index 5ff7ec1..7b261af 100644
                  }
              }
          }
- diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
 index 8e7093b..811e51b 100644
 --- a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
 +++ b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
@@ -162,7 +162,7 @@ index 8e7093b..811e51b 100644
          }
      }
  
- diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
+diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
 index 68950a2..74c2113 100644
 --- a/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
 +++ b/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
@@ -175,7 +175,7 @@ index 68950a2..74c2113 100644
      var type by rememberSaveable { mutableStateOf(InventoryLocationType.WAREHOUSE) }
      var error by remember { mutableStateOf<String?>(null) }
      AlertDialog(
- diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
 index 642f795..f781e4e 100644
 --- a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
 +++ b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
