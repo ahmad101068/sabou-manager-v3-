@@ -1,7 +1,7 @@
 diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt
 --- a/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt
 +++ b/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt
-@@ -1,12 +1,15 @@
+@@ -1,13 +1,16 @@
  package ir.restaurant.management.ui
  
 +import androidx.compose.foundation.lazy.LazyColumn
@@ -18,7 +18,7 @@ diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorre
  import androidx.compose.ui.test.performTextInput
  import ir.restaurant.management.domain.branch.BranchRecord
  import ir.restaurant.management.domain.operations.AppUserRecord
-@@ -83,37 +86,41 @@ class PostCiUatCorrectionComposeTest {
+@@ -83,38 +86,42 @@ class PostCiUatCorrectionComposeTest {
  
          composeRule.setContent {
              MaterialTheme {
