@@ -92,3 +92,14 @@ index e0f78da..91312e4 100644
 -    private data class Consumption(val item: InventoryItemEntity, val quantity: Long, val cost: Long)
 +    private data class ConsumptionNeed(
 +        val item: InventoryItemEntity,
++        val lineIndex: Int,
++        val quantity: Long,
++    )
++    private data class PreparedConsumption(
++        val item: InventoryItemEntity,
++        val quantity: Long,
++        val cost: Long,
++        val locationId: Long,
++    )
++    private data class PreparedLineSeed(
++        val menuId: Long,
