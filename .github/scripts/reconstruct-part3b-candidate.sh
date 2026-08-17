@@ -31,6 +31,7 @@ patches=(
   post-ci-uat-home.patch
   post-ci-uat-procurement.patch
   post-ci-uat-procurement-compile-fix.patch
+  post-ci-uat-test-harness-fix.patch
   post-ci-uat-contract.patch
   post-ci-uat-verifier-fix.patch
 )
@@ -119,6 +120,8 @@ grep -Fq 'home_no_branch_state' \
   "${source_root}/scripts/verify-phase3-ui-foundation.py"
 grep -Fq 'سود عملیاتی تخمینی' \
   "${source_root}/scripts/verify-phase3-ui-foundation.py"
+grep -Fq 'performScrollTo().assertIsEnabled().performClick()' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt"
 test -s "${source_root}/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt"
 test -s "${source_root}/app/src/test/java/ir/restaurant/management/ui/PostCiUatCorrectionContractTest.kt"
 
