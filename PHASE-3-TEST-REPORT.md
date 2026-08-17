@@ -75,7 +75,7 @@ ROOT_CAUSE=The test synchronized only to the service status transition; on the s
 MINIMAL_FIX=Keep the existing 10-second wait and require both PENDING_APPROVAL service status and the real `inventory_count_close` semantics node before clicking. No timeout increase, retry, lifecycle bypass, or Inventory business change.
 REGRESSION_TEST=Existing Inventory Count E2E in the full connected 16KB suite.
 FILES_CHANGED=EnterpriseCoreComposeE2ETest.kt
-RESULT_AFTER_FIX=PENDING same-commit full verification; fail-closed until the final 16KB suite passes.
+RESULT_AFTER_FIX=Targeted 16KB regression PASS; final same-commit full connected verification remains mandatory under the validity rule above.
 
 ### Authentication / user-list publication / logout
 BUG_EVIDENCE=API23/16KB could scroll before the Lazy user list was published; 16KB logout UI could reappear before repository currentUser reached null.
