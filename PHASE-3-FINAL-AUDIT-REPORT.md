@@ -14,6 +14,7 @@ Phase 3 Part 3B verifies the existing implementation; no large feature work is a
 - Home/Dashboard Compose checks use stable item hooks and unmerged semantics where the clickable Card merges child semantics; role filtering rules remain unchanged.
 - Management Tasks retains CONTROL top-level routing and the canonical product title `وظایف مدیریتی`.
 - Inventory Count regression re-enters Counts after intentional authenticated-session ViewModelStore recreation; record → approve → post is not bypassed.
+- Final 16KB full-suite evidence exposed a slower Compose publication after Inventory Count submit; the existing 10-second wait now requires both PENDING_APPROVAL service state and the rendered Close-action semantics node before interaction. No timeout increase or business behavior change was made.
 - Security regressions wait for real user-list publication and logout repository state without increasing the 10-second timeout or weakening authentication/authorization.
 
 ## Locked invariants
