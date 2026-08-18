@@ -1,0 +1,69 @@
+diff --git a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+index 7637956..7b72e9a 100644
+--- a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
++++ b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+@@ -14,14 +14,13 @@ import androidx.work.CoroutineWorker
+ import androidx.work.WorkerParameters
+ import ir.restaurant.management.core.currentLocalEpochDay
+ import ir.restaurant.management.domain.security.Permission
+-import ir.restaurant.management.domain.security.UserRole
+ import kotlinx.coroutines.flow.first
+ 
+ class AlertRefreshWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+     override suspend fun doWork(): Result = runCatching {
+         val app = applicationContext as RestaurantManagementApplication
+         val currentUser = app.container.securityRepository.currentUser.first() ?: return Result.success()
+-        if (!UserRole.fromStoredValue(currentUser.role).allows(Permission.ACCOUNTING)) return Result.success()
++        if (!currentUser.role.allows(Permission.ACCOUNTING)) return Result.success()
+         val repository = app.container.alertRepository
+         repository.refresh(currentLocalEpochDay())
+         val actionable = repository.alerts().first().count {
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+index 5f819f8..54c773e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+@@ -137,7 +137,7 @@ class LocalInventoryCommandEngine(
+             unitCostRial = unitCost,
+             notes = notes,
+         )
+-        replayOrConflict(expected)?.let { return@inventoryTransaction it }
++        replayOrConflict(expected)?.let { return@authorizedInventoryTransaction it }
+ 
+         val item = database.inventoryDao().activeById(itemId)
+             ?: throw BusinessError.EntityNotFound("INVENTORY_ITEM", itemId).asViolation()
+@@ -224,7 +224,7 @@ class LocalInventoryCommandEngine(
+             unitCostRial = unitCost,
+             notes = notes,
+         )
+-        replayOrConflict(expected)?.let { return@inventoryTransaction it }
++        replayOrConflict(expected)?.let { return@authorizedInventoryTransaction it }
+ 
+         val item = database.inventoryDao().activeById(itemId)
+             ?: throw BusinessError.EntityNotFound("INVENTORY_ITEM", itemId).asViolation()
+@@ -295,7 +295,7 @@ class LocalInventoryCommandEngine(
+         context: InventoryCommandContext,
+         notes: String? = null,
+     ): InventoryLedgerResult = authorizedInventoryTransaction(
+-        movementEpochDay, context, InventoryReferenceType.INVENTORY_COUNT, Permission.INVENTORY_COUNT_POST,
++        movementEpochDay, context, InventoryReferenceType.INVENTORY_COUNT, setOf(Permission.INVENTORY_COUNT_POST),
+     ) {
+         businessRequire(countedQuantityMicros >= 0) {
+             BusinessError.InvalidInput("countedQuantityMicros", "موجودی شمارش‌شده نمی‌تواند منفی باشد.")
+@@ -329,7 +329,7 @@ class LocalInventoryCommandEngine(
+             unitCostRial = unitCost,
+             notes = notes,
+         )
+-        replayOrConflict(expected)?.let { return@inventoryTransaction it }
++        replayOrConflict(expected)?.let { return@authorizedInventoryTransaction it }
+ 
+         val now = clock()
+         val nextAggregateStock = SignedLongMath.add(item.stockMicros, quantityDelta)
+@@ -629,7 +629,7 @@ class LocalInventoryCommandEngine(
+             notes = notes,
+             reversalOfMovementId = movement.id,
+         )
+-        replayOrConflict(expected)?.let { return@inventoryTransaction it }
++        replayOrConflict(expected)?.let { return@authorizedInventoryTransaction it }
+         database.stockMovementDao().reversalOf(movement.id)?.let {
+             throw BusinessError.IdempotencyConflict(resolved.idempotencyKey).asViolation()
+         }
