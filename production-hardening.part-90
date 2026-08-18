@@ -67,3 +67,93 @@ index 5f819f8..54c773e 100644
          database.stockMovementDao().reversalOf(movement.id)?.let {
              throw BusinessError.IdempotencyConflict(resolved.idempotencyKey).asViolation()
          }
+diff --git a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+index 1fa7f88..f0514c5 100644
+--- a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
++++ b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+@@ -1,8 +1,10 @@
+ package ir.restaurant.management.data.security
+ 
+-import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.data.db.AppDatabase
+-import ir.restaurant.management.data.db.AuditLogEntity
++import ir.restaurant.management.data.repository.LocalAuditEventWriter
++import ir.restaurant.management.domain.audit.AuditAction
++import ir.restaurant.management.domain.audit.AuditEntityType
++import ir.restaurant.management.domain.audit.AuditEventDraft
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.BusinessRuleViolation
+ import ir.restaurant.management.domain.security.AuthorizationService
+@@ -42,18 +44,24 @@ class SessionAuthorizer(private val database: AppDatabase) : AuthorizationServic
+         val actor = actorIdentity()
+         val role = actor.role
+         if (!role.allows(permission)) {
+-            database.auditLogDao().insert(
+-                AuditLogEntity(
+-                    action = "ACCESS_DENIED",
+-                    entityType = "SECURITY",
++            val now = System.currentTimeMillis()
++            LocalAuditEventWriter(database).append(
++                AuditEventDraft(
++                    action = AuditAction.of("ACCESS_DENIED"),
++                    entityType = AuditEntityType.of("SECURITY"),
+                     entityId = actor.id,
+-                    description = "رد دسترسی به مجوز ${permission.name}",
+-                    actor = actor.displayName,
+-                    createdAtEpochMillis = System.currentTimeMillis(),
+-                    globalId = GlobalId.new().value,
+                     actorId = actor.id,
++                    actorDisplayName = actor.displayName,
++                    occurredAtEpochMillis = now,
++                    businessEpochDay = null,
++                    deviceId = "local-android",
++                    referenceType = "SECURITY",
++                    referenceId = actor.id,
+                     reason = "PERMISSION_DENIED:${permission.name}",
++                    beforeSnapshot = null,
++                    afterSnapshot = null,
+                     correlationId = "security:denied:${actor.id}:${permission.name}:${System.nanoTime()}",
++                    description = "رد دسترسی به مجوز ${permission.name}",
+                 ),
+             )
+             throw AccessDeniedException(permission)
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+index b67818c..5e5f5b5 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+@@ -25,7 +25,6 @@ class AlertViewModel(private val repository: AlertRepository) : ViewModel() {
+         AlertUiState(alerts, text, busy)
+     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AlertUiState())
+ 
+-    init { refresh() }
+ 
+     fun refresh() = viewModelScope.launch {
+         refreshing.value = true
+diff --git a/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt b/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
+index d0cdcbf..44d31a8 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
+@@ -281,7 +281,12 @@ private fun AuthenticatedRestaurantManagementApp(
+     val treasuryState by treasury.state.collectAsStateWithLifecycle()
+     val crmState by crm.state.collectAsStateWithLifecycle()
+     val recipeState by recipes.state.collectAsStateWithLifecycle()
+-    val alertState by alerts.state.collectAsStateWithLifecycle()
++    val canObserveAlerts = securityState.currentUser?.role?.allows(Permission.ACCOUNTING) == true
++    val alertState = if (canObserveAlerts) {
++        alerts.state.collectAsStateWithLifecycle().value
++    } else {
++        AlertUiState()
++    }
+     val personnelState by personnel.state.collectAsStateWithLifecycle()
+     val canObservePayroll = securityState.currentUser?.role?.allows(Permission.PAYROLL_VIEW_ALL) == true
+     val hrPayrollState = if (canObservePayroll) {
+@@ -305,6 +310,9 @@ private fun AuthenticatedRestaurantManagementApp(
+     LaunchedEffect(securityState.currentUser, organizationName) {
+         dashboard.setContext(securityState.currentUser, organizationName)
+     }
++    LaunchedEffect(canObserveAlerts) {
++        if (canObserveAlerts) alerts.refresh()
++    }
+     AutoClearMessage(operationsState.message, operations::clearMessage)
+     AutoClearMessage(inventoryState.message, inventory::clearMessage)
+     AutoClearMessage(accountingState.message, accounting::clearMessage)
