@@ -19,6 +19,9 @@ cat "${workspace}"/post-ci-uat-procurement.part-* > "${workspace}/post-ci-uat-pr
 # exact source/test patch can be reconstructed losslessly before fail-closed apply.
 cat "${workspace}"/weighted-average-daily-sales.part-* > "${workspace}/weighted-average-daily-sales.patch"
 
+# Production hardening is stored as line-safe text fragments for lossless connector writes.
+cat "${workspace}"/production-hardening.part-* > "${workspace}/production-hardening.patch"
+
 patches=(
   phase3-junit-lifecycle.patch
   phase3-connected-followup.patch
@@ -39,6 +42,7 @@ patches=(
   post-ci-uat-contract.patch
   post-ci-uat-verifier-fix.patch
   weighted-average-daily-sales.patch
+  production-hardening.patch
 )
 
 for patch in "${patches[@]}"; do
@@ -152,8 +156,39 @@ if grep -Fq 'fun inventoryHome_showsInventoryKpis_withoutFinancialKpis()' \
   exit 1
 fi
 
+# Production hardening gates: security boundaries, alert batching, DB health, and Room55 lock.
+grep -Fq 'private val authorizer: AuthorizationService' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt"
+grep -Fq 'permissionsFor(referenceType, movementType)' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt"
+grep -Fq 'ledgerForCustomers(customerIds)' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt"
+grep -Fq 'DatabaseHealthValidator.validateStartup(sqlite)' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt"
+grep -Fq 'DatabaseHealthValidator.validateForeignKeys(sqlite)' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
+grep -Fq 'directInventoryCommandRejectsUnauthorizedSessionAndAuditsDenial' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt"
+grep -Fq 'alertRepositoryDeniesCashierAtDataBoundaryAndAuditsDenial' \
+  "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt"
+grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 55' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
+if grep -R -q '^import ir\.restaurant\.management\.data\.' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/domain"; then
+  echo '::error::Domain layer still imports data layer after hardening'
+  exit 1
+fi
+if grep -R -q 'fallbackToDestructiveMigration' "${source_root}/app/src/main/java"; then
+  echo '::error::Destructive Room migration fallback is forbidden'
+  exit 1
+fi
+
 sha256sum \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/db/DatabaseHealthValidator.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt" \
   "${source_root}/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt" \

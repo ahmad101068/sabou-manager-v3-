@@ -1,0 +1,141 @@
++        val cashierId = security.save(null, UserDraft("ledger-cash-sec", "صندوقدار امنیت", "654321", UserRole.CASHIER))
++        security.switchUser(cashierId, "654321")
++        val securedEngine = LocalInventoryCommandEngine(database, clock = { NOW }, authorizer = sessionAuthorizer)
++        val itemId = insertItem("کالای مرز امنیت")
++
++        try {
++            securedEngine.receive(
++                itemId = itemId,
++                quantityMicros = 1_000_000,
++                valueRial = 100_000,
++                movementType = InventoryMovementType.OPENING_BALANCE,
++                referenceType = InventoryReferenceType.MIGRATION,
++                referenceId = 9901,
++                movementEpochDay = 100,
++                context = InventoryCommandContext(
++                    idempotencyKey = "security-inventory:9901",
++                    correlationId = "security:inventory:9901",
++                    actorId = cashierId,
++                    deviceId = "instrumentation",
++                    locationId = null,
++                    reasonCode = InventoryReasonCode.OPENING_BALANCE,
++                    reason = "آزمون رد دسترسی مستقیم",
++                ),
++            )
++            fail("فراخوانی مستقیم موتور موجودی توسط کاربر فاقد مجوز باید رد شود")
++        } catch (error: BusinessRuleViolation) {
++            assertTrue(error.error is BusinessError.PermissionDenied)
++        }
++        assertEquals(0L, database.inventoryDao().byId(itemId)?.stockMicros)
++        assertEquals(
++            1L,
++            scalar("SELECT COUNT(*) FROM audit_logs WHERE action='ACCESS_DENIED' AND actorId=$cashierId AND reason LIKE 'PERMISSION_DENIED:%'"),
++        )
++    }
++
++    @Test
++    fun directInventoryCommandRejectsActorMismatchAndAuditsDenial() = runBlocking {
++        val sessionAuthorizer = SessionAuthorizer(database)
++        val security = LocalSecurityRepository(database, clock = { NOW }, authorizer = sessionAuthorizer)
++        val ownerId = security.save(null, UserDraft("ledger-owner-actor", "مالک تطبیق actor", "123456", UserRole.OWNER, "87654321"))
++        val securedEngine = LocalInventoryCommandEngine(database, clock = { NOW }, authorizer = sessionAuthorizer)
++        val itemId = insertItem("کالای تطبیق actor")
++
++        try {
++            securedEngine.receive(
++                itemId = itemId,
++                quantityMicros = 1_000_000,
++                valueRial = 100_000,
++                movementType = InventoryMovementType.OPENING_BALANCE,
++                referenceType = InventoryReferenceType.MIGRATION,
++                referenceId = 9902,
++                movementEpochDay = 100,
++                context = InventoryCommandContext(
++                    idempotencyKey = "security-inventory:9902",
++                    correlationId = "security:inventory:9902",
++                    actorId = ownerId + 999L,
++                    deviceId = "instrumentation",
++                    locationId = null,
++                    reasonCode = InventoryReasonCode.OPENING_BALANCE,
++                    reason = "آزمون عدم تطابق actor",
++                ),
++            )
++            fail("actor داخل فرمان موجودی باید با Session جاری یکسان باشد")
++        } catch (error: BusinessRuleViolation) {
++            assertTrue(error.error is BusinessError.PermissionDenied)
++        }
++        assertEquals(0L, database.inventoryDao().byId(itemId)?.stockMicros)
++        assertEquals(
++            1L,
++            scalar("SELECT COUNT(*) FROM audit_logs WHERE action='ACCESS_DENIED' AND actorId=$ownerId AND reason LIKE 'ACTOR_MISMATCH:%'"),
++        )
++    }
++
+     private suspend fun insertItem(
+         name: String,
+         stockMicros: Long = 0,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReadServiceIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReadServiceIntegrationTest.kt
+index 386b95f..14d9c79 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReadServiceIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReadServiceIntegrationTest.kt
+@@ -55,7 +55,7 @@ class InventoryReadServiceIntegrationTest {
+                 updatedAtEpochMillis = NOW,
+             ),
+         )
+-        LocalInventoryCommandEngine(database, clock = { NOW }).receive(
++        LocalInventoryCommandEngine(database, clock = { NOW }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 3_000_000,
+             valueRial = 900_000,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReplenishmentIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReplenishmentIntegrationTest.kt
+index c704c67..e9b0bc8 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReplenishmentIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReplenishmentIntegrationTest.kt
+@@ -59,7 +59,7 @@ class InventoryReplenishmentIntegrationTest {
+                 updatedAtEpochMillis = now,
+             ),
+         )
+-        val engine = LocalInventoryCommandEngine(database, clock = { ++now })
++        val engine = LocalInventoryCommandEngine(database, clock = { ++now }, authorizer = authorizer)
+         engine.receive(
+             itemId = itemId,
+             quantityMicros = 4_000_000,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt
+index 4a21cea..9b9eb78 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt
+@@ -73,7 +73,7 @@ class InventoryTransferWorkflowIntegrationTest {
+                 updatedAtEpochMillis = now,
+             ),
+         )
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 5_000_000,
+             valueRial = 1_000_000,
+@@ -108,7 +108,7 @@ class InventoryTransferWorkflowIntegrationTest {
+ 
+     @Test
+     fun issueAndReceiptTrackInTransitPreserveValueAndCreateNoJournal() = runBlocking {
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = fixture.itemId,
+             quantityMicros = 5_000_000,
+             valueRial = 3_000_000,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+index 6f6657b..847c2fb 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+@@ -65,7 +65,7 @@ class InventoryWasteWorkflowIntegrationTest {
+         val location = requireNotNull(database.inventoryLocationDao().byId(locationId))
+         database.inventoryLocationDao().update(location.copy(branchName = "ونک", branchId = 2L, updatedAtEpochMillis = ++now))
+         val itemId = insertItem("خامه منقضی", trackLot = true, trackExpiry = true)
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 3_000_000,
+             valueRial = 1_000_000,
+@@ -121,7 +121,7 @@ class InventoryWasteWorkflowIntegrationTest {
+     fun approvalRequiresPermissionAndDifferentActorThenCreatorCanPost() = runBlocking {
+         val locationId = requireNotNull(database.inventoryLocationDao().defaultLocationId())
+         val itemId = insertItem("روغن کنترل ضایعات")
