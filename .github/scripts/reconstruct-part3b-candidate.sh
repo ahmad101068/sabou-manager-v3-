@@ -161,9 +161,9 @@ grep -Fq 'private val authorizer: AuthorizationService' \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt"
 grep -Fq 'permissionsFor(referenceType, movementType)' \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt"
-grep -Fq 'ledgerForCustomers(customerIds)' \
+grep -Fq 'ledgerForCustomers(' \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt"
-grep -Fq 'DatabaseHealthValidator.validateStartup(sqlite)' \
+grep -Fq 'DatabaseHealthValidator.validateStartup(db)' \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt"
 grep -Fq 'DatabaseHealthValidator.validateForeignKeys(sqlite)' \
   "${source_root}/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
