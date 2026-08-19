@@ -1,29 +1,36 @@
 name: Phase 2 Canonical Financial Targeted Verification
 
 on:
-  push:
-    branches: [remediation/financial-truth]
+  pull_request:
+    branches: [remediation/canonical-hardening]
     paths:
       - 'phase2-remediation/**'
       - '.github/scripts/reconstruct-phase2-canonical.sh'
       - '.github/workflows/phase2-canonical-targeted.yml'
       - '.github/workflows/phase2-source-handoff.yml'
-  pull_request:
-    branches: [remediation/canonical-hardening]
 
 permissions:
   contents: read
 
 concurrency:
-  group: phase2-canonical-financial-${{ github.ref }}
+  group: phase2-canonical-financial-${{ github.event.pull_request.head.ref }}
   cancel-in-progress: true
 
 jobs:
   financial-targeted:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify exact PR head checkout
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "${actual}" = "${SOURCE_SHA}"
       - name: Reconstruct exact Phase 2 candidate
         run: bash .github/scripts/reconstruct-phase2-canonical.sh
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -73,7 +80,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: phase2-canonical-financial-${{ github.sha }}
+          name: phase2-canonical-financial-${{ github.event.pull_request.head.sha }}
           path: |
             phase3-source/app/build/test-results/testDebugUnitTest/**
             phase3-source/app/build/reports/tests/testDebugUnitTest/**
