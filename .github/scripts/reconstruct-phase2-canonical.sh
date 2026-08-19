@@ -20,6 +20,7 @@ patches=(
   phase2-financial-reads
   phase2-wiring
   phase2-ap-test
+  phase2-compile-hotfix
 )
 
 declare -A expected_sha=(
@@ -29,6 +30,7 @@ declare -A expected_sha=(
   [phase2-financial-reads]="f48791d9552fedb662f46a86666403470b29db648f30d660b319ff5513f31c2b"
   [phase2-wiring]="c09e467b6a9e35a09c8b2688438920dacf021ac769a9d5675a1bd19075ef9809"
   [phase2-ap-test]="449da3e855c607edcca4fd44d0e00c4798043680205eb2190c364eded97b63b4"
+  [phase2-compile-hotfix]="b9af7bd8ab323e75623c0cf8c80d3558e7fae6c653977e576235458992002922"
 )
 
 for name in "${patches[@]}"; do
