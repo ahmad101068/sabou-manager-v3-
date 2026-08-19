@@ -1,0 +1,81 @@
+name: Phase 3 Part 3B Source Handoff
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase3-part3b-source-handoff-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  package-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Reconstruct exact final candidate
+        run: bash .github/scripts/reconstruct-part3b-candidate.sh
+      - name: Build clean source ZIP and evidence
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          root = Path('phase3-source')
+          output = Path('restaurant-management-phase-3-final-source.zip')
+          excluded_dirs = {'build', '.gradle', 'sdk', 'cache', '__pycache__'}
+          excluded_exact_files = {
+              'local.properties', 'secret', 'secrets', 'token', 'tokens',
+          }
+          excluded_suffixes = {'.apk', '.aab', '.keystore', '.jks', '.bak', '.backup', '.old'}
+
+          def excluded(path: Path) -> bool:
+              rel = path.relative_to(root)
+              if any(part.lower() in excluded_dirs for part in rel.parts[:-1]):
+                  return True
+              name = rel.name
+              lower = name.lower()
+              if lower in excluded_exact_files:
+                  return True
+              if any(lower.endswith(suffix) for suffix in excluded_suffixes):
+                  return True
+              stem = path.stem.lower()
+              if stem.endswith('_copy') or stem.endswith('_backup'):
+                  return True
+              return False
+
+          with ZipFile(output, 'w', ZIP_DEFLATED) as zf:
+              for path in sorted(root.rglob('*')):
+                  if path.is_file() and not excluded(path):
+                      zf.write(path, path.relative_to(root).as_posix())
+          PY
+          final_sha="$(sha256sum restaurant-management-phase-3-final-source.zip | awk '{print $1}')"
+          candidate_sha="$(sha256sum phase3-source/PART3B-CANDIDATE-SHA256SUMS.txt | awk '{print $1}')"
+          {
+            echo "REPOSITORY_FULL_NAME=${GITHUB_REPOSITORY}"
+            echo "SOURCE_COMMIT=${{ github.event.pull_request.head.sha }}"
+            echo "HEAD_SHA=${{ github.event.pull_request.head.sha }}"
+            echo "CANDIDATE_SHA256=${candidate_sha}"
+            echo "FINAL_SOURCE_ZIP=restaurant-management-phase-3-final-source.zip"
+            echo "FINAL_SOURCE_SHA256=${final_sha}"
+          } | tee final-source-handoff.txt
+          unzip -l restaurant-management-phase-3-final-source.zip | tee final-source-contents.txt
+          if unzip -Z1 restaurant-management-phase-3-final-source.zip | grep -E '(^|/)(build|\.gradle|sdk|cache)/|(^|/)local\.properties$|\.(apk|aab|keystore|jks|bak|backup|old)$|(_copy|_backup)(\.[^/]*)?$'; then
+            echo '::error::Forbidden source handoff content detected'
+            exit 1
+          fi
+      - name: Upload final source handoff candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3-final-source-${{ github.event.pull_request.head.sha }}
+          path: |
+            restaurant-management-phase-3-final-source.zip
+            final-source-handoff.txt
+            final-source-contents.txt
+          if-no-files-found: error
+          retention-days: 14

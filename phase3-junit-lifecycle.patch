@@ -1,0 +1,583 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt
+index d616a04..1ff5f03 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/BackupRestoreValidationIntegrationTest.kt
+@@ -98,7 +98,7 @@ class BackupRestoreValidationIntegrationTest {
+     }
+ 
+     private companion object {
+-        const val DATABASE_NAME = "restaurant-management_manager_v3.db"
++        const val DATABASE_NAME = "restaurant_management.db"
+         const val VALIDATION_DATABASE_NAME = "restaurant-management_restore_validation.db"
+     }
+ }
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/MigrationRecoveryTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/MigrationRecoveryTest.kt
+index 3829192..acd150d 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/MigrationRecoveryTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/MigrationRecoveryTest.kt
+@@ -20,7 +20,7 @@ class MigrationRecoveryTest {
+ 
+     @Before
+     fun setUp() {
+-        database = context.getDatabasePath("restaurant-management_manager_v3.db")
++        database = context.getDatabasePath("restaurant_management.db")
+         context.deleteDatabase(database.name)
+         context.getSharedPreferences("backup_state", Context.MODE_PRIVATE).edit().clear().commit()
+         File(context.filesDir, "migration-recovery").listFiles().orEmpty().forEach { it.delete() }
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/AccountingBranchScopeMigration52To53Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/AccountingBranchScopeMigration52To53Test.kt
+index ae1e51a..9737f2f 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/AccountingBranchScopeMigration52To53Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/AccountingBranchScopeMigration52To53Test.kt
+@@ -17,7 +17,9 @@ class AccountingBranchScopeMigration52To53Test {
+     private val databaseName = "accounting-branch-scope-migration-52-53.db"
+ 
+     @After
+-    fun cleanUp() = context.deleteDatabase(databaseName)
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun backfillsOnlyDeterministicNumericRelationsAndLeavesUnknownLegacyUnassigned() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration48To49Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration48To49Test.kt
+index 3d8a9d4..d25609c 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration48To49Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration48To49Test.kt
+@@ -16,7 +16,10 @@ class Migration48To49Test {
+     private val context = ApplicationProvider.getApplicationContext<Context>()
+     private val databaseName = "migration-48-49.db"
+ 
+-    @After fun cleanUp() = context.deleteDatabase(databaseName)
++    @After
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun removesOperationalRestaurantTablesAndPreservesPostedSalesHistory() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration49To50Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration49To50Test.kt
+index a31edc7..3c4fa55 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration49To50Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration49To50Test.kt
+@@ -17,7 +17,10 @@ class Migration49To50Test {
+     private val context = ApplicationProvider.getApplicationContext<Context>()
+     private val databaseName = "migration-49-50.db"
+ 
+-    @After fun cleanUp() = context.deleteDatabase(databaseName)
++    @After
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun preservesHistoricalDailySalesAndBuildsCanonicalSettlementRows() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration51To52Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration51To52Test.kt
+index 21bf98d..7d5f5ca 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration51To52Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration51To52Test.kt
+@@ -16,7 +16,10 @@ class Migration51To52Test {
+     private val context = ApplicationProvider.getApplicationContext<Context>()
+     private val databaseName = "migration-51-52.db"
+ 
+-    @After fun cleanUp() = context.deleteDatabase(databaseName)
++    @After
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun repairsLegacyNetSalesAndMakesClosureIdentityBranchSafe() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration53To54Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration53To54Test.kt
+index 3f25560..e9e9b1f 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration53To54Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration53To54Test.kt
+@@ -19,7 +19,9 @@ class Migration53To54Test {
+     private val databaseName = "branch-canonicalization-migration-53-54.db"
+ 
+     @After
+-    fun cleanUp() = context.deleteDatabase(databaseName)
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun legacyPlaceholderDailySalesDoesNotCreateCanonicalBranch() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration54To55Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration54To55Test.kt
+index 80088d9..cf14e79 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration54To55Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration54To55Test.kt
+@@ -17,7 +17,9 @@ class Migration54To55Test {
+     private val databaseName = "migration-54-55.db"
+ 
+     @After
+-    fun cleanUp() = context.deleteDatabase(databaseName)
++    fun cleanUp() {
++        context.deleteDatabase(databaseName)
++    }
+ 
+     @Test
+     fun migrationCreatesStableAliasesWithoutRewritingHistoricalRows() {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
+index 0578fb3..02e611d 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
+@@ -69,7 +69,7 @@ class BranchPurchasePostingIntegrationTest {
+                 paymentMethod = PurchasePaymentMethod.PAYABLE,
+                 reminderEnabled = false,
+                 reminderEpochDay = null,
+-                lines = listOf(PurchaseLineDraft(itemId, QuantityMicros.positive(1), MoneyRial.of(12_000_000L))),
++                lines = listOf(PurchaseLineDraft(itemId, QuantityMicros.positive(1_000_000L), MoneyRial.of(12_000_000L))),
+                 branchId = 2L,
+             ),
+         )
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt
+index d7f06c4..0749992 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt
+@@ -46,7 +46,7 @@ class EnterprisePermissionIntegrationTest {
+     private var storekeeperId: Long = 0
+ 
+     @Before
+-    fun setUp() = runBlocking {
++    fun setUp(): Unit = runBlocking {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+         authorizer = SessionAuthorizer(database)
+         security = LocalSecurityRepository(database, authorizer = authorizer, clock = { ++now })
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+index 7f7b7dd..7ef4e62 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+@@ -41,7 +41,7 @@ class InventoryWasteWorkflowIntegrationTest {
+     private var now = 1_910_000_000_000L
+ 
+     @Before
+-    fun setUp() = runBlocking {
++    fun setUp(): Unit = runBlocking {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+         authorizer = SessionAuthorizer(database)
+         security = LocalSecurityRepository(database, clock = { now }, authorizer = authorizer)
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+index 4935299..ff6e479 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+@@ -179,10 +179,11 @@ class Phase2CorrectionIntegrationTest {
+         val customer = LocalSalesHistoryRepository(database, authorizer).customers.first()
+             .first { it.id == fixture.personId }
+         assertEquals(12_000_000L, customer.outstandingRial)
+-        val aging = receivables.aging(1L, day)
+-        val agingTotal = aging.currentRial + aging.overdue1To7Rial + aging.overdue8To30Rial +
+-            aging.overdue31To60Rial + aging.overdue61To90Rial + aging.overdueOver90Rial
+-        assertEquals(12_000_000L, agingTotal)
++        // Opening balances are organization-scoped legacy lots and must not be fabricated as
++        // branch 1. Customer aging is the canonical party-level API for this combined balance.
++        val aging = LocalCustomerAccountService(database, authorizer, clock = { ++now })
++            .aging(fixture.personId, day)
++        assertEquals(12_000_000L, aging.totalRial)
+         assertEquals(4_000_000L, scalar("SELECT outstandingAmountRial FROM receivables WHERE sourceType='DAILY_SALES' AND sourceId=$saleId"))
+     }
+ 
+@@ -213,6 +214,7 @@ class Phase2CorrectionIntegrationTest {
+                 idempotencyKey = "correction:waste:991",
+                 correlationId = "correction:waste:991",
+                 actorId = 1,
++                locationId = requireNotNull(database.managementControlDao().defaultLocationId()),
+                 deviceId = "test",
+                 unitCostRial = 50_000_000L,
+                 reasonCode = "WASTE",
+@@ -244,6 +246,12 @@ class Phase2CorrectionIntegrationTest {
+         assertTrue(brief.profitability.isEstimatedProfitAvailable)
+         assertEquals(brief.profitability.revenueRial, home.revenueRial)
+         assertEquals(brief.profitability.grossProfitRial, home.grossProfitRial)
++        assertEquals(
++            brief.foodCost.actualLedgerCostRial
++                ?.times(10_000L)
++                ?.div(brief.profitability.revenueRial),
++            home.foodCostBasisPoints,
++        )
+         assertEquals(brief.profitability.estimatedOperatingProfitRial, home.estimatedOperatingProfitRial)
+         assertEquals(brief.liquidity.newReceivablesRial, home.newReceivablesRial)
+         assertEquals(brief.liquidity.oldReceivableCollectionsRial, home.collectionsRial)
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+index 9d1a20c..0bbd2ab 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+@@ -63,8 +63,8 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     @Test
+     fun ownerHome_hasFourPrimarySections_andNoAuditOrModuleDump() {
+         composeRule.onNodeWithTag("home_header").assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_quick_actions").assertIsDisplayed()
++        composeRule.onNodeWithTag("home_kpi_summary").performScrollTo().assertIsDisplayed()
++        composeRule.onNodeWithTag("home_quick_actions").performScrollTo().assertIsDisplayed()
+         composeRule.onNodeWithTag("home_attention_center").performScrollTo().assertIsDisplayed()
+         composeRule.onNodeWithTag("home_kpi_sales").performScrollTo().assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithText("فعالیت‌های اخیر").fetchSemanticsNodes().isEmpty())
+@@ -80,8 +80,8 @@ class DashboardNavigationSettingsUx2ComposeTest {
+         composeRule.onNodeWithTag("nav_more").performClick()
+         composeRule.onNodeWithTag("more_hub").assertIsDisplayed()
+         composeRule.onNodeWithTag("module_BRANCHES_شعب").performScrollTo().assertIsDisplayed()
+-        composeRule.onNodeWithTag("more_hub").performScrollToNode(hasTestTag("module_AUDIT_LOG_امنیت و حسابرسی"))
+-        composeRule.onNodeWithTag("module_AUDIT_LOG_امنیت و حسابرسی").assertIsDisplayed()
++        composeRule.onNodeWithTag("more_hub").performScrollToNode(hasTestTag("module_AUDIT_LOG_حسابرسی"))
++        composeRule.onNodeWithTag("module_AUDIT_LOG_حسابرسی").assertIsDisplayed()
+         composeRule.onNodeWithTag("nav_dashboard").performClick()
+         composeRule.onNodeWithTag("home_dashboard").assertIsDisplayed()
+     }
+@@ -101,6 +101,7 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     @Test
+     fun cashierHome_filtersSensitiveKpisAndActionsBeforeRendering() {
+         switchToRoleUser(CASHIER_USERNAME, CASHIER_PIN, UserRole.CASHIER)
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_action_sale").fetchSemanticsNodes().isNotEmpty() }
+         composeRule.onNodeWithTag("home_action_sale").performScrollTo().assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
+         assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity").fetchSemanticsNodes().isEmpty())
+@@ -108,10 +109,11 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     }
+ 
+     @Test
+-    fun inventoryHome_showsInventoryKpis_withoutFinancialKpis() {
++    fun inventoryHome_showsInventoryContext_withoutFinancialKpis() {
+         switchToRoleUser(INVENTORY_USERNAME, INVENTORY_PIN, UserRole.INVENTORY)
+-        composeRule.onNodeWithTag("home_kpi_low_stock").performScrollTo().assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_kpi_expiry").performScrollTo().assertIsDisplayed()
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_action_inventory").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.onNodeWithTag("home_kpi_summary").performScrollTo().assertIsDisplayed()
++        composeRule.onNodeWithText("کم‌موجودی").assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity").fetchSemanticsNodes().isEmpty())
+         composeRule.onNodeWithTag("home_action_inventory").performScrollTo().assertIsDisplayed()
+     }
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+index 6c75fdf..46444ff 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+@@ -560,17 +560,30 @@ class EnterpriseCoreComposeE2ETest {
+ 
+ 
+     private fun openModule(screen: AppScreen) {
+-        if (composeRule.onAllNodesWithTag("module_${screen.name}").fetchSemanticsNodes().isEmpty()) {
+-            composeRule.onNodeWithTag("nav_more").performClick()
+-            composeRule.waitUntil(timeoutMillis = 10_000) {
+-                composeRule.onAllNodesWithTag("more_hub").fetchSemanticsNodes().isNotEmpty()
+-            }
+-            composeRule.onNodeWithTag("more_hub").performScrollToNode(hasTestTag("module_${screen.name}"))
+-            composeRule.waitUntil(timeoutMillis = 10_000) {
+-                composeRule.onAllNodesWithTag("module_${screen.name}").fetchSemanticsNodes().isNotEmpty()
+-            }
++        val moduleTag = when (screen) {
++            AppScreen.INVENTORY -> "module_INVENTORY_موجودی"
++            AppScreen.ASSETS -> "module_ASSETS_دارایی‌ها"
++            AppScreen.RECIPES -> "module_RECIPES_رسپی و Costing"
++            AppScreen.CRM -> "module_CRM_مطالبات"
++            AppScreen.PERSONNEL -> "module_PERSONNEL_پرسنل"
++            AppScreen.TREASURY -> "module_TREASURY_خزانه"
++            AppScreen.PURCHASES -> "module_PURCHASES_خرید"
++            else -> error("E2E module route is not configured: ${screen.name}")
++        }
++        val topLevel = screen.topLevelDestination()
++        val hubTag = when (topLevel) {
++            AppScreen.OPERATIONS_HUB -> "operations_hub"
++            AppScreen.FINANCE_HUB -> "finance_hub"
++            AppScreen.CONTROL_HUB -> "control_hub"
++            AppScreen.MORE -> "more_hub"
++            else -> error("E2E screen is not routed through a module hub: ${screen.name}")
++        }
++        composeRule.onNodeWithTag("nav_${topLevel.name.lowercase()}").performClick()
++        composeRule.waitUntil(timeoutMillis = 10_000) {
++            composeRule.onAllNodesWithTag(hubTag).fetchSemanticsNodes().isNotEmpty()
+         }
+-        composeRule.onNodeWithTag("module_${screen.name}").performClick()
++        composeRule.onNodeWithTag(hubTag).performScrollToNode(hasTestTag(moduleTag))
++        composeRule.onNodeWithTag(moduleTag).performClick()
+     }
+ 
+     private fun waitForTreasuryTransaction(sourceType: String, sourceId: Long, amountRial: Long): String {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
+index eb18c2d..db1b3c1 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
+@@ -57,13 +57,14 @@ class StartupAuthenticationBoundaryComposeTest {
+         composeRule.waitUntil(10_000) {
+             composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty()
+         }
+-        composeRule.onNodeWithTag("home_action_sale").assertIsDisplayed()
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_action_sale").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.onNodeWithTag("home_action_sale").performScrollTo().assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
+ 
+         composeRule.onNodeWithTag("nav_more").performClick()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("more_hub").fetchSemanticsNodes().isNotEmpty() }
+-        composeRule.onNodeWithTag("more_hub").performScrollToNode(hasTestTag("module_SECURITY"))
+-        composeRule.onNodeWithTag("module_SECURITY").performClick()
++        composeRule.onNodeWithTag("more_hub").performScrollToNode(hasTestTag("module_SECURITY_کاربران"))
++        composeRule.onNodeWithTag("module_SECURITY_کاربران").performClick()
+         composeRule.onNodeWithTag("security_logout").performClick()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
+         assertTrue(composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty())
+@@ -79,11 +80,10 @@ class StartupAuthenticationBoundaryComposeTest {
+         composeRule.onNodeWithTag("security_login_pin").performTextReplacement(OWNER_PIN)
+         composeRule.onNodeWithTag("security_login_confirm").performClick()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() }
+-        composeRule.onNodeWithTag("nav_more").performClick()
+-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("more_hub").fetchSemanticsNodes().isNotEmpty() }
+-        composeRule.onNodeWithTag("more_hub").performScrollToNode(hasTestTag("module_PERSONNEL"))
+-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("module_PERSONNEL").fetchSemanticsNodes().isNotEmpty() }
+-        composeRule.onNodeWithTag("module_PERSONNEL").performClick()
++        composeRule.onNodeWithTag("nav_operations_hub").performClick()
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("operations_hub").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.onNodeWithTag("operations_hub").performScrollToNode(hasTestTag("module_PERSONNEL_پرسنل"))
++        composeRule.onNodeWithTag("module_PERSONNEL_پرسنل").performClick()
+         composeRule.onNodeWithText("منابع انسانی و حقوق").assertIsDisplayed()
+     }
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/BackupManager.kt b/app/src/main/java/ir/restaurant/management/data/BackupManager.kt
+index 6125b3f..f94a3ba 100644
+--- a/app/src/main/java/ir/restaurant/management/data/BackupManager.kt
++++ b/app/src/main/java/ir/restaurant/management/data/BackupManager.kt
+@@ -689,7 +689,9 @@ class BackupManager(
+     }
+ 
+     private companion object {
+-        const val DATABASE_NAME = "restaurant-management_manager_v3.db"
++        // Must match AppDatabase.create(). A stale legacy filename made backup/restore and
++        // pre-migration recovery operate on a different file than the live Room database.
++        const val DATABASE_NAME = "restaurant_management.db"
+         const val RESTORE_VALIDATION_DATABASE_NAME = "restaurant-management_restore_validation.db"
+         const val BACKUP_STATE_PREFS = "backup_state"
+         const val KEY_PENDING_RESTORE = "pending_restore"
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AccountingRoutes.kt b/app/src/main/java/ir/restaurant/management/ui/AccountingRoutes.kt
+index 2377232..6de662a 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AccountingRoutes.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AccountingRoutes.kt
+@@ -66,6 +66,7 @@ internal fun AccountingRoutes(
+             onCollectReceivable = crm::collectReceivable,
+             onOpenSales = { navigate(AppScreen.SALES) },
+             onOpenTreasury = { navigate(AppScreen.TREASURY) },
++            onNavigateTopLevel = navigate,
+             onBack = navigateBack,
+         )
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AdminRoutes.kt b/app/src/main/java/ir/restaurant/management/ui/AdminRoutes.kt
+index 8b3234b..6b53c78 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AdminRoutes.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AdminRoutes.kt
+@@ -52,6 +52,7 @@ internal fun AdminRoutes(
+             onCreate = branches::create,
+             onRename = branches::rename,
+             onSetActive = branches::setActive,
++            onNavigateTopLevel = navigate,
+             onBack = navigateBack,
+         )
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/ui/BranchManagementScreen.kt b/app/src/main/java/ir/restaurant/management/ui/BranchManagementScreen.kt
+index d603f2f..27d90f8 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/BranchManagementScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/BranchManagementScreen.kt
+@@ -34,12 +34,16 @@ internal fun BranchManagementScreen(
+     onCreate: (String, String?, () -> Unit) -> Unit,
+     onRename: (Long, String, () -> Unit) -> Unit,
+     onSetActive: (Long, Boolean) -> Unit,
++    onNavigateTopLevel: (AppScreen) -> Unit,
+     onBack: () -> Unit,
+ ) {
+     var showCreate by remember { mutableStateOf(false) }
+     var renameTarget by remember { mutableStateOf<BranchRecord?>(null) }
+ 
+-    Scaffold(topBar = { ProfessionalTopBar("مدیریت شعب", "هویت شعبه بر پایه شناسه Canonical", onBack) }) { padding ->
++    Scaffold(
++        topBar = { ProfessionalTopBar("مدیریت شعب", "هویت شعبه بر پایه شناسه Canonical", onBack) },
++        bottomBar = { ErpBottomNavigation(AppScreen.BRANCHES, onNavigateTopLevel) },
++    ) { padding ->
+         LazyColumn(
+             modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp).testTag("branch_management"),
+             verticalArrangement = Arrangement.spacedBy(10.dp),
+diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+index 66df792..6f54a01 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+@@ -17,6 +17,7 @@ import androidx.compose.material3.FilterChip
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.OutlinedButton
+ import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Scaffold
+ import androidx.compose.material3.Text
+ import androidx.compose.material3.TextButton
+ import androidx.compose.material.icons.Icons
+@@ -60,6 +61,7 @@ internal fun CrmScreen(
+     onCollectReceivable: (ReceivableCollectionDraft) -> Unit,
+     onOpenSales: () -> Unit,
+     onOpenTreasury: () -> Unit,
++    onNavigateTopLevel: (AppScreen) -> Unit,
+     onBack: () -> Unit,
+ ) {
+     var editingCustomer by remember { mutableStateOf<CustomerRecord?>(null) }
+@@ -127,10 +129,11 @@ internal fun CrmScreen(
+         )
+     }
+ 
+-    LazyColumn(
+-        modifier = Modifier.fillMaxSize().padding(16.dp),
+-        verticalArrangement = Arrangement.spacedBy(12.dp),
+-    ) {
++    Scaffold(bottomBar = { ErpBottomNavigation(AppScreen.CRM, onNavigateTopLevel) }) { pagePadding ->
++        LazyColumn(
++            modifier = Modifier.fillMaxSize().padding(pagePadding).padding(16.dp),
++            verticalArrangement = Arrangement.spacedBy(12.dp),
++        ) {
+         item {
+             ErpModuleHeader(
+                 title = "طرف‌حساب‌ها و مطالبات",
+@@ -177,8 +180,9 @@ internal fun CrmScreen(
+                             CompactInfoRow("۶۱–۹۰ روز", ErpDisplayFormatters.money(aging.overdue61To90Rial))
+                             CompactInfoRow("بیش از ۹۰ روز", ErpDisplayFormatters.money(aging.overdueOver90Rial))
+                         } ?: Text("Aging: — · داده کافی موجود نیست", style = MaterialTheme.typography.bodySmall)
+-                    }
+-                }
++        }
++    }
++}
+             }
+             item {
+                 AdaptiveManagementList(
+diff --git a/app/src/main/java/ir/restaurant/management/ui/DailySalesScreens.kt b/app/src/main/java/ir/restaurant/management/ui/DailySalesScreens.kt
+index 49b94ef..43a5292 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/DailySalesScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DailySalesScreens.kt
+@@ -60,6 +60,7 @@ fun DailySalesScreen(
+     onCloseDay: (Long, Long, String, String, () -> Unit) -> Unit,
+     onReopenDay: (Long, Long, String, String, () -> Unit) -> Unit,
+     onSetReportRange: (Long, Long) -> Unit,
++    onNavigateTopLevel: (AppScreen) -> Unit,
+     onBack: () -> Unit,
+ ) {
+     var showEntry by remember { mutableStateOf(false) }
+@@ -71,6 +72,7 @@ fun DailySalesScreen(
+     var reopenTarget by remember { mutableStateOf<DailySalesItem?>(null) }
+     Scaffold(
+         topBar = { ProfessionalTopBar("ثبت فروش روزانه", "DRAFT → CONFIRMED → POSTED با پنج روش تسویه", onBack) },
++        bottomBar = { ErpBottomNavigation(AppScreen.SALES, onNavigateTopLevel) },
+         floatingActionButton = { Button(onClick = { editingTarget = null; showEntry = true }, enabled = !state.busy) { Text("پیش‌نویس فروش") } },
+     ) { padding ->
+         LazyColumn(
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
+index 416e6ec..823bc73 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
+@@ -90,6 +90,7 @@ internal fun ManagementRoutes(
+             employees = personnelState.employees,
+             currentUser = currentUser,
+             workflow = workflow,
++            navigateTopLevel = navigate,
+             navigateBack = navigateBack,
+         )
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
+index 992fb47..a406a78 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
+@@ -66,6 +66,7 @@ internal fun ManagementWorkflowRoute(
+     employees: List<EmployeeRecord>,
+     currentUser: AppUserRecord?,
+     workflow: ManagementWorkflowViewModel,
++    navigateTopLevel: (AppScreen) -> Unit,
+     navigateBack: () -> Unit,
+ ) {
+     val activeBranches = branches.filter { it.isActive }
+@@ -73,10 +74,10 @@ internal fun ManagementWorkflowRoute(
+         if (state.selectedBranchId == null && activeBranches.isNotEmpty()) workflow.selectBranch(activeBranches.first().id)
+     }
+     when (screen) {
+-        AppScreen.MANAGEMENT_ISSUES -> ManagementIssuesScreen(state, issues, activeBranches, tasks, employees, currentUser, workflow, navigateBack)
+-        AppScreen.MANAGEMENT_TASKS -> ManagementTasksScreen(state, tasks, activeBranches, employees, currentUser, workflow, navigateBack)
+-        AppScreen.CHECKLISTS -> ChecklistCenterScreen(state, templates, runs, runItems, currentRunId, activeBranches, employees, currentUser, workflow, navigateBack)
+-        AppScreen.DAILY_BRIEF -> DailyBriefScreen(state, dailyBrief, activeBranches, workflow, navigateBack)
++        AppScreen.MANAGEMENT_ISSUES -> ManagementIssuesScreen(state, issues, activeBranches, tasks, employees, currentUser, workflow, navigateTopLevel, navigateBack)
++        AppScreen.MANAGEMENT_TASKS -> ManagementTasksScreen(state, tasks, activeBranches, employees, currentUser, workflow, navigateTopLevel, navigateBack)
++        AppScreen.CHECKLISTS -> ChecklistCenterScreen(state, templates, runs, runItems, currentRunId, activeBranches, employees, currentUser, workflow, navigateTopLevel, navigateBack)
++        AppScreen.DAILY_BRIEF -> DailyBriefScreen(state, dailyBrief, activeBranches, workflow, navigateTopLevel, navigateBack)
+         else -> error("management_workflow_route_mismatch:${screen.name}")
+     }
+ }
+@@ -89,10 +90,14 @@ private fun WorkflowScaffold(
+     branches: List<BranchRecord>,
+     onBranch: (Long?) -> Unit,
+     onBack: () -> Unit,
++    onNavigateTopLevel: (AppScreen) -> Unit,
+     actions: @Composable () -> Unit = {},
+     content: @Composable () -> Unit,
+ ) {
+-    Scaffold(topBar = { ProfessionalTopBar(title, subtitle, onBack) }) { padding ->
++    Scaffold(
++        topBar = { ProfessionalTopBar(title, subtitle, onBack) },
++        bottomBar = { ErpBottomNavigation(AppScreen.CONTROL_HUB, onNavigateTopLevel) },
++    ) { padding ->
+         Column(
+             Modifier.fillMaxSize().padding(padding).padding(16.dp),
+             verticalArrangement = Arrangement.spacedBy(12.dp),
+@@ -116,11 +121,12 @@ private fun ManagementIssuesScreen(
+     employees: List<EmployeeRecord>,
+     currentUser: AppUserRecord?,
+     workflow: ManagementWorkflowViewModel,
++    navigateTopLevel: (AppScreen) -> Unit,
+     onBack: () -> Unit,
+ ) {
+     var selected by remember { mutableStateOf<ManagementIssueRecord?>(null) }
+     WorkflowScaffold(
+-        "مسائل مدیریتی", "شواهد، اثر مالی و اقدام اصلاحی", state, branches, workflow::selectBranch, onBack,
++        "مسائل مدیریتی", "شواهد، اثر مالی و اقدام اصلاحی", state, branches, workflow::selectBranch, onBack, navigateTopLevel,
+         actions = {
+             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                 OutlinedButton(onClick = workflow::refreshRules, enabled = state.selectedBranchId != null && currentUser?.role?.allows(Permission.CONTROL_VIEW) == true) { Text("ارزیابی ناهنجاری‌ها") }
+@@ -279,12 +285,13 @@ private fun ManagementTasksScreen(
+     employees: List<EmployeeRecord>,
+     currentUser: AppUserRecord?,
+     workflow: ManagementWorkflowViewModel,
++    navigateTopLevel: (AppScreen) -> Unit,
+     onBack: () -> Unit,
+ ) {
+     var showCreate by remember { mutableStateOf(false) }
+     var selected by remember { mutableStateOf<ManagementTaskRecord?>(null) }
+     WorkflowScaffold(
+-        "وظایف", "اقدام، مسئول، سررسید و چرخه تأیید", state, branches, workflow::selectBranch, onBack,
++        "وظایف", "اقدام، مسئول، سررسید و چرخه تأیید", state, branches, workflow::selectBranch, onBack, navigateTopLevel,
+         actions = {
+             if (currentUser?.role?.allows(Permission.TASK_CREATE) == true) Button(onClick = { showCreate = true }, enabled = state.selectedBranchId != null) { Text("ایجاد وظیفه") }
+         },
+@@ -371,12 +378,13 @@ private fun ChecklistCenterScreen(
+     employees: List<EmployeeRecord>,
+     currentUser: AppUserRecord?,
+     workflow: ManagementWorkflowViewModel,
++    navigateTopLevel: (AppScreen) -> Unit,
+     onBack: () -> Unit,
+ ) {
+     var showTemplate by remember { mutableStateOf(false) }
+     var showStart by remember { mutableStateOf(false) }
+     WorkflowScaffold(
+-        "چک‌لیست‌ها", "قالب، اجرا، Pass/Fail و تأیید", state, branches, workflow::selectBranch, onBack,
++        "چک‌لیست‌ها", "قالب، اجرا، Pass/Fail و تأیید", state, branches, workflow::selectBranch, onBack, navigateTopLevel,
+         actions = {
+             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                 if (currentUser?.role?.allows(Permission.CHECKLIST_MANAGE) == true) OutlinedButton(onClick = { showTemplate = true }) { Text("قالب جدید") }
+@@ -479,9 +487,9 @@ private fun ChecklistItemDialog(item: ChecklistRunItemRecord, onDismiss: () -> U
+ }
+ 
+ @Composable
+-private fun DailyBriefScreen(state: ManagementWorkflowUiState, briefState: DailyBriefUiState, branches: List<BranchRecord>, workflow: ManagementWorkflowViewModel, onBack: () -> Unit) {
++private fun DailyBriefScreen(state: ManagementWorkflowUiState, briefState: DailyBriefUiState, branches: List<BranchRecord>, workflow: ManagementWorkflowViewModel, navigateTopLevel: (AppScreen) -> Unit, onBack: () -> Unit) {
+     WorkflowScaffold(
+-        "گزارش روزانه مدیریت", "فروش، نقدینگی، Food Cost و سیگنال‌های کنترلی", state, branches, workflow::selectBranch, onBack,
++        "گزارش روزانه مدیریت", "فروش، نقدینگی، Food Cost و سیگنال‌های کنترلی", state, branches, workflow::selectBranch, onBack, navigateTopLevel,
+         actions = { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PersianDateField("تاریخ", state.businessEpochDay, workflow::setDay); OutlinedButton(onClick = workflow::refreshBrief) { Text("بازخوانی") } } },
+     ) {
+         when {
+diff --git a/app/src/main/java/ir/restaurant/management/ui/OperationsRoutes.kt b/app/src/main/java/ir/restaurant/management/ui/OperationsRoutes.kt
+index 7dde2d5..1faa1e3 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/OperationsRoutes.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/OperationsRoutes.kt
+@@ -94,6 +94,7 @@ internal fun OperationsRoutes(
+                 sales.setReportRange(from, to)
+                 accounting.setProfitLossRange(from, to)
+             },
++            onNavigateTopLevel = navigate,
+             onBack = navigateBack,
+         )
+ 

@@ -1,0 +1,163 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+index 46444ff..511d859 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+@@ -130,10 +130,15 @@ class EnterpriseCoreComposeE2ETest {
+         val beforeBalance = runBlocking { app.container.treasuryUseCases.balance(account.id).first() }
+ 
+         openModule(AppScreen.TREASURY)
++        scrollTo("treasury_list", "treasury_amount")
+         composeRule.onNodeWithTag("treasury_amount").assertIsDisplayed().performTextReplacement(amount.toString())
++        scrollTo("treasury_list", "treasury_source_type")
+         composeRule.onNodeWithTag("treasury_source_type").performTextReplacement(sourceType)
++        scrollTo("treasury_list", "treasury_source_id")
+         composeRule.onNodeWithTag("treasury_source_id").performTextReplacement(sourceId.toString())
++        scrollTo("treasury_list", "treasury_reason")
+         composeRule.onNodeWithTag("treasury_reason").performTextReplacement("ثبت دریافت E2E واقعی")
++        scrollTo("treasury_list", "treasury_submit")
+         composeRule.onNodeWithTag("treasury_submit").performClick()
+ 
+         composeRule.waitUntil(timeoutMillis = 10_000) {
+@@ -164,9 +169,7 @@ class EnterpriseCoreComposeE2ETest {
+         val originalActive = before.first { it.state.name == "ACTIVE" }
+ 
+         openModule(AppScreen.RECIPES)
+-        composeRule.waitUntil(timeoutMillis = 10_000) {
+-            composeRule.onAllNodesWithTag("recipe_product_${fixture.menuItemId}").fetchSemanticsNodes().isNotEmpty()
+-        }
++        scrollTo("recipe_list", "recipe_product_${fixture.menuItemId}")
+         composeRule.onNodeWithTag("recipe_product_${fixture.menuItemId}").performClick()
+         composeRule.onNodeWithTag("recipe_editor_list").performScrollToNode(hasTestTag("recipe_create_draft_${originalActive.id}"))
+         composeRule.onNodeWithTag("recipe_create_draft_${originalActive.id}").performClick()
+@@ -223,6 +226,10 @@ class EnterpriseCoreComposeE2ETest {
+         composeRule.onNodeWithTag("inventory_count_close").performClick()
+ 
+         runBlocking { app.container.securityRepository.switchUser(fixture.managerId, TEST_MANAGER_PIN) }
++        composeRule.waitUntil(timeoutMillis = 10_000) {
++            runBlocking { app.container.securityRepository.currentUser.first()?.id == fixture.managerId } &&
++                composeRule.onAllNodesWithTag("inventory_count_list").fetchSemanticsNodes().isNotEmpty()
++        }
+         composeRule.onNodeWithTag("inventory_count_list").performScrollToNode(hasTestTag("inventory_count_approve_${fixture.sessionId}"))
+         composeRule.onNodeWithTag("inventory_count_approve_${fixture.sessionId}").performClick()
+         composeRule.onNodeWithTag("inventory_count_list").performScrollToNode(hasTestTag("inventory_count_post_${fixture.sessionId}"))
+@@ -283,9 +290,7 @@ class EnterpriseCoreComposeE2ETest {
+         val deliveryNote = "E2E-DN-${System.nanoTime().toString().takeLast(8)}"
+ 
+         openModule(AppScreen.PURCHASES)
+-        composeRule.waitUntil(timeoutMillis = 10_000) {
+-            composeRule.onAllNodesWithTag("procurement_receive_${fixture.orderId}").fetchSemanticsNodes().isNotEmpty()
+-        }
++        scrollTo("purchase_list", "procurement_control_panel")
+         composeRule.onNodeWithTag("procurement_receive_${fixture.orderId}").performScrollTo().performClick()
+         composeRule.onNodeWithTag("procurement_delivery_no").performTextReplacement(deliveryNote)
+         composeRule.onNodeWithTag("procurement_receive_submit").performClick()
+@@ -369,29 +374,28 @@ class EnterpriseCoreComposeE2ETest {
+         val fixture = seedPayrollDraftFixture("ui-payroll-approval")
+ 
+         openModule(AppScreen.PERSONNEL)
+-        composeRule.waitUntil(timeoutMillis = 10_000) {
+-            composeRule.onAllNodesWithTag("hr_section_PAYROLL").fetchSemanticsNodes().isNotEmpty()
+-        }
++        scrollTo("hr_workspace_navigation", "hr_section_PAYROLL")
+         composeRule.onNodeWithTag("hr_section_PAYROLL").performClick()
+-        composeRule.waitUntil(timeoutMillis = 10_000) {
+-            composeRule.onAllNodesWithTag("payroll_calculate_${fixture.batchId}").fetchSemanticsNodes().isNotEmpty()
+-        }
+-        composeRule.onNodeWithTag("payroll_calculate_${fixture.batchId}").performScrollTo().performClick()
++        scrollTo("payroll_center_list", "payroll_calculate_${fixture.batchId}")
++        composeRule.onNodeWithTag("payroll_calculate_${fixture.batchId}").performClick()
+         composeRule.onNodeWithTag("payroll_calculate_submit").performClick()
+ 
+         composeRule.waitUntil(timeoutMillis = 10_000) {
+             runBlocking { payrollBatchStatus(fixture.batchId) == PayrollBatchStatus.CALCULATED }
+         }
+-        composeRule.onNodeWithTag("payroll_review_${fixture.batchId}").performScrollTo().performClick()
++        scrollTo("payroll_center_list", "payroll_review_${fixture.batchId}")
++        composeRule.onNodeWithTag("payroll_review_${fixture.batchId}").performClick()
+         composeRule.waitUntil(timeoutMillis = 10_000) {
+             runBlocking { payrollBatchStatus(fixture.batchId) == PayrollBatchStatus.UNDER_REVIEW }
+         }
+ 
+         runBlocking { app.container.securityRepository.switchUser(fixture.managerId, TEST_MANAGER_PIN) }
+         composeRule.waitUntil(timeoutMillis = 10_000) {
+-            composeRule.onAllNodesWithTag("payroll_approve_${fixture.batchId}").fetchSemanticsNodes().isNotEmpty()
++            runBlocking { app.container.securityRepository.currentUser.first()?.id == fixture.managerId } &&
++                composeRule.onAllNodesWithTag("payroll_center_list").fetchSemanticsNodes().isNotEmpty()
+         }
+-        composeRule.onNodeWithTag("payroll_approve_${fixture.batchId}").performScrollTo().performClick()
++        scrollTo("payroll_center_list", "payroll_approve_${fixture.batchId}")
++        composeRule.onNodeWithTag("payroll_approve_${fixture.batchId}").performClick()
+ 
+         composeRule.waitUntil(timeoutMillis = 10_000) {
+             runBlocking { payrollBatchStatus(fixture.batchId) == PayrollBatchStatus.PAYMENT_PENDING }
+@@ -422,9 +426,7 @@ class EnterpriseCoreComposeE2ETest {
+         val paymentReference = "E2E-PAY-${System.nanoTime().toString().takeLast(8)}"
+ 
+         openModule(AppScreen.PERSONNEL)
+-        composeRule.waitUntil(timeoutMillis = 10_000) {
+-            composeRule.onAllNodesWithTag("hr_section_PAYROLL").fetchSemanticsNodes().isNotEmpty()
+-        }
++        scrollTo("hr_workspace_navigation", "hr_section_PAYROLL")
+         composeRule.onNodeWithTag("hr_section_PAYROLL").performClick()
+         composeRule.onNodeWithTag("payroll_center_list").performScrollToNode(hasTestTag("payroll_employee_row"))
+         composeRule.onNodeWithTag("payroll_employee_row").performScrollToNode(hasTestTag("payroll_employee_${fixture.employeeId}"))
+@@ -467,10 +469,15 @@ class EnterpriseCoreComposeE2ETest {
+         val sourceType = "UI_E2E_REVERSAL"
+ 
+         openModule(AppScreen.TREASURY)
++        scrollTo("treasury_list", "treasury_amount")
+         composeRule.onNodeWithTag("treasury_amount").performTextReplacement(amount.toString())
++        scrollTo("treasury_list", "treasury_source_type")
+         composeRule.onNodeWithTag("treasury_source_type").performTextReplacement(sourceType)
++        scrollTo("treasury_list", "treasury_source_id")
+         composeRule.onNodeWithTag("treasury_source_id").performTextReplacement(sourceId.toString())
++        scrollTo("treasury_list", "treasury_reason")
+         composeRule.onNodeWithTag("treasury_reason").performTextReplacement("دریافت مبنای برگشت E2E")
++        scrollTo("treasury_list", "treasury_submit")
+         composeRule.onNodeWithTag("treasury_submit").performClick()
+ 
+         val originalId = waitForTreasuryTransaction(sourceType, sourceId, amount)
+@@ -522,10 +529,15 @@ class EnterpriseCoreComposeE2ETest {
+         }
+ 
+         openModule(AppScreen.TREASURY)
++        scrollTo("treasury_list", "treasury_amount")
+         composeRule.onNodeWithTag("treasury_amount").performTextReplacement(receiptAmount.toString())
++        scrollTo("treasury_list", "treasury_source_type")
+         composeRule.onNodeWithTag("treasury_source_type").performTextReplacement("CUSTOMER_RECEIVABLE")
++        scrollTo("treasury_list", "treasury_source_id")
+         composeRule.onNodeWithTag("treasury_source_id").performTextReplacement(customerId.toString())
++        scrollTo("treasury_list", "treasury_reason")
+         composeRule.onNodeWithTag("treasury_reason").performTextReplacement("دریافت حساب مشتری از UI")
++        scrollTo("treasury_list", "treasury_submit")
+         composeRule.onNodeWithTag("treasury_submit").performClick()
+ 
+         composeRule.waitUntil(timeoutMillis = 10_000) {
+@@ -543,8 +555,11 @@ class EnterpriseCoreComposeE2ETest {
+         val beforeJournalCount = scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='CRM_ADJUSTMENT'")
+ 
+         openModule(AppScreen.CRM)
+-        composeRule.onNodeWithTag("crm_select_$customerId").performScrollTo().performClick()
+-        composeRule.onNodeWithTag("crm_adjustment_action").performScrollTo().performClick()
++        scrollTo("crm_list", "crm_customer_list")
++        scrollTo("crm_customer_list", "crm_select_$customerId")
++        composeRule.onNodeWithTag("crm_select_$customerId").performClick()
++        scrollTo("crm_list", "crm_adjustment_action")
++        composeRule.onNodeWithTag("crm_adjustment_action").performClick()
+         composeRule.onNodeWithTag("crm_account_amount").performTextReplacement(amount.toString())
+         composeRule.onNodeWithTag("crm_account_reason").performTextReplacement("تعدیل E2E حساب مشتری")
+         composeRule.onNodeWithTag("crm_adjustment_confirm").performClick()
+@@ -559,6 +574,13 @@ class EnterpriseCoreComposeE2ETest {
+     }
+ 
+ 
++    private fun scrollTo(containerTag: String, targetTag: String) {
++        composeRule.waitUntil(timeoutMillis = 10_000) {
++            composeRule.onAllNodesWithTag(containerTag).fetchSemanticsNodes().isNotEmpty()
++        }
++        composeRule.onNodeWithTag(containerTag).performScrollToNode(hasTestTag(targetTag))
++    }
++
+     private fun openModule(screen: AppScreen) {
+         val moduleTag = when (screen) {
+             AppScreen.INVENTORY -> "module_INVENTORY_موجودی"

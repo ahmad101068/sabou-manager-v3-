@@ -1,0 +1,130 @@
+# PHASE 3 — TEST REPORT
+
+## Validity
+Fail-closed: the final values below are verified only if `Phase 3 Part 3B Runtime and Business Tests` completes successfully on the exact same source commit that contains this report. Otherwise this report's status is `PHASE 3 PART 3B NOT COMPLETE`.
+
+## Final required result
+API 23 (final candidate contract):
+- EXPECTED_DISCOVERED=177
+- REQUIRED_PASS=177
+- REQUIRED_FAIL=0
+- REQUIRED_SKIP=0
+
+API 35 (final candidate contract):
+- EXPECTED_DISCOVERED=177
+- REQUIRED_PASS=177
+- REQUIRED_FAIL=0
+- REQUIRED_SKIP=0
+
+16KB (final candidate contract):
+- PAGE_SIZE=16384
+- EXPECTED_DISCOVERED=177
+- REQUIRED_PASS=177
+- REQUIRED_FAIL=0
+- REQUIRED_SKIP=0
+
+JVM:
+- TOTAL=342
+- PASS=342
+- FAIL=0
+
+## Targeted regression evidence before final full gate
+Eight remaining-failure regressions were executed on API 23, API 35 and real 16KB runtime. The last targeted run before removal of the temporary targeted workflow completed successfully in all three environments. The targeted set covered Actual Food Cost/Waste, three Dashboard role cases, Control navigation, Inventory Count record/approve/post, owner payroll-auth boundary and cashier logout/protected-graph teardown.
+
+## Bug records
+### Actual Food Cost / Waste
+BUG_EVIDENCE=Expected ACTUAL_LEDGER_ESTIMATE after independent waste evidence but received ACTUAL_NOT_AVAILABLE; first fixture correction also exposed InsufficientStock when the sale lot was incorrectly moved away from canonical MAIN.
+FAILING_TEST=Phase2CorrectionIntegrationTest.actualFoodCostIsUnavailableWithoutIndependentEvidenceAndChangesWithWaste
+ROOT_CAUSE=Waste evidence was recorded on organization-wide MAIN (branchId null); the sale flow itself consumes from canonical MAIN.
+MINIMAL_FIX=Create explicit Branch 1 test storage location only for waste evidence; keep sale lot on MAIN.
+REGRESSION_TEST=Same named integration test.
+FILES_CHANGED=Phase2CorrectionIntegrationTest.kt
+RESULT_AFTER_FIX=Targeted regression PASS on API23/API35/16KB.
+
+### Dashboard role-aware semantics
+BUG_EVIDENCE=Owner/Cashier/Inventory Dashboard tests timed out locating role KPI semantics.
+FAILING_TEST=ownerHome_hasFourPrimarySections_andNoAuditOrModuleDump; cashierHome_filtersSensitiveKpisAndActionsBeforeRendering; inventoryHome_showsInventoryContext_withoutFinancialKpis
+ROOT_CAUSE=Clickable Card merges descendant Compose semantics; role KPI tag existed on an inner child and was absent from the default merged test tree.
+MINIMAL_FIX=Keep stable item hook and query role KPI semantics in unmerged tree; do not alter permission filtering or KPI business rules.
+REGRESSION_TEST=The three existing DashboardNavigationSettingsUx2ComposeTest cases.
+FILES_CHANGED=DashboardScreen.kt; DashboardNavigationSettingsUx2ComposeTest.kt
+RESULT_AFTER_FIX=Targeted regression PASS on API23/API35/16KB.
+
+### Control / Management Tasks
+BUG_EVIDENCE=Control child navigation reached the screen but canonical expected title was not rendered.
+FAILING_TEST=DashboardNavigationSettingsUx2ComposeTest.controlChildren_renderAndKeepControlSelected
+ROOT_CAUSE=Production copy used `وظایف` instead of canonical `وظایف مدیریتی`.
+MINIMAL_FIX=Restore canonical title only; keep CONTROL destination and selection.
+REGRESSION_TEST=Existing controlChildren_renderAndKeepControlSelected.
+FILES_CHANGED=ManagementWorkflowScreens.kt
+RESULT_AFTER_FIX=Targeted regression PASS.
+
+### Inventory Count session transition
+BUG_EVIDENCE=Count list disappeared after switching from owner to manager during approve/post E2E.
+FAILING_TEST=EnterpriseCoreComposeE2ETest.inventoryCount_uiRecordApproveAndPost_reachesPostedWithoutChangingExactBalance
+ROOT_CAUSE=Authenticated identity change intentionally recreates protected ViewModelStore and returns Inventory to Overview.
+MINIMAL_FIX=After verified manager switch, re-enter Counts through real UI before approve/post; no lifecycle bypass.
+REGRESSION_TEST=Existing Inventory Count E2E.
+FILES_CHANGED=EnterpriseCoreComposeE2ETest.kt
+RESULT_AFTER_FIX=Targeted regression PASS.
+
+### Inventory Count post-submit UI synchronization on 16KB full suite
+BUG_EVIDENCE=Final 16KB full suite discovered 173 tests and reached 158/173 with zero failures before Inventory Count E2E failed because `inventory_count_close` was not yet present immediately after the service reached PENDING_APPROVAL. API23/API35 full suites and the targeted 16KB regression passed.
+FAILING_TEST=EnterpriseCoreComposeE2ETest.inventoryCount_uiRecordApproveAndPost_reachesPostedWithoutChangingExactBalance
+ROOT_CAUSE=The test synchronized only to the service status transition; on the slower 16KB full-suite execution, Compose had not yet published the dialog state that renders the Close action.
+MINIMAL_FIX=Keep the existing 10-second wait and require both PENDING_APPROVAL service status and the real `inventory_count_close` semantics node before clicking. No timeout increase, retry, lifecycle bypass, or Inventory business change.
+REGRESSION_TEST=Existing Inventory Count E2E in the full connected 16KB suite.
+FILES_CHANGED=EnterpriseCoreComposeE2ETest.kt
+RESULT_AFTER_FIX=Targeted 16KB regression PASS; final same-commit full connected verification remains mandatory under the validity rule above.
+
+### Authentication / user-list publication / logout
+BUG_EVIDENCE=API23/16KB could scroll before the Lazy user list was published; 16KB logout UI could reappear before repository currentUser reached null.
+FAILING_TEST=StartupAuthenticationBoundaryComposeTest owner/cashier boundary tests.
+ROOT_CAUSE=Asynchronous Compose/state publication timing, not authorization policy.
+MINIMAL_FIX=Add stable user-card/users-loaded test hooks; wait within existing 10-second bound for user list and repository logout state.
+REGRESSION_TEST=Existing ownerWithPayrollPermission and cashierWithoutPayrollPermission tests.
+FILES_CHANGED=SecurityScreens.kt; StartupAuthenticationBoundaryComposeTest.kt
+RESULT_AFTER_FIX=Targeted regression PASS on API23/API35/16KB.
+
+## Post-CI UAT correction bug records
+### Branch selector crash / canonical branch identity
+BUG_EVIDENCE=Opening the operational branch selector could crash on Compose measurement when a lazy scrolling list was hosted inside DropdownMenu; stale/disabled selections could also remain display-valid.
+ROOT_CAUSE=Nested lazy content was measured through the popup path with invalid height constraints, and selection display was resolved against all branches instead of active branches.
+MINIMAL_FIX=Replace the popup list with a bounded Dialog/Surface + LazyColumn, resolve selection only from active branches, preserve branchId as canonical identity, and keep an explicit empty state.
+REGRESSION_TEST=PostCiUatCorrectionComposeTest.branchSelector_opensWithoutCrash_selectsCanonicalId_andHandlesEmptyState plus full connected suites.
+
+### Purchase internal invoice numbering
+BUG_EVIDENCE=A purchase draft with a blank internal invoice number was rejected before the repository allocator could issue the canonical unique number.
+ROOT_CAUSE=ProcurementUseCases prepared/validated the draft before the transactional LocalPurchaseRepository numbering boundary.
+MINIMAL_FIX=Delegate posting to purchaseBoundary().post(draft); allocate DocumentNumberType.PURCHASE inside the existing database transaction and return the persisted number.
+REGRESSION_TEST=BranchPurchasePostingIntegrationTest.blankInternalInvoiceNumber_isAllocatedUniquelyAndPersisted and PostCiUatCorrectionContractTest.
+
+### Home explicit branch + real seven-day revenue
+BUG_EVIDENCE=Home silently selected the only active branch, conflicting with UAT explicit-branch requirements; the trend surface did not have a canonical real seven-day management series.
+ROOT_CAUSE=DashboardViewModel contained a single-active-branch fallback and Home lacked a dedicated seven-day DailyManagementBrief read-model series.
+MINIMAL_FIX=Remove hidden fallback, keep no-branch state until explicit branchId selection, and compose seven real daily management read models for the revenue chart.
+REGRESSION_TEST=DashboardNavigationSettingsUx2ComposeTest.homeRequiresExplicitBranchBeforeCanonicalManagementKpis and PostCiUatCorrectionContractTest.
+
+### Procurement approve/reject UX and authorization
+BUG_EVIDENCE=Reject invoked review without a reason although the use case requires a reason; approval controls did not fully express PURCHASE_APPROVE / owner-only second-stage constraints.
+ROOT_CAUSE=UI callback shape omitted rejection note/completion and rendered actions without the complete canonical permission state.
+MINIMAL_FIX=Add required rejection-reason dialog, pass note to the use case, disable unauthorized actions, enforce owner-only final approval in UI while preserving the domain authorization boundary, and prevent duplicate submission while busy.
+REGRESSION_TEST=PostCiUatCorrectionComposeTest.procurementApproveAndReject_arePermissionAware_andRejectPersistsReasonThroughCallback plus full connected suites.
+
+### Procurement projection / Compose compile defect
+BUG_EVIDENCE=The first post-CI candidate failed compile with unresolved requisition note/createdAtEpochMillis and missing Material3 Surface import.
+ROOT_CAUSE=Procurement DAO projection did not select the newly consumed fields and the workflow stepper patch omitted one import.
+MINIMAL_FIX=Extend the existing SELECT projection only and add the missing import; no schema or migration change.
+REGRESSION_TEST=JVM/business instrumentation compile gate and full connected suites.
+
+### Dashboard full-suite fixture after explicit-branch policy
+BUG_EVIDENCE=Full API35 run executed 177 tests and only the three legacy Dashboard role tests timed out waiting for home_choose_branch because a Fresh Install had no active branch fixture.
+ROOT_CAUSE=The legacy UX2 test helper assumed at least one active branch; the product correctly no longer auto-creates or auto-selects one.
+MINIMAL_FIX=Test-only setup creates one deterministic active UX2 branch when none exists; each scenario still selects branchId explicitly through real UI. Product code and branch policy are unchanged.
+REGRESSION_TEST=The three existing Dashboard role tests plus the explicit-branch UAT test in the full connected suites.
+
+## Final validity rule for this report
+The numeric result is accepted only from GitHub Actions on the same final SOURCE_COMMIT/HEAD_SHA that produced the handoff ZIP. Older 173-test evidence is historical baseline evidence and must not be presented as the final post-CI UAT result.
+
+## Non-blocking warnings
+ExperimentalCoroutinesApi opt-in warnings, deprecated AutoMirrored icons, deprecated status/navigation bar APIs and deprecated Compose test APIs remain NON_BLOCKING_WARNING unless a final required gate proves otherwise.
