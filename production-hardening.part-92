@@ -1,0 +1,44 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt
+index d56f40c..3933b93 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt
+@@ -5,6 +5,8 @@ import androidx.room.withTransaction
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.AppSessionEntity
++import ir.restaurant.management.data.db.AppUserEntity
+ import ir.restaurant.management.data.db.EmployeeEntity
+ import ir.restaurant.management.data.db.MenuItemEntity
+ import ir.restaurant.management.data.db.PayrollBatchEntity
+@@ -240,6 +242,19 @@ class NumberAllocationConcurrencyIntegrationTest {
+ 
+     @Test
+     fun sync_revision_parallel_records_are_unique_and_persist_correctly() = runBlocking {
++        val actorId = database.securityDao().insert(
++            AppUserEntity(
++                username = "sync-concurrency-test",
++                displayName = "Sync Concurrency Test Actor",
++                pinHash = "not-used-by-concurrency-test",
++                role = "OWNER",
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        database.securityDao().setSession(
++            AppSessionEntity(currentUserId = actorId, updatedAtEpochMillis = now),
++        )
+         val recorder = SyncRecorder(database, "concurrency-device")
+         val entityId = 77L
+ 
+@@ -260,6 +275,10 @@ class NumberAllocationConcurrencyIntegrationTest {
+         assertEquals(PARALLEL_WRITERS, rows.map { it.revision }.distinct().size)
+         assertEquals((1L..PARALLEL_WRITERS.toLong()).toSet(), rows.map { it.revision }.toSet())
+         assertEquals(PARALLEL_WRITERS.toLong(), scalar("SELECT COUNT(*) FROM audit_logs WHERE entityType='CONCURRENCY_PROBE'"))
++        assertEquals(
++            PARALLEL_WRITERS.toLong(),
++            scalar("SELECT COUNT(*) FROM audit_logs WHERE entityType='CONCURRENCY_PROBE' AND actorId=$actorId"),
++        )
+     }
+ 
+     private suspend fun allocateRecipeRevision(menuId: Long, ordinal: Int): Int = database.withTransaction {
