@@ -50,8 +50,14 @@ done
 # Canonical Phase-2 docs and verification plumbing are part of the source handoff.
 mkdir -p "${source_root}/docs" "${source_root}/.github/scripts" "${source_root}/.github/workflows"
 cp "${workspace}/docs/MASTER_REMEDIATION_MATRIX.md" "${source_root}/docs/MASTER_REMEDIATION_MATRIX.md"
+phase2_matrix_appendix="${workspace}/docs/MASTER_REMEDIATION_MATRIX_PHASE2_APPENDIX.md"
+test -s "${phase2_matrix_appendix}"
+cat "${phase2_matrix_appendix}" >> "${source_root}/docs/MASTER_REMEDIATION_MATRIX.md"
+cp "${phase2_matrix_appendix}" "${source_root}/docs/MASTER_REMEDIATION_MATRIX_PHASE2_APPENDIX.md"
 cp "${workspace}/.github/scripts/reconstruct-phase2-canonical.sh" "${source_root}/.github/scripts/reconstruct-phase2-canonical.sh"
 cp "${workspace}/.github/workflows/phase2-canonical-targeted.yml" "${source_root}/.github/workflows/phase2-canonical-targeted.yml"
+grep -Fq 'PHASE2_BASE_SHA=d2480a24726639d287d72ac368cb2523561a2d80' \
+  "${source_root}/docs/MASTER_REMEDIATION_MATRIX.md"
 
 # Phase 2 financial truth fail-closed reconstruction gates.
 grep -Fq 'enum class TreasuryBusinessIntent' \
