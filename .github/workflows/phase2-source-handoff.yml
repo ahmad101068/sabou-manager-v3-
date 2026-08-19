@@ -1,8 +1,8 @@
 name: Phase 2 Source Handoff
 
 on:
-  push:
-    branches: [remediation/financial-truth]
+  pull_request:
+    branches: [remediation/canonical-hardening]
     paths:
       - 'phase2-remediation/**'
       - '.github/scripts/reconstruct-phase2-canonical.sh'
@@ -31,7 +31,7 @@ jobs:
           mkdir -p phase3-source/.github/workflows
           cp .github/workflows/phase2-source-handoff.yml phase3-source/.github/workflows/phase2-source-handoff.yml
           printf '%s\n' "SOURCE_COMMIT=${GITHUB_SHA}" > phase3-source/PHASE2-SOURCE-COMMIT.txt
-          printf '%s\n' "SOURCE_BRANCH=${GITHUB_REF_NAME}" >> phase3-source/PHASE2-SOURCE-COMMIT.txt
+          printf '%s\n' "SOURCE_BRANCH=${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" >> phase3-source/PHASE2-SOURCE-COMMIT.txt
           grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 55' phase3-source/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
           test -s phase3-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/55.json
           test ! -e phase3-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
@@ -58,12 +58,13 @@ jobs:
           fi
           size="$(stat -c%s "${source_zip}")"
           digest="$(sha256sum "${source_zip}" | awk '{print $1}')"
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           {
             echo "SOURCE_FILE=${source_zip}"
             echo "SOURCE_SIZE=${size}"
             echo "SOURCE_SHA256=${digest}"
             echo "SOURCE_COMMIT=${GITHUB_SHA}"
-            echo "SOURCE_BRANCH=${GITHUB_REF_NAME}"
+            echo "SOURCE_BRANCH=${branch}"
             echo 'ZIP_HEALTH=PASS'
             echo 'ROOM_VERSION=55'
             echo 'SCHEMA_CHANGED=NO'
