@@ -8,6 +8,8 @@ on:
       - '.github/scripts/reconstruct-phase2-financial.sh'
       - '.github/workflows/phase2-financial-targeted.yml'
       - 'docs/MASTER_REMEDIATION_MATRIX.md'
+  pull_request:
+    branches: [remediation/canonical-hardening]
 
 permissions:
   contents: read
