@@ -7,6 +7,8 @@ on:
       - 'phase2-remediation/**'
       - '.github/scripts/reconstruct-phase2-canonical.sh'
       - '.github/workflows/phase2-canonical-targeted.yml'
+  pull_request:
+    branches: [remediation/canonical-hardening]
 
 permissions:
   contents: read
