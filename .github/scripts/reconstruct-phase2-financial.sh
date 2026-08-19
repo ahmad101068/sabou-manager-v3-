@@ -7,7 +7,17 @@ target="${1:-phase3-source}"
 bash "${workspace}/.github/scripts/reconstruct-part3b-candidate.sh" "${target}"
 
 phase2_patch="${workspace}/phase2-financial.patch"
-base64 --decode "${workspace}/phase2-financial.patch.gz.b64" | gzip --decompress > "${phase2_patch}"
+phase2_payload="${workspace}/phase2-financial-payload.b64"
+parts_dir="${workspace}/phase2-financial-parts"
+
+# The Phase 2 payload is intentionally stored in ordered parts so GitHub content
+# writes do not truncate the compressed/base64 patch. Reconstruct deterministically
+# from those canonical parts; the legacy aggregate file is not authoritative.
+test -s "${parts_dir}/part-00"
+test -s "${parts_dir}/part-01"
+cat "${parts_dir}"/part-* > "${phase2_payload}"
+base64 --decode "${phase2_payload}" | gzip --decompress > "${phase2_patch}"
+rm -f "${phase2_payload}"
 
 git -C "${workspace}" apply --check --directory="${target}" "${phase2_patch}"
 git -C "${workspace}" apply --directory="${target}" "${phase2_patch}"
