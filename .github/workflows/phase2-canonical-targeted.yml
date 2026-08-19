@@ -7,6 +7,7 @@ on:
       - 'phase2-remediation/**'
       - '.github/scripts/reconstruct-phase2-canonical.sh'
       - '.github/workflows/phase2-canonical-targeted.yml'
+      - '.github/workflows/phase2-source-handoff.yml'
   pull_request:
     branches: [remediation/canonical-hardening]
 
