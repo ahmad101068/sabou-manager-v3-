@@ -6,6 +6,8 @@ target="${1:-phase3-source}"
 source_root="${workspace}/${target}"
 encoded="${workspace}/.phase3-final.patch.xz.b64"
 patch="${workspace}/.phase3-final.patch"
+hotfix_encoded="${workspace}/phase3-remediation/phase3-hotfix-01.patch.xz.b64"
+hotfix_patch="${workspace}/.phase3-hotfix-01.patch"
 
 # Always reconstruct the exact verified Phase-2 handoff first.
 bash "${workspace}/.github/scripts/reconstruct-phase2-canonical.sh" "${target}"
@@ -26,6 +28,22 @@ fi
 
 git -C "${workspace}" apply --check --directory="${target}" "${patch}"
 git -C "${workspace}" apply --directory="${target}" "${patch}"
+
+# Apply deterministic compile hotfix discovered by the first real CI compile.
+test -s "${hotfix_encoded}"
+hotfix_encoded_sha="$(sha256sum "${hotfix_encoded}" | awk '{print $1}')"
+if [[ "${hotfix_encoded_sha}" != "1ad7c46825ca037e2513f51d46457e157308b5f5a0678aeb937183f3d4a7be32" ]]; then
+  echo "::error::Phase-3 hotfix encoded digest mismatch: ${hotfix_encoded_sha}"
+  exit 1
+fi
+base64 --decode "${hotfix_encoded}" | xz --decompress > "${hotfix_patch}"
+hotfix_sha="$(sha256sum "${hotfix_patch}" | awk '{print $1}')"
+if [[ "${hotfix_sha}" != "735f273f582f6d1b3e5d1b14ab1af06377e75e62a397bbc2e0f8b110910cd762" ]]; then
+  echo "::error::Phase-3 hotfix digest mismatch: ${hotfix_sha}"
+  exit 1
+fi
+git -C "${workspace}" apply --check --directory="${target}" "${hotfix_patch}"
+git -C "${workspace}" apply --directory="${target}" "${hotfix_patch}"
 
 # Copy Phase-3 verification plumbing into the reconstructed source handoff.
 mkdir -p "${source_root}/.github/scripts" "${source_root}/.github/workflows"
@@ -62,3 +80,4 @@ echo "ROOM_VERSION=56"
 echo "SCHEMA_CHANGED=YES"
 echo "MIGRATION_ADDED=YES"
 echo "PATCH_SHA256=${patch_sha}"
+echo "HOTFIX_01_SHA256=${hotfix_sha}"
