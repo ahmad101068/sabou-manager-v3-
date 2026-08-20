@@ -8,6 +8,8 @@ encoded="${workspace}/.phase3-final.patch.xz.b64"
 patch="${workspace}/.phase3-final.patch"
 hotfix_encoded="${workspace}/phase3-remediation/phase3-hotfix-01.patch.xz.b64"
 hotfix_patch="${workspace}/.phase3-hotfix-01.patch"
+hotfix2_encoded="${workspace}/phase3-remediation/phase3-hotfix-02.patch.xz.b64"
+hotfix2_patch="${workspace}/.phase3-hotfix-02.patch"
 
 # Always reconstruct the exact verified Phase-2 handoff first.
 bash "${workspace}/.github/scripts/reconstruct-phase2-canonical.sh" "${target}"
@@ -45,6 +47,22 @@ fi
 git -C "${workspace}" apply --check --directory="${target}" "${hotfix_patch}"
 git -C "${workspace}" apply --directory="${target}" "${hotfix_patch}"
 
+# Update legacy unit fixtures to satisfy the new explicit branch/location invariants without weakening assertions.
+test -s "${hotfix2_encoded}"
+hotfix2_encoded_sha="$(sha256sum "${hotfix2_encoded}" | awk '{print $1}')"
+if [[ "${hotfix2_encoded_sha}" != "fa95e7a3271f789d7b3e84d39501297b5d5ee00176af6a0eda4856cbba67f1bb" ]]; then
+  echo "::error::Phase-3 hotfix-02 encoded digest mismatch: ${hotfix2_encoded_sha}"
+  exit 1
+fi
+base64 --decode "${hotfix2_encoded}" | xz --decompress > "${hotfix2_patch}"
+hotfix2_sha="$(sha256sum "${hotfix2_patch}" | awk '{print $1}')"
+if [[ "${hotfix2_sha}" != "27f30852ed4e70786db7e6b55c861f4a0882fdca2b30066c3547bb31bff26e5a" ]]; then
+  echo "::error::Phase-3 hotfix-02 digest mismatch: ${hotfix2_sha}"
+  exit 1
+fi
+git -C "${workspace}" apply --check --directory="${target}" "${hotfix2_patch}"
+git -C "${workspace}" apply --directory="${target}" "${hotfix2_patch}"
+
 # Copy Phase-3 verification plumbing into the reconstructed source handoff.
 mkdir -p "${source_root}/.github/scripts" "${source_root}/.github/workflows"
 cp "${workspace}/.github/scripts/reconstruct-phase3-candidate.sh" "${source_root}/.github/scripts/reconstruct-phase3-candidate.sh"
@@ -81,3 +99,4 @@ echo "SCHEMA_CHANGED=YES"
 echo "MIGRATION_ADDED=YES"
 echo "PATCH_SHA256=${patch_sha}"
 echo "HOTFIX_01_SHA256=${hotfix_sha}"
+echo "HOTFIX_02_SHA256=${hotfix2_sha}"
