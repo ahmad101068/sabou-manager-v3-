@@ -12,6 +12,7 @@ hotfix2_encoded="${workspace}/phase3-remediation/phase3-hotfix-02.patch.xz.b64"
 hotfix2_patch="${workspace}/.phase3-hotfix-02.patch"
 hotfix3_script="${workspace}/phase3-remediation/phase3-hotfix-03.py"
 hotfix4_script="${workspace}/phase3-remediation/phase3-hotfix-04.py"
+hotfix5_script="${workspace}/phase3-remediation/phase3-hotfix-05.py"
 
 # Always reconstruct the exact verified Phase-2 handoff first.
 bash "${workspace}/.github/scripts/reconstruct-phase2-canonical.sh" "${target}"
@@ -83,6 +84,15 @@ if [[ "${hotfix4_sha}" != "da657c1d52a071653b5ee71bc69c0b05a5aafe0b546898d6c5a01
 fi
 python3 "${hotfix4_script}" "${source_root}"
 
+# Keep the Room serialization compatibility fence on app/test APK runtimes without altering KSP.
+test -s "${hotfix5_script}"
+hotfix5_sha="$(sha256sum "${hotfix5_script}" | awk '{print $1}')"
+if [[ "${hotfix5_sha}" != "0b958d5092cd7a54241b8494b12b9d5bc097be153eb82c18b369d0adc889d864" ]]; then
+  echo "::error::Phase-3 hotfix-05 digest mismatch: ${hotfix5_sha}"
+  exit 1
+fi
+python3 "${hotfix5_script}" "${source_root}"
+
 # Copy Phase-3 verification plumbing into the reconstructed source handoff.
 mkdir -p "${source_root}/.github/scripts" "${source_root}/.github/workflows"
 cp "${workspace}/.github/scripts/reconstruct-phase3-candidate.sh" "${source_root}/.github/scripts/reconstruct-phase3-candidate.sh"
@@ -122,3 +132,4 @@ echo "HOTFIX_01_SHA256=${hotfix_sha}"
 echo "HOTFIX_02_SHA256=${hotfix2_sha}"
 echo "HOTFIX_03_SHA256=${hotfix3_sha}"
 echo "HOTFIX_04_SHA256=${hotfix4_sha}"
+echo "HOTFIX_05_SHA256=${hotfix5_sha}"
