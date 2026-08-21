@@ -16,7 +16,7 @@ verify_sha() {
   printf '%s' "$actual"
 }
 
-apply_hotfix() {
+apply_patch_hotfix() {
   local number="$1" encoded_sha="$2" patch_sha_expected="$3" result_var="$4"
   local encoded="${workspace}/phase4-remediation/phase4-hotfix-${number}.patch.xz.b64"
   local patch="${workspace}/.phase4-hotfix-${number}.patch"
@@ -30,10 +30,19 @@ apply_hotfix() {
   echo "PHASE4_HOTFIX_${number}=APPLIED"
 }
 
+apply_python_hotfix() {
+  local number="$1" expected_sha="$2" result_var="$3"
+  local script="${workspace}/phase4-remediation/phase4-hotfix-${number}.py"
+  local script_sha
+  script_sha="$(verify_sha "$script" "$expected_sha" "Phase-4 hotfix-${number}")"
+  python3 "$script" "$source_root"
+  printf -v "$result_var" '%s' "$script_sha"
+}
+
 bash "${workspace}/.github/scripts/reconstruct-phase3-candidate.sh" "$target"
-apply_hotfix 01 "1a5513b2b1588ee725b5ef53dcf458c0bfb0a641d1a30b853ea275546d631db1" "74e9ba4a6c9ee73149bfe50e8b7bc2eaf58b960c70d7e23fe2d421b0fece7bd4" hotfix1_sha
-apply_hotfix 02 "526a9625be1185d58a0c23a470bba4c3d3195703a0d5337109ffbc698c63f3ca" "6524a6e0abe24ab87875b614defdb8d2ce8aa93ad1e548570508da23a54ca8bd" hotfix2_sha
-apply_hotfix 03 "6ff21318d54c91b7ea8e38bb705d2049daf376556343e914de7736be196f50c5" "c2aef6ea573c281263eb4f3b049220ea1e02f66c7bda57780170444ee0826a17" hotfix3_sha
+apply_patch_hotfix 01 "1a5513b2b1588ee725b5ef53dcf458c0bfb0a641d1a30b853ea275546d631db1" "74e9ba4a6c9ee73149bfe50e8b7bc2eaf58b960c70d7e23fe2d421b0fece7bd4" hotfix1_sha
+apply_patch_hotfix 02 "526a9625be1185d58a0c23a470bba4c3d3195703a0d5337109ffbc698c63f3ca" "6524a6e0abe24ab87875b614defdb8d2ce8aa93ad1e548570508da23a54ca8bd" hotfix2_sha
+apply_python_hotfix 03 "a40abeae93b51e8993913d7b2be012fdfd7be14b786435bbd37eaa94d4445053" hotfix3_sha
 
 test -s "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt"
 test -s "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceSessionCalculator.kt"
