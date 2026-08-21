@@ -16,19 +16,21 @@ verify_sha() {
 
 bash "${workspace}/.github/scripts/reconstruct-phase4-candidate-v2.sh" "$target"
 
+# The transport chunks are textual base64 and may differ only in line wrapping/newlines
+# after GitHub contents writes. Do not trust the encoded representation. Instead,
+# require every chunk to exist, reconstruct the stream, decode it, and fail closed
+# on the SHA-256 of the executable patch bytes.
 chunks=(
-  "phase5-remediation/phase5-hotfix-01.patch.xz.b64.00:8b89beb4b0fa72cc68696fc4521b4487d41e3ebb482c3cb2b933eb396c22f506"
-  "phase5-remediation/phase5-hotfix-01.patch.xz.b64.01:2d7b934588903e0f1d1a09c41eb85871e942954ee4e98a52699c936db738d15d"
-  "phase5-remediation/phase5-hotfix-01.patch.xz.b64.02:4588503432518d83e9e0a3d5c16740e32b7f846322933aea8165b6a0083474b0"
-  "phase5-remediation/phase5-hotfix-01.patch.xz.b64.03:fe18279c547ab90f63488cd3309e4505d573ab3428131cc9c248eb276aa6feb9"
+  "phase5-remediation/phase5-hotfix-01.patch.xz.b64.00"
+  "phase5-remediation/phase5-hotfix-01.patch.xz.b64.01"
+  "phase5-remediation/phase5-hotfix-01.patch.xz.b64.02"
+  "phase5-remediation/phase5-hotfix-01.patch.xz.b64.03"
 )
 : > "$patch_b64"
-for spec in "${chunks[@]}"; do
-  rel="${spec%%:*}"; expected="${spec##*:}"
-  verify_sha "${workspace}/${rel}" "$expected" "$rel"
+for rel in "${chunks[@]}"; do
+  test -s "${workspace}/${rel}" || { echo "::error::${rel} missing"; exit 1; }
   cat "${workspace}/${rel}" >> "$patch_b64"
 done
-verify_sha "$patch_b64" "773469065c58da061ed8f28fe7b04d239f39049a67a9a7091b68eaf953e70852" "Phase-5 hotfix-01 encoded stream"
 base64 --decode "$patch_b64" | xz --decompress > "$patch_file"
 verify_sha "$patch_file" "f4427011155fc4a55a3ef40572a34179f215efc4010d2d521ccdf4b747c90edc" "Phase-5 hotfix-01 decoded patch"
 git -C "$workspace" apply --check --directory="$target" "$patch_file"
