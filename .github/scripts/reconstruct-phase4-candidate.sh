@@ -45,15 +45,21 @@ apply_patch_hotfix 02 "526a9625be1185d58a0c23a470bba4c3d3195703a0d5337109ffbc698
 apply_python_hotfix 03 "0c4e5a6bd81f9aa1b72fbf0fa8063882f4508f21f65fbd4829ab38d5e083c064" hotfix3_sha
 apply_patch_hotfix 04 "e8d4cc1488f202737db44e1d224ec10d7a02d62ed267a8310c77c5bdbb4bba12" "9718c14d6a9027e268591a58e3ba8b2098d0e8bee7548424eecedf15c12de1aa" hotfix4_sha
 apply_python_hotfix 05 "bcf5405e6b2ac0409824b207503dc1d129409e5dca1e65d4d6530a54d338083d" hotfix5_sha
+apply_patch_hotfix 06 "00a451416cb2e22dad9b183fe4a2a4f23d54e7eee77aed95e291f87fb40189ad" "27e9a16fe08c5d394aa30f78817f9d6a52329b7914adf823e41e197698bd88fd" hotfix6_sha
 
 test -s "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt"
 test -s "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceSessionCalculator.kt"
+test -s "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/AttendancePunchSequencePolicy.kt"
 test -s "${source_root}/app/src/test/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCodeTest.kt"
 test -s "${source_root}/app/src/test/java/ir/restaurant/management/domain/personnel/AttendanceSessionCalculatorTest.kt"
+test -s "${source_root}/app/src/test/java/ir/restaurant/management/domain/personnel/AttendancePunchSequencePolicyTest.kt"
 test -s "${source_root}/app/src/androidTest/java/ir/restaurant/management/data/db/Migration56To57Test.kt"
 grep -Fq 'PersonnelReferenceCode.newShiftCode()' "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt"
 grep -Fq 'PersonnelReferenceCode.newWorkScheduleCode()' "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt"
 grep -Fq 'AttendanceSessionCalculator.summarize' "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt"
+grep -Fq 'suspend fun recordPunch' "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt"
+grep -Fq 'suspend fun rejectCorrection' "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt"
+grep -Fq "NEW.status NOT IN ('APPROVED','REJECTED')" "${source_root}/app/src/main/java/ir/restaurant/management/data/db/HrPayrollGuards.kt"
 grep -Fq 'import androidx.room.ColumnInfo' "${source_root}/app/src/main/java/ir/restaurant/management/data/db/HrPayrollEntities.kt"
 grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 57' "${source_root}/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 grep -Rq 'MIGRATION_56_57' "${source_root}/app/src/main/java/ir/restaurant/management/data/db/migration"
@@ -83,3 +89,4 @@ echo "HOTFIX_02_SHA256=${hotfix2_sha}"
 echo "HOTFIX_03_SHA256=${hotfix3_sha}"
 echo "HOTFIX_04_SHA256=${hotfix4_sha}"
 echo "HOTFIX_05_SHA256=${hotfix5_sha}"
+echo "HOTFIX_06_SHA256=${hotfix6_sha}"
