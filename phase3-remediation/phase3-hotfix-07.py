@@ -12,7 +12,7 @@ text = path.read_text(encoding='utf-8')
 # The v55 fixture must itself satisfy the real v55 app_users contract before MIGRATION_55_56 runs.
 # Keep this test-only: production schema/migration behavior is not relaxed or bypassed.
 pattern = re.compile(
-    r'(INSERT(?:\s+OR\s+\w+)?\s+INTO\s+app_users\s*\()([^)]*)(\)\s*VALUES\s*\()([^)]*)(\))',
+    r'(INSERT(?:\s+OR\s+\w+)?\s+INTO\s+[`\"\[]?app_users[`\"\]]?\s*\()([^)]*)(\)\s*VALUES\s*\()([^)]*)(\))',
     re.IGNORECASE | re.DOTALL,
 )
 matches = list(pattern.finditer(text))
