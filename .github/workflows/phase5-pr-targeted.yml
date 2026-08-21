@@ -31,21 +31,171 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
       - name: Reconstruct Phase-5 candidate
         run: bash .github/scripts/reconstruct-phase5-candidate.sh phase5-source
-      - name: Diagnose exact Phase-5 fixture references
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '8.13'
+      - name: Static Phase-5 recipe and asset gates
+        working-directory: phase5-source
         run: |
           set -euo pipefail
-          migration=phase5-source/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt
-          asset=phase5-source/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt
-          sales=phase5-source/app/src/androidTest/java/ir/restaurant/management/data/repository/DailySalesReversalIntegrationTest.kt
-          echo '=== Migration inventory fixture ==='
-          grep -n -E 'inventory_items|VALUES\(10|VALUES\(11|sku' "$migration" || true
-          echo '=== Asset branch references ==='
-          grep -n -E 'BranchEntity|branchId|toBranchId|branch =|toBranch =' "$asset" || true
-          echo '=== Asset helper tail ==='
-          nl -ba "$asset" | tail -n 110
-          echo '=== Daily Sales branch references ==='
-          grep -n -E 'BranchEntity|branchId|locationId|DailySalesDraft|LocalDailySalesRepository' "$sales" || true
-          echo '=== Daily Sales helper tail ==='
-          nl -ba "$sales" | tail -n 100
-          echo '::error::exact fixture diagnostic captured; apply deterministic Phase-5 hotfix-02'
-          exit 1
+          grep -Fq 'RecipeMaterialResolver(database).resolve' app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+          grep -Fq 'effectiveSubstitutions' app/src/main/java/ir/restaurant/management/data/repository/RecipeMaterialResolver.kt
+          grep -Fq 'override suspend fun reverseDepreciation' app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt
+          grep -Fq 'valid.acquisitionSource != AssetAcquisitionSource.OWNER_CAPITAL' app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt
+          grep -Fq 'current.location == valid.location' app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt
+          grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 58' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          grep -Rq 'MIGRATION_57_58' app/src/main/java/ir/restaurant/management/data/db/migration
+          if grep -R -n -E 'MAX\([^)]+\)[^\n]*\+[[:space:]]*1' app/src/main/java/ir/restaurant/management/data/db/RecipeDao.kt app/src/main/java/ir/restaurant/management/data/repository/LocalRecipeRepository.kt; then
+            echo '::error::Unsafe MAX()+1 recipe allocation detected'
+            exit 1
+          fi
+          if grep -R -n 'fallbackToDestructiveMigration' app/src/main/java; then
+            echo '::error::Destructive migration fallback detected'
+            exit 1
+          fi
+      - name: Materialize deterministic Room 57 migration baseline
+        run: |
+          set -euo pipefail
+          bash .github/scripts/reconstruct-phase4-candidate-v2.sh phase4-schema-source
+          cd phase4-schema-source
+          gradle --no-daemon --console=plain :app:compileDebugKotlin
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json
+          python3 scripts/verify-room-schema.py
+          cd ..
+          mkdir -p phase5-source/app/schemas/ir.restaurant.management.data.db.AppDatabase
+          cp phase4-schema-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json \
+            phase5-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json
+          test "$(sha256sum phase5-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json | awk '{print $1}')" = \
+            "$(sha256sum phase4-schema-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json | awk '{print $1}')"
+      - name: Compile Phase-5 source
+        working-directory: phase5-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+      - name: Verify generated Room 58 schema
+        working-directory: phase5-source
+        run: |
+          set -euo pipefail
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json
+          python3 scripts/verify-room-schema.py
+          grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 58' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          grep -Rq 'MIGRATION_57_58' app/src/main/java/ir/restaurant/management/data/db/migration
+      - name: Targeted Phase-5 JVM tests
+        working-directory: phase5-source
+        run: >-
+          gradle --no-daemon --console=plain :app:testDebugUnitTest
+          --tests 'ir.restaurant.management.domain.recipe.FullCostCalculatorTest'
+          --tests 'ir.restaurant.management.domain.costing.CostingEngineTest'
+          --tests 'ir.restaurant.management.domain.assets.DepreciationRunCalculatorTest'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Targeted API35 Phase-5 migration and integration
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: >-
+            cd "$GITHUB_WORKSPACE/phase5-source" &&
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            "-Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.data.db.Migration57To58Test,ir.restaurant.management.data.repository.RecipeMaterialResolverIntegrationTest,ir.restaurant.management.data.repository.RecipeLifecycleIntegrationTest,ir.restaurant.management.data.repository.RecipeVersionIntegrationTest,ir.restaurant.management.data.repository.AssetLifecycleIntegrationTest,ir.restaurant.management.data.repository.NumberAllocationConcurrencyIntegrationTest,ir.restaurant.management.data.repository.DailySalesReversalIntegrationTest,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.repository.TreasuryV2IntegrationTest"
+      - name: Build Phase-5 report and source handoff
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_SHA:0:7}"
+          zip_name="restaurant-management-remediation-phase5-source-${short_sha}.zip"
+          schema57="phase5-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json"
+          schema58="phase5-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json"
+          schema57_hash="$(sha256sum "$schema57" | awk '{print $1}')"
+          schema58_hash="$(sha256sum "$schema58" | awk '{print $1}')"
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE']) / 'phase5-source'
+          out = Path(os.environ['GITHUB_WORKSPACE']) / f"restaurant-management-remediation-phase5-source-{os.environ['SOURCE_SHA'][:7]}.zip"
+          excluded_dirs={'.git','.gradle','build'}
+          excluded_names={'local.properties'}
+          excluded_suffixes={'.apk','.aab','.jks','.keystore'}
+          with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as z:
+              for p in sorted(root.rglob('*')):
+                  if not p.is_file(): continue
+                  rel=p.relative_to(root)
+                  if any(part in excluded_dirs for part in rel.parts): continue
+                  if p.name in excluded_names or p.suffix.lower() in excluded_suffixes: continue
+                  z.write(p,rel.as_posix())
+          PY
+          zip_hash="$(sha256sum "$zip_name" | awk '{print $1}')"
+          unzip -t "$zip_name" >/dev/null
+          {
+            grep '^diff --git a/' .phase5-hotfix-01.patch
+            grep '^diff --git a/' .phase5-hotfix-02.patch
+          } | sed -E 's#^diff --git a/([^ ]+) b/.*#\1#' | sort -u > PHASE-5-CHANGED-FILES.txt
+          cat > PHASE-5-REPORT.md <<EOF
+          # PHASE-5-REPORT
+          - Baseline SHA: ${PHASE4_BASELINE_SHA}
+          - Final SHA: ${SOURCE_SHA}
+          - Branch: ${SOURCE_BRANCH}
+          - Completed scope: immutable recipe lifecycle preservation; nested recipe execution; effective-dated controlled substitutions; historical sales recipe resolution; concurrency-safe immutable recipe revision allocation; governed asset acquisition/transfer; quantity-aware, reasoned, idempotent depreciation; impairment re-amortization; controlled depreciation reversal with balanced accounting and audit; API35 fixture alignment with verified seed/uniqueness invariants.
+          - Architecture: Daily Sales resolves immutable recipe-version graphs into physical material requirements at the sale business date. Asset lifecycle mutations remain service-boundary authorized and transactional; cash/bank flows remain Treasury-bound and payable acquisition remains AP-bound.
+          - DB schema changed: YES (57 -> 58)
+          - Migration added: YES (MIGRATION_57_58)
+          - Compile + AndroidTest compile: PASS
+          - Room 57 baseline materialization: PASS
+          - Room 58 schema verification: PASS
+          - Targeted JVM tests: PASS
+          - Targeted API35 migration/integration: PASS
+          - Recipe/asset permission, Treasury, Daily Sales and numbering regressions: PASS
+          - Full heavy suites: DEFERRED TO PHASE 8 BY POLICY
+          - Room 57 schema SHA-256: ${schema57_hash}
+          - Room 58 schema SHA-256: ${schema58_hash}
+          - Source artifact: ${zip_name}
+          - Source artifact SHA-256: ${zip_hash}
+          - Known remaining Phase-5 blockers: NONE
+          ## Changed source files
+          EOF
+          sed 's/^/- /' PHASE-5-CHANGED-FILES.txt >> PHASE-5-REPORT.md
+          cat > PHASE-5-EVIDENCE.txt <<EOF
+          BASELINE_SHA=${PHASE4_BASELINE_SHA}
+          SOURCE_COMMIT=${SOURCE_SHA}
+          HEAD_SHA=$(git rev-parse HEAD)
+          BRANCH=${SOURCE_BRANCH}
+          ROOM_VERSION=58
+          SCHEMA_CHANGED=YES
+          MIGRATION_ADDED=YES
+          HOTFIX_01_SHA256=f4427011155fc4a55a3ef40572a34179f215efc4010d2d521ccdf4b747c90edc
+          HOTFIX_02_SHA256=fa6968ee68ebc88972a6ce3f1740ae5246e7646cd18dad15696ad130d2a22a45
+          SCHEMA57_SHA256=${schema57_hash}
+          SCHEMA58_SHA256=${schema58_hash}
+          SOURCE_FILE=${zip_name}
+          SOURCE_SHA256=${zip_hash}
+          TARGETED_PHASE5=PASS
+          API35_MIGRATION_INTEGRATION=PASS
+          FULL_HEAVY_SUITES=DEFERRED_TO_PHASE8
+          EOF
+      - name: Upload Phase-5 source and evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase5-final-${{ env.SOURCE_SHA }}
+          path: |
+            PHASE-5-REPORT.md
+            PHASE-5-EVIDENCE.txt
+            PHASE-5-CHANGED-FILES.txt
+            restaurant-management-remediation-phase5-source-*.zip
+            phase5-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json
+            phase5-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json
+            phase5-source/app/build/test-results/testDebugUnitTest/**
+            phase5-source/app/build/reports/tests/testDebugUnitTest/**
+            phase5-source/app/build/outputs/androidTest-results/connected/**
+            phase5-source/app/build/reports/androidTests/connected/**
+          if-no-files-found: warn
+          retention-days: 30
