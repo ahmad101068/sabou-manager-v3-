@@ -1,0 +1,57 @@
+name: Phase 4 Targeted Verification
+
+on:
+  push:
+    branches:
+      - remediation/phase4-hr-payroll-20260821
+  pull_request:
+    branches:
+      - remediation/phase3-live-20260821
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase4-targeted-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase4-targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PHASE3_BASELINE_SHA: ea7658058ddabbcd184a3b58c0d0e36c5ede5549
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Reconstruct Phase-4 candidate
+        run: bash .github/scripts/reconstruct-phase4-candidate.sh phase4-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '8.13'
+      - name: Static Phase-4 HR gates
+        working-directory: phase4-source
+        run: |
+          set -euo pipefail
+          grep -Fq 'PersonnelReferenceCode.newShiftCode()' app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
+          grep -Fq 'PersonnelReferenceCode.newWorkScheduleCode()' app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
+          if grep -R -n -E 'MAX\([^)]+\)[[:space:]]*\+[[:space:]]*1' \
+            app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt \
+            app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt; then
+            echo '::error::Unsafe HR code allocation detected'
+            exit 1
+          fi
+      - name: Compile Phase-4 source
+        working-directory: phase4-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin
+      - name: Targeted Phase-4 JVM tests
+        working-directory: phase4-source
+        run: >-
+          gradle --no-daemon --console=plain :app:testDebugUnitTest
+          --tests 'ir.restaurant.management.domain.personnel.PersonnelReferenceCodeTest'
+          --tests 'ir.restaurant.management.domain.personnel.AttendanceEventAggregatorV2Test'
+          --tests 'ir.restaurant.management.domain.personnel.PayrollLifecycleV2Test'
+          --tests 'ir.restaurant.management.domain.personnel.PayrollCalculationServiceV2Test'
