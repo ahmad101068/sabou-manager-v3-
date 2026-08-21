@@ -1,0 +1,36 @@
+name: Phase3 Source Export
+
+on:
+  push:
+    branches:
+      - phase3-pos2-completion
+    paths:
+      - ".github/workflows/phase3-source-export.yml"
+  pull_request:
+    branches:
+      - main
+      - phase3-pos2-completion
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Sabou-Final-ERP-SOURCE-buildfix1.zip
+          unzip -t Sabou-Final-ERP-SOURCE-buildfix1.zip >/dev/null
+          sha256sum Sabou-Final-ERP-SOURCE-buildfix1.zip
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-current-source
+          retention-days: 1
+          if-no-files-found: error
+          path: Sabou-Final-ERP-SOURCE-buildfix1.zip
