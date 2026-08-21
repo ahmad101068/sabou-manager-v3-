@@ -32,6 +32,7 @@ apply_hotfix() {
 bash "${workspace}/.github/scripts/reconstruct-phase3-candidate.sh" "$target"
 hotfix1_sha="$(apply_hotfix 01 "1a5513b2b1588ee725b5ef53dcf458c0bfb0a641d1a30b853ea275546d631db1" "74e9ba4a6c9ee73149bfe50e8b7bc2eaf58b960c70d7e23fe2d421b0fece7bd4")"
 hotfix2_sha="$(apply_hotfix 02 "526a9625be1185d58a0c23a470bba4c3d3195703a0d5337109ffbc698c63f3ca" "6524a6e0abe24ab87875b614defdb8d2ce8aa93ad1e548570508da23a54ca8bd")"
+hotfix3_sha="$(apply_hotfix 03 "6ff21318d54c91b7ea8e38bb705d2049daf376556343e914de7736be196f50c5" "c2aef6ea573c281263eb4f3b049220ea1e02f66c7bda57780170444ee0826a17")"
 
 test -s "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt"
 test -s "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceSessionCalculator.kt"
@@ -40,10 +41,12 @@ test -s "${source_root}/app/src/test/java/ir/restaurant/management/domain/person
 grep -Fq 'PersonnelReferenceCode.newShiftCode()' "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt"
 grep -Fq 'PersonnelReferenceCode.newWorkScheduleCode()' "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt"
 grep -Fq 'AttendanceSessionCalculator.summarize' "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt"
-if grep -R -n -E 'MAX\([^)]+\)[[:space:]]*\+[[:space:]]*1' \
-  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt" \
-  "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt"; then
-  echo '::error::Unsafe sequential HR reference-code allocation detected'
+if grep -R -n -E 'MAX\([^)]+\)[^\n]*\+[[:space:]]*1' \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/db/HrPayrollDao.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/db/PersonnelDao.kt" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/data/repository" \
+  "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel"; then
+  echo '::error::Unsafe MAX()+1 HR/payroll allocation detected'
   exit 1
 fi
 if grep -n 'val firstIn = events.filter' "${source_root}/app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt"; then
@@ -57,3 +60,4 @@ echo "SCHEMA_CHANGED=NO"
 echo "MIGRATION_ADDED=NO"
 echo "HOTFIX_01_SHA256=${hotfix1_sha}"
 echo "HOTFIX_02_SHA256=${hotfix2_sha}"
+echo "HOTFIX_03_SHA256=${hotfix3_sha}"
