@@ -47,9 +47,55 @@ jobs:
           set -euo pipefail
           python3 scripts/verify-security.py
           python3 scripts/verify-phase3-ui-foundation.py
-          ! grep -R -n 'fallbackToDestructiveMigration' app/src/main/java
-          ! grep -R -n -E 'MAX\([^)]+\)[[:space:]]*\+[[:space:]]*1' app/src/main/java
-          ! grep -R -n -E 'branch(Id)?[[:space:]]*=[[:space:]]*1\b|warehouse(Id)?[[:space:]]*=[[:space:]]*1\b|location(Id)?[[:space:]]*=[[:space:]]*1\b' app/src/main/java
+          if grep -R -n 'fallbackToDestructiveMigration' app/src/main/java; then
+            echo '::error::Destructive migration fallback detected'
+            exit 1
+          fi
+          if grep -R -n -E 'MAX\([^)]+\)[[:space:]]*\+[[:space:]]*1' app/src/main/java; then
+            echo '::error::Unsafe MAX()+1 allocation detected'
+            exit 1
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, sys
+          pattern = re.compile(r'\b(?:branch|branchId|warehouse|warehouseId|location|locationId)\s*=\s*1\b')
+          hits = []
+          for path in Path('app/src/main/java').rglob('*.kt'):
+              text = path.read_text(encoding='utf-8', errors='replace')
+              in_block = False
+              for no, raw in enumerate(text.splitlines(), 1):
+                  line = raw
+                  cleaned = ''
+                  i = 0
+                  while i < len(line):
+                      if in_block:
+                          end = line.find('*/', i)
+                          if end < 0:
+                              i = len(line)
+                              continue
+                          in_block = False
+                          i = end + 2
+                          continue
+                      start = line.find('/*', i)
+                      slash = line.find('//', i)
+                      if slash >= 0 and (start < 0 or slash < start):
+                          cleaned += line[i:slash]
+                          break
+                      if start >= 0:
+                          cleaned += line[i:start]
+                          in_block = True
+                          i = start + 2
+                          continue
+                      cleaned += line[i:]
+                      break
+                  if pattern.search(cleaned):
+                      hits.append(f'{path}:{no}:{raw.strip()}')
+          if hits:
+              print('::error::Hard-coded branch/warehouse/location scope detected')
+              print('\n'.join(hits))
+              sys.exit(1)
+          print('HARDCODED_SCOPE_SCAN=PASS')
+          PY
       - name: Compile Phase-3 source
         working-directory: phase3-source
         run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
