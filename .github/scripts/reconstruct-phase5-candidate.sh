@@ -18,8 +18,6 @@ verify_sha() {
 
 bash "${workspace}/.github/scripts/reconstruct-phase4-candidate-v2.sh" "$target"
 
-# Phase-5 hotfix-01. Its historical transport chunks may differ only in base64
-# line wrapping/newlines, so the executable decoded patch bytes are the trust anchor.
 chunks1=(
   "phase5-remediation/phase5-hotfix-01.patch.xz.b64.00"
   "phase5-remediation/phase5-hotfix-01.patch.xz.b64.01"
@@ -36,14 +34,12 @@ verify_sha "$patch1_file" "f4427011155fc4a55a3ef40572a34179f215efc4010d2d521ccdf
 git -C "$workspace" apply --check --directory="$target" "$patch1_file"
 git -C "$workspace" apply --directory="$target" "$patch1_file"
 
-# Phase-5 hotfix-02 repairs only stale API35 fixtures that violated already-valid
-# uniqueness/seed invariants. Verify both transport and decoded executable bytes.
 hotfix2_rel="phase5-remediation/phase5-hotfix-02.patch.xz.b64.00"
-verify_sha "${workspace}/${hotfix2_rel}" "67d64beed83f2bdac04e0d5d9668f36709d4b3ea042c9e7e3d051d56ca44d954" "Phase-5 hotfix-02 encoded chunk"
+verify_sha "${workspace}/${hotfix2_rel}" "1ce3739805581339ecbf99271ec8f4c50b3d1a56347653c02da9e81d8c60918c" "Phase-5 hotfix-02 encoded chunk"
 cat "${workspace}/${hotfix2_rel}" > "$patch2_b64"
-verify_sha "$patch2_b64" "67d64beed83f2bdac04e0d5d9668f36709d4b3ea042c9e7e3d051d56ca44d954" "Phase-5 hotfix-02 encoded stream"
+verify_sha "$patch2_b64" "1ce3739805581339ecbf99271ec8f4c50b3d1a56347653c02da9e81d8c60918c" "Phase-5 hotfix-02 encoded stream"
 base64 --decode "$patch2_b64" | xz --decompress > "$patch2_file"
-verify_sha "$patch2_file" "fa6968ee68ebc88972a6ce3f1740ae5246e7646cd18dad15696ad130d2a22a45" "Phase-5 hotfix-02 decoded patch"
+verify_sha "$patch2_file" "9087124a7f2ebf9a19f16d648a9aeddb248d5d1c565fb39d74105897d08d33ff" "Phase-5 hotfix-02 decoded patch"
 git -C "$workspace" apply --check --directory="$target" "$patch2_file"
 git -C "$workspace" apply --directory="$target" "$patch2_file"
 
@@ -63,7 +59,6 @@ if grep -Fq 'BranchEntity(id = 1L, globalId = "test:branch:1"' "$sales_test"; th
   exit 1
 fi
 
-# Fail-closed production acceptance probes before Gradle compilation.
 grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 58' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 grep -Rq 'MIGRATION_57_58' "$root/app/src/main/java/ir/restaurant/management/data/db/migration"
 grep -Fq 'RecipeMaterialResolver(database).resolve' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt"
@@ -93,4 +88,4 @@ echo 'ROOM_VERSION=58'
 echo 'SCHEMA_CHANGED=YES'
 echo 'MIGRATION_ADDED=YES'
 echo 'HOTFIX_01_SHA256=f4427011155fc4a55a3ef40572a34179f215efc4010d2d521ccdf4b747c90edc'
-echo 'HOTFIX_02_SHA256=fa6968ee68ebc88972a6ce3f1740ae5246e7646cd18dad15696ad130d2a22a45'
+echo 'HOTFIX_02_SHA256=9087124a7f2ebf9a19f16d648a9aeddb248d5d1c565fb39d74105897d08d33ff'
