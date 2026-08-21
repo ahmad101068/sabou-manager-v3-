@@ -14,6 +14,7 @@ hotfix3_script="${workspace}/phase3-remediation/phase3-hotfix-03.py"
 hotfix4_script="${workspace}/phase3-remediation/phase3-hotfix-04.py"
 hotfix5_script="${workspace}/phase3-remediation/phase3-hotfix-05.py"
 hotfix6_script="${workspace}/phase3-remediation/phase3-hotfix-06.py"
+hotfix7_script="${workspace}/phase3-remediation/phase3-hotfix-07.py"
 
 # Always reconstruct the exact verified Phase-2 handoff first.
 bash "${workspace}/.github/scripts/reconstruct-phase2-canonical.sh" "${target}"
@@ -103,6 +104,15 @@ if [[ "${hotfix6_sha}" != "b8a2ff6d9a5146369ebefb8c60f6b94eed760fba6a0c92446ca08
 fi
 python3 "${hotfix6_script}" "${source_root}"
 
+# Keep the legacy v55 migration fixture valid under its real NOT NULL user contract.
+test -s "${hotfix7_script}"
+hotfix7_sha="$(sha256sum "${hotfix7_script}" | awk '{print $1}')"
+if [[ "${hotfix7_sha}" != "1dbf2efa6e2424c4686507d584b491067a366f9154ddeb29713db2a07ef51416" ]]; then
+  echo "::error::Phase-3 hotfix-07 digest mismatch: ${hotfix7_sha}"
+  exit 1
+fi
+python3 "${hotfix7_script}" "${source_root}"
+
 # Copy Phase-3 verification plumbing into the reconstructed source handoff.
 mkdir -p "${source_root}/.github/scripts" "${source_root}/.github/workflows"
 cp "${workspace}/.github/scripts/reconstruct-phase3-candidate.sh" "${source_root}/.github/scripts/reconstruct-phase3-candidate.sh"
@@ -144,3 +154,4 @@ echo "HOTFIX_03_SHA256=${hotfix3_sha}"
 echo "HOTFIX_04_SHA256=${hotfix4_sha}"
 echo "HOTFIX_05_SHA256=${hotfix5_sha}"
 echo "HOTFIX_06_SHA256=${hotfix6_sha}"
+echo "HOTFIX_07_SHA256=${hotfix7_sha}"
