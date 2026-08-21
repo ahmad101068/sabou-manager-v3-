@@ -9,6 +9,7 @@ on:
   pull_request:
     branches:
       - main
+      - phase3-pos2-completion
   workflow_dispatch:
 
 permissions:
