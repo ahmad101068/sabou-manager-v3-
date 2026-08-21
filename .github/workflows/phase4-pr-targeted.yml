@@ -18,7 +18,7 @@ concurrency:
 jobs:
   phase4-targeted:
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 75
     env:
       PHASE3_BASELINE_SHA: ea7658058ddabbcd184a3b58c0d0e36c5ede5549
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -61,6 +61,20 @@ jobs:
             echo '::error::First-in/last-out payroll span remains active'
             exit 1
           fi
+      - name: Materialize deterministic Room 56 migration baseline
+        run: |
+          set -euo pipefail
+          bash .github/scripts/reconstruct-phase3-candidate.sh phase3-schema-source
+          cd phase3-schema-source
+          gradle --no-daemon --console=plain :app:compileDebugKotlin
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+          python3 scripts/verify-room-schema.py
+          cd ..
+          mkdir -p phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase
+          cp phase3-schema-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json \
+            phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+          test "$(sha256sum phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json | awk '{print $1}')" = \
+            "$(sha256sum phase3-schema-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json | awk '{print $1}')"
       - name: Compile Phase-4 source
         working-directory: phase4-source
         run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
@@ -107,7 +121,9 @@ jobs:
           short_sha="${SOURCE_SHA:0:7}"
           zip_name="restaurant-management-remediation-phase4-source-${short_sha}.zip"
           schema="phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json"
+          schema56="phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json"
           schema_hash="$(sha256sum "$schema" | awk '{print $1}')"
+          schema56_hash="$(sha256sum "$schema56" | awk '{print $1}')"
           python3 - <<'PY'
           import os, zipfile
           from pathlib import Path
@@ -149,11 +165,13 @@ jobs:
           - DB schema changed: YES (56 -> 57)
           - Migration added: YES (MIGRATION_56_57)
           - Compile + AndroidTest compile: PASS
+          - Room 56 baseline materialization: PASS
           - Room 57 schema verification: PASS
           - Targeted JVM tests: PASS
           - Targeted API35 migration/integration: PASS
           - Phase-2/3 permission, Treasury and correction regressions: PASS
           - Full heavy suites: DEFERRED TO PHASE 8 BY POLICY
+          - Room 56 schema SHA-256: ${schema56_hash}
           - Room 57 schema SHA-256: ${schema_hash}
           - Source artifact: ${zip_name}
           - Source artifact SHA-256: ${zip_hash}
@@ -169,7 +187,8 @@ jobs:
           ROOM_VERSION=57
           SCHEMA_CHANGED=YES
           MIGRATION_ADDED=YES
-          SCHEMA_SHA256=${schema_hash}
+          SCHEMA56_SHA256=${schema56_hash}
+          SCHEMA57_SHA256=${schema_hash}
           SOURCE_FILE=${zip_name}
           SOURCE_SHA256=${zip_hash}
           TARGETED_PHASE4=PASS
@@ -186,6 +205,7 @@ jobs:
             PHASE-4-EVIDENCE.txt
             PHASE-4-CHANGED-FILES.txt
             restaurant-management-remediation-phase4-source-*.zip
+            phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
             phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json
             phase4-source/app/build/test-results/testDebugUnitTest/**
             phase4-source/app/build/reports/tests/testDebugUnitTest/**
