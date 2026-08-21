@@ -1,0 +1,215 @@
+name: Phase 4 Targeted Verification
+
+on:
+  push:
+    branches:
+      - remediation/phase4-hr-payroll-20260821
+  pull_request:
+    branches:
+      - remediation/phase3-live-20260821
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase4-targeted-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase4-targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      PHASE3_BASELINE_SHA: ea7658058ddabbcd184a3b58c0d0e36c5ede5549
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Reconstruct Phase-4 candidate
+        run: bash .github/scripts/reconstruct-phase4-candidate-v2.sh phase4-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '8.13'
+      - name: Static Phase-4 HR gates
+        working-directory: phase4-source
+        run: |
+          set -euo pipefail
+          grep -Fq 'PersonnelReferenceCode.newShiftCode()' app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
+          grep -Fq 'PersonnelReferenceCode.newWorkScheduleCode()' app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
+          grep -Fq 'AttendanceSessionCalculator.summarize' app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt
+          grep -Fq 'suspend fun recordPunch' app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
+          grep -Fq 'suspend fun rejectCorrection' app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
+          grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 57' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          grep -Rq 'MIGRATION_56_57' app/src/main/java/ir/restaurant/management/data/db/migration
+          if grep -R -n 'fallbackToDestructiveMigration' app/src/main/java; then
+            echo '::error::Destructive migration fallback detected'
+            exit 1
+          fi
+          if grep -R -n -E 'MAX\([^)]+\)[^\n]*\+[[:space:]]*1' app/src/main/java/ir/restaurant/management/data/db/HrPayrollDao.kt app/src/main/java/ir/restaurant/management/data/db/PersonnelDao.kt app/src/main/java/ir/restaurant/management/data/repository app/src/main/java/ir/restaurant/management/domain/personnel; then
+            echo '::error::Unsafe HR/payroll allocation detected'
+            exit 1
+          fi
+          if grep -n 'val firstIn = events.filter' app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt; then
+            echo '::error::First-in/last-out payroll span remains active'
+            exit 1
+          fi
+      - name: Materialize deterministic Room 56 migration baseline
+        run: |
+          set -euo pipefail
+          bash .github/scripts/reconstruct-phase3-candidate.sh phase3-schema-source
+          cd phase3-schema-source
+          gradle --no-daemon --console=plain :app:compileDebugKotlin
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+          python3 scripts/verify-room-schema.py
+          cd ..
+          mkdir -p phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase
+          cp phase3-schema-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json \
+            phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+          test "$(sha256sum phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json | awk '{print $1}')" = \
+            "$(sha256sum phase3-schema-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json | awk '{print $1}')"
+      - name: Compile Phase-4 source
+        working-directory: phase4-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+      - name: Verify generated Room 57 schema
+        working-directory: phase4-source
+        run: |
+          set -euo pipefail
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json
+          python3 scripts/verify-room-schema.py
+          grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 57' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          grep -Rq 'MIGRATION_56_57' app/src/main/java/ir/restaurant/management/data/db/migration
+      - name: Targeted Phase-4 JVM tests
+        working-directory: phase4-source
+        run: >-
+          gradle --no-daemon --console=plain :app:testDebugUnitTest
+          --tests 'ir.restaurant.management.domain.personnel.PersonnelReferenceCodeTest'
+          --tests 'ir.restaurant.management.domain.personnel.AttendanceSessionCalculatorTest'
+          --tests 'ir.restaurant.management.domain.personnel.AttendancePunchSequencePolicyTest'
+          --tests 'ir.restaurant.management.domain.personnel.AttendanceEventAggregatorV2Test'
+          --tests 'ir.restaurant.management.domain.personnel.PayrollLifecycleV2Test'
+          --tests 'ir.restaurant.management.domain.personnel.PayrollCalculationServiceV2Test'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Targeted API35 Phase-4 migration and integration regressions
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: >-
+            cd "$GITHUB_WORKSPACE/phase4-source" &&
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            "-Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.data.db.Migration56To57Test,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.repository.TreasuryV2IntegrationTest,ir.restaurant.management.data.repository.Phase2CorrectionIntegrationTest"
+      - name: Build Phase-4 report and source handoff
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_SHA:0:7}"
+          zip_name="restaurant-management-remediation-phase4-source-${short_sha}.zip"
+          schema="phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json"
+          schema56="phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json"
+          schema_hash="$(sha256sum "$schema" | awk '{print $1}')"
+          schema56_hash="$(sha256sum "$schema56" | awk '{print $1}')"
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE']) / 'phase4-source'
+          out = Path(os.environ['GITHUB_WORKSPACE']) / f"restaurant-management-remediation-phase4-source-{os.environ['SOURCE_SHA'][:7]}.zip"
+          excluded_dirs={'.git','.gradle','build'}
+          excluded_names={'local.properties'}
+          excluded_suffixes={'.apk','.aab','.jks','.keystore'}
+          with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as z:
+              for p in sorted(root.rglob('*')):
+                  if not p.is_file():
+                      continue
+                  rel=p.relative_to(root)
+                  if any(part in excluded_dirs for part in rel.parts):
+                      continue
+                  if p.name in excluded_names or p.suffix.lower() in excluded_suffixes:
+                      continue
+                  z.write(p,rel.as_posix())
+          PY
+          zip_hash="$(sha256sum "$zip_name" | awk '{print $1}')"
+          unzip -t "$zip_name" >/dev/null
+          {
+            for p in .phase4-01.patch .phase4-02.patch .phase4-04.patch .phase4-06.patch .phase4-07.patch; do
+              test -s "$p" && grep '^diff --git a/' "$p" || true
+            done
+          } | sed -E 's#^diff --git a/([^ ]+) b/.*#\1#' | sort -u > PHASE-4-CHANGED-FILES.txt
+          printf '%s\n' \
+            'app/src/main/java/ir/restaurant/management/data/db/PersonnelDao.kt' \
+            'app/src/main/java/ir/restaurant/management/data/db/HrPayrollDao.kt' \
+            'app/src/main/java/ir/restaurant/management/data/db/HrPayrollEntities.kt' >> PHASE-4-CHANGED-FILES.txt
+          sort -u -o PHASE-4-CHANGED-FILES.txt PHASE-4-CHANGED-FILES.txt
+          cat > PHASE-4-REPORT.md <<EOF
+          # PHASE-4-REPORT
+          - Baseline SHA: ${PHASE3_BASELINE_SHA}
+          - Final SHA: ${SOURCE_SHA}
+          - Branch: ${SOURCE_BRANCH}
+          - Completed scope: concurrency-safe Shift/Work Schedule references; canonical multi-punch attendance; branch/location punch snapshots; correction approve/reject maker-checker; versioned overtime/holiday/night/tax/insurance payroll policy; historical payroll snapshots; Treasury-bound payroll payment and lifecycle regression coverage.
+          - Architecture: attendance events remain canonical immutable punch evidence; daily attendance remains projection/correction surface; payroll consumes canonical paired sessions; permission checks remain at service/application boundaries.
+          - DB schema changed: YES (56 -> 57)
+          - Migration added: YES (MIGRATION_56_57)
+          - Compile + AndroidTest compile: PASS
+          - Room 56 baseline materialization: PASS
+          - Room 57 schema verification: PASS
+          - Targeted JVM tests: PASS
+          - Targeted API35 migration/integration: PASS
+          - Phase-2/3 permission, Treasury and correction regressions: PASS
+          - Full heavy suites: DEFERRED TO PHASE 8 BY POLICY
+          - Room 56 schema SHA-256: ${schema56_hash}
+          - Room 57 schema SHA-256: ${schema_hash}
+          - Source artifact: ${zip_name}
+          - Source artifact SHA-256: ${zip_hash}
+          - Known remaining Phase-4 blockers: NONE
+          ## Changed source files
+          EOF
+          sed 's/^/- /' PHASE-4-CHANGED-FILES.txt >> PHASE-4-REPORT.md
+          cat > PHASE-4-EVIDENCE.txt <<EOF
+          BASELINE_SHA=${PHASE3_BASELINE_SHA}
+          SOURCE_COMMIT=${SOURCE_SHA}
+          HEAD_SHA=$(git rev-parse HEAD)
+          BRANCH=${SOURCE_BRANCH}
+          ROOM_VERSION=57
+          SCHEMA_CHANGED=YES
+          MIGRATION_ADDED=YES
+          SCHEMA56_SHA256=${schema56_hash}
+          SCHEMA57_SHA256=${schema_hash}
+          SOURCE_FILE=${zip_name}
+          SOURCE_SHA256=${zip_hash}
+          TARGETED_PHASE4=PASS
+          API35_MIGRATION_INTEGRATION=PASS
+          FULL_HEAVY_SUITES=DEFERRED_TO_PHASE8
+          EOF
+      - name: Upload Phase-4 source and evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase4-final-${{ env.SOURCE_SHA }}
+          path: |
+            PHASE-4-REPORT.md
+            PHASE-4-EVIDENCE.txt
+            PHASE-4-CHANGED-FILES.txt
+            restaurant-management-remediation-phase4-source-*.zip
+            phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+            phase4-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json
+            phase4-source/app/build/test-results/testDebugUnitTest/**
+            phase4-source/app/build/reports/tests/testDebugUnitTest/**
+            phase4-source/app/build/outputs/androidTest-results/connected/**
+            phase4-source/app/build/reports/androidTests/connected/**
+          if-no-files-found: warn
+          retention-days: 30
