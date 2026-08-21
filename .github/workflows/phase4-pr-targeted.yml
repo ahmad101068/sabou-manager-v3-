@@ -38,10 +38,15 @@ jobs:
           set -euo pipefail
           grep -Fq 'PersonnelReferenceCode.newShiftCode()' app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
           grep -Fq 'PersonnelReferenceCode.newWorkScheduleCode()' app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
+          grep -Fq 'AttendanceSessionCalculator.summarize' app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt
           if grep -R -n -E 'MAX\([^)]+\)[[:space:]]*\+[[:space:]]*1' \
             app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt \
             app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt; then
             echo '::error::Unsafe HR code allocation detected'
+            exit 1
+          fi
+          if grep -n 'val firstIn = events.filter' app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt; then
+            echo '::error::First-in/last-out payroll span remains active'
             exit 1
           fi
       - name: Compile Phase-4 source
@@ -52,6 +57,7 @@ jobs:
         run: >-
           gradle --no-daemon --console=plain :app:testDebugUnitTest
           --tests 'ir.restaurant.management.domain.personnel.PersonnelReferenceCodeTest'
+          --tests 'ir.restaurant.management.domain.personnel.AttendanceSessionCalculatorTest'
           --tests 'ir.restaurant.management.domain.personnel.AttendanceEventAggregatorV2Test'
           --tests 'ir.restaurant.management.domain.personnel.PayrollLifecycleV2Test'
           --tests 'ir.restaurant.management.domain.personnel.PayrollCalculationServiceV2Test'
