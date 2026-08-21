@@ -64,7 +64,7 @@ apply_python_hotfix 05 "0b958d5092cd7a54241b8494b12b9d5bc097be153eb82c18b369d0ad
 hotfix5_sha="$HOTFIX_SHA"
 apply_python_hotfix 06 "b8a2ff6d9a5146369ebefb8c60f6b94eed760fba6a0c92446ca088b0ec854597"
 hotfix6_sha="$HOTFIX_SHA"
-apply_python_hotfix 07 "c7cc57e34f7c2ada0026a13d759a93d5a2098550a3fa3a11a47247d352a461bb"
+apply_python_hotfix 07 "ce965dc6253ac994b522cc330eff3a0c05e57bfdacf550f639d7223a0964bd5c"
 hotfix7_sha="$HOTFIX_SHA"
 
 mkdir -p "${source_root}/.github/scripts" "${source_root}/.github/workflows"
