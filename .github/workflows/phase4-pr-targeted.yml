@@ -21,10 +21,15 @@ jobs:
     timeout-minutes: 45
     env:
       PHASE3_BASELINE_SHA: ea7658058ddabbcd184a3b58c0d0e36c5ede5549
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
       - name: Reconstruct Phase-4 candidate
-        run: bash .github/scripts/reconstruct-phase4-candidate.sh phase4-source
+        run: bash .github/scripts/reconstruct-phase4-candidate-v2.sh phase4-source
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
@@ -39,10 +44,10 @@ jobs:
           grep -Fq 'PersonnelReferenceCode.newShiftCode()' app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
           grep -Fq 'PersonnelReferenceCode.newWorkScheduleCode()' app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
           grep -Fq 'AttendanceSessionCalculator.summarize' app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt
-          if grep -R -n -E 'MAX\([^)]+\)[[:space:]]*\+[[:space:]]*1' \
-            app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt \
-            app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt; then
-            echo '::error::Unsafe HR code allocation detected'
+          grep -Fq 'suspend fun recordPunch' app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
+          grep -Fq 'suspend fun rejectCorrection' app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
+          if grep -R -n -E 'MAX\([^)]+\)[^\n]*\+[[:space:]]*1' app/src/main/java/ir/restaurant/management/data/db/HrPayrollDao.kt app/src/main/java/ir/restaurant/management/data/db/PersonnelDao.kt app/src/main/java/ir/restaurant/management/data/repository app/src/main/java/ir/restaurant/management/domain/personnel; then
+            echo '::error::Unsafe HR/payroll allocation detected'
             exit 1
           fi
           if grep -n 'val firstIn = events.filter' app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt; then
@@ -51,13 +56,14 @@ jobs:
           fi
       - name: Compile Phase-4 source
         working-directory: phase4-source
-        run: gradle --no-daemon --console=plain :app:compileDebugKotlin
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
       - name: Targeted Phase-4 JVM tests
         working-directory: phase4-source
         run: >-
           gradle --no-daemon --console=plain :app:testDebugUnitTest
           --tests 'ir.restaurant.management.domain.personnel.PersonnelReferenceCodeTest'
           --tests 'ir.restaurant.management.domain.personnel.AttendanceSessionCalculatorTest'
+          --tests 'ir.restaurant.management.domain.personnel.AttendancePunchSequencePolicyTest'
           --tests 'ir.restaurant.management.domain.personnel.AttendanceEventAggregatorV2Test'
           --tests 'ir.restaurant.management.domain.personnel.PayrollLifecycleV2Test'
           --tests 'ir.restaurant.management.domain.personnel.PayrollCalculationServiceV2Test'
