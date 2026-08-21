@@ -44,19 +44,28 @@ hotfix2_sha="$(verify_sha "$hotfix2_patch" "27f30852ed4e70786db7e6b55c861f4a0882
 git -C "$workspace" apply --check --directory="$target" "$hotfix2_patch"
 git -C "$workspace" apply --directory="$target" "$hotfix2_patch"
 
+HOTFIX_SHA=""
 apply_python_hotfix() {
-  local number="$1" expected="$2" script sha
+  local number="$1" expected="$2" script
   script="${workspace}/phase3-remediation/phase3-hotfix-${number}.py"
-  sha="$(verify_sha "$script" "$expected" "Phase-3 hotfix-${number}")"
-  python3 "$script" "$source_root" >&2
-  printf '%s' "$sha"
+  verify_sha "$script" "$expected" "Phase-3 hotfix-${number}" >/dev/null
+  if ! python3 "$script" "$source_root" >&2; then
+    echo "::error::Phase-3 hotfix-${number} failed" >&2
+    return 1
+  fi
+  HOTFIX_SHA="$(sha256sum "$script" | awk '{print $1}')"
 }
 
-hotfix3_sha="$(apply_python_hotfix 03 "7aa0916b8c6d9725ca1301ceee8edb51b494d1af0f69df0c0137a9fd0a4c23a8")"
-hotfix4_sha="$(apply_python_hotfix 04 "da657c1d52a071653b5ee71bc69c0b05a5aafe0b546898d6c5a01648522195d6")"
-hotfix5_sha="$(apply_python_hotfix 05 "0b958d5092cd7a54241b8494b12b9d5bc097be153eb82c18b369d0adc889d864")"
-hotfix6_sha="$(apply_python_hotfix 06 "b8a2ff6d9a5146369ebefb8c60f6b94eed760fba6a0c92446ca088b0ec854597")"
-hotfix7_sha="$(apply_python_hotfix 07 "a8456cfc3d9afb095722c5a1054b1322d936922802c00d73479fabd87ccac959")"
+apply_python_hotfix 03 "7aa0916b8c6d9725ca1301ceee8edb51b494d1af0f69df0c0137a9fd0a4c23a8"
+hotfix3_sha="$HOTFIX_SHA"
+apply_python_hotfix 04 "da657c1d52a071653b5ee71bc69c0b05a5aafe0b546898d6c5a01648522195d6"
+hotfix4_sha="$HOTFIX_SHA"
+apply_python_hotfix 05 "0b958d5092cd7a54241b8494b12b9d5bc097be153eb82c18b369d0adc889d864"
+hotfix5_sha="$HOTFIX_SHA"
+apply_python_hotfix 06 "b8a2ff6d9a5146369ebefb8c60f6b94eed760fba6a0c92446ca088b0ec854597"
+hotfix6_sha="$HOTFIX_SHA"
+apply_python_hotfix 07 "c7cc57e34f7c2ada0026a13d759a93d5a2098550a3fa3a11a47247d352a461bb"
+hotfix7_sha="$HOTFIX_SHA"
 
 mkdir -p "${source_root}/.github/scripts" "${source_root}/.github/workflows"
 cp "${workspace}/.github/scripts/reconstruct-phase3-candidate.sh" "${source_root}/.github/scripts/reconstruct-phase3-candidate.sh"
