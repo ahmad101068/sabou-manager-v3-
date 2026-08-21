@@ -4,8 +4,10 @@ set -euo pipefail
 workspace="${GITHUB_WORKSPACE:-$(pwd)}"
 target="${1:-phase5-source}"
 root="${workspace}/${target}"
-patch_b64="${workspace}/.phase5-hotfix-01.patch.xz.b64"
-patch_file="${workspace}/.phase5-hotfix-01.patch"
+patch1_b64="${workspace}/.phase5-hotfix-01.patch.xz.b64"
+patch1_file="${workspace}/.phase5-hotfix-01.patch"
+patch2_b64="${workspace}/.phase5-hotfix-02.patch.xz.b64"
+patch2_file="${workspace}/.phase5-hotfix-02.patch"
 
 verify_sha() {
   local file="$1" expected="$2" label="$3" actual
@@ -16,27 +18,52 @@ verify_sha() {
 
 bash "${workspace}/.github/scripts/reconstruct-phase4-candidate-v2.sh" "$target"
 
-# The transport chunks are textual base64 and may differ only in line wrapping/newlines
-# after GitHub contents writes. Do not trust the encoded representation. Instead,
-# require every chunk to exist, reconstruct the stream, decode it, and fail closed
-# on the SHA-256 of the executable patch bytes.
-chunks=(
+# Phase-5 hotfix-01. Its historical transport chunks may differ only in base64
+# line wrapping/newlines, so the executable decoded patch bytes are the trust anchor.
+chunks1=(
   "phase5-remediation/phase5-hotfix-01.patch.xz.b64.00"
   "phase5-remediation/phase5-hotfix-01.patch.xz.b64.01"
   "phase5-remediation/phase5-hotfix-01.patch.xz.b64.02"
   "phase5-remediation/phase5-hotfix-01.patch.xz.b64.03"
 )
-: > "$patch_b64"
-for rel in "${chunks[@]}"; do
+: > "$patch1_b64"
+for rel in "${chunks1[@]}"; do
   test -s "${workspace}/${rel}" || { echo "::error::${rel} missing"; exit 1; }
-  cat "${workspace}/${rel}" >> "$patch_b64"
+  cat "${workspace}/${rel}" >> "$patch1_b64"
 done
-base64 --decode "$patch_b64" | xz --decompress > "$patch_file"
-verify_sha "$patch_file" "f4427011155fc4a55a3ef40572a34179f215efc4010d2d521ccdf4b747c90edc" "Phase-5 hotfix-01 decoded patch"
-git -C "$workspace" apply --check --directory="$target" "$patch_file"
-git -C "$workspace" apply --directory="$target" "$patch_file"
+base64 --decode "$patch1_b64" | xz --decompress > "$patch1_file"
+verify_sha "$patch1_file" "f4427011155fc4a55a3ef40572a34179f215efc4010d2d521ccdf4b747c90edc" "Phase-5 hotfix-01 decoded patch"
+git -C "$workspace" apply --check --directory="$target" "$patch1_file"
+git -C "$workspace" apply --directory="$target" "$patch1_file"
 
-# Fail-closed acceptance probes before Gradle compilation.
+# Phase-5 hotfix-02 repairs only stale API35 fixtures that violated already-valid
+# uniqueness/seed invariants. Verify both transport and decoded executable bytes.
+hotfix2_rel="phase5-remediation/phase5-hotfix-02.patch.xz.b64.00"
+verify_sha "${workspace}/${hotfix2_rel}" "67d64beed83f2bdac04e0d5d9668f36709d4b3ea042c9e7e3d051d56ca44d954" "Phase-5 hotfix-02 encoded chunk"
+cat "${workspace}/${hotfix2_rel}" > "$patch2_b64"
+verify_sha "$patch2_b64" "67d64beed83f2bdac04e0d5d9668f36709d4b3ea042c9e7e3d051d56ca44d954" "Phase-5 hotfix-02 encoded stream"
+base64 --decode "$patch2_b64" | xz --decompress > "$patch2_file"
+verify_sha "$patch2_file" "fa6968ee68ebc88972a6ce3f1740ae5246e7646cd18dad15696ad130d2a22a45" "Phase-5 hotfix-02 decoded patch"
+git -C "$workspace" apply --check --directory="$target" "$patch2_file"
+git -C "$workspace" apply --directory="$target" "$patch2_file"
+
+migration_test="$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt"
+asset_test="$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt"
+sales_test="$root/app/src/androidTest/java/ir/restaurant/management/data/repository/DailySalesReversalIntegrationTest.kt"
+grep -Fq "PH5-MIG-10" "$migration_test"
+grep -Fq "PH5-MIG-11" "$migration_test"
+grep -Fq 'BranchEntity(id = 102L' "$asset_test"
+grep -Fq 'toBranchId = 102L' "$asset_test"
+if grep -Fq 'BranchEntity(id = 1L, globalId = "test:asset-branch:1"' "$asset_test"; then
+  echo '::error::stale duplicate seeded asset branch fixture remains'
+  exit 1
+fi
+if grep -Fq 'BranchEntity(id = 1L, globalId = "test:branch:1"' "$sales_test"; then
+  echo '::error::stale duplicate seeded daily-sales branch fixture remains'
+  exit 1
+fi
+
+# Fail-closed production acceptance probes before Gradle compilation.
 grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 58' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 grep -Rq 'MIGRATION_57_58' "$root/app/src/main/java/ir/restaurant/management/data/db/migration"
 grep -Fq 'RecipeMaterialResolver(database).resolve' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt"
@@ -46,7 +73,7 @@ grep -Fq 'depreciationByCommandId' "$root/app/src/main/java/ir/restaurant/manage
 grep -Fq 'current.location == valid.location' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt"
 grep -Fq 'valid.acquisitionSource != AssetAcquisitionSource.OWNER_CAPITAL' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt"
 grep -Fq 'asset_depreciation_reversal_reason' "$root/app/src/main/java/ir/restaurant/management/ui/AssetScreens.kt"
-test -s "$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt"
+test -s "$migration_test"
 test -s "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/RecipeMaterialResolverIntegrationTest.kt"
 
 if grep -R -n -E 'MAX\([^)]+\)[^\n]*\+[[:space:]]*1' \
@@ -66,3 +93,4 @@ echo 'ROOM_VERSION=58'
 echo 'SCHEMA_CHANGED=YES'
 echo 'MIGRATION_ADDED=YES'
 echo 'HOTFIX_01_SHA256=f4427011155fc4a55a3ef40572a34179f215efc4010d2d521ccdf4b747c90edc'
+echo 'HOTFIX_02_SHA256=fa6968ee68ebc88972a6ce3f1740ae5246e7646cd18dad15696ad130d2a22a45'
