@@ -13,6 +13,7 @@ hotfix2_patch="${workspace}/.phase3-hotfix-02.patch"
 hotfix3_script="${workspace}/phase3-remediation/phase3-hotfix-03.py"
 hotfix4_script="${workspace}/phase3-remediation/phase3-hotfix-04.py"
 hotfix5_script="${workspace}/phase3-remediation/phase3-hotfix-05.py"
+hotfix6_script="${workspace}/phase3-remediation/phase3-hotfix-06.py"
 
 # Always reconstruct the exact verified Phase-2 handoff first.
 bash "${workspace}/.github/scripts/reconstruct-phase2-canonical.sh" "${target}"
@@ -93,6 +94,15 @@ if [[ "${hotfix5_sha}" != "0b958d5092cd7a54241b8494b12b9d5bc097be153eb82c18b369d
 fi
 python3 "${hotfix5_script}" "${source_root}"
 
+# Correct the Room 2.8.4 migration runtime ABI: Room declares kotlinx.serialization 1.8.1.
+test -s "${hotfix6_script}"
+hotfix6_sha="$(sha256sum "${hotfix6_script}" | awk '{print $1}')"
+if [[ "${hotfix6_sha}" != "b8a2ff6d9a5146369ebefb8c60f6b94eed760fba6a0c92446ca088b0ec854597" ]]; then
+  echo "::error::Phase-3 hotfix-06 digest mismatch: ${hotfix6_sha}"
+  exit 1
+fi
+python3 "${hotfix6_script}" "${source_root}"
+
 # Copy Phase-3 verification plumbing into the reconstructed source handoff.
 mkdir -p "${source_root}/.github/scripts" "${source_root}/.github/workflows"
 cp "${workspace}/.github/scripts/reconstruct-phase3-candidate.sh" "${source_root}/.github/scripts/reconstruct-phase3-candidate.sh"
@@ -133,3 +143,4 @@ echo "HOTFIX_02_SHA256=${hotfix2_sha}"
 echo "HOTFIX_03_SHA256=${hotfix3_sha}"
 echo "HOTFIX_04_SHA256=${hotfix4_sha}"
 echo "HOTFIX_05_SHA256=${hotfix5_sha}"
+echo "HOTFIX_06_SHA256=${hotfix6_sha}"
