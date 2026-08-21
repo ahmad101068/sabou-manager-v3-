@@ -42,7 +42,7 @@ apply_python_hotfix() {
 bash "${workspace}/.github/scripts/reconstruct-phase3-candidate.sh" "$target"
 apply_patch_hotfix 01 "1a5513b2b1588ee725b5ef53dcf458c0bfb0a641d1a30b853ea275546d631db1" "74e9ba4a6c9ee73149bfe50e8b7bc2eaf58b960c70d7e23fe2d421b0fece7bd4" hotfix1_sha
 apply_patch_hotfix 02 "526a9625be1185d58a0c23a470bba4c3d3195703a0d5337109ffbc698c63f3ca" "6524a6e0abe24ab87875b614defdb8d2ce8aa93ad1e548570508da23a54ca8bd" hotfix2_sha
-apply_python_hotfix 03 "a40abeae93b51e8993913d7b2be012fdfd7be14b786435bbd37eaa94d4445053" hotfix3_sha
+apply_python_hotfix 03 "0c4e5a6bd81f9aa1b72fbf0fa8063882f4508f21f65fbd4829ab38d5e083c064" hotfix3_sha
 
 test -s "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt"
 test -s "${source_root}/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceSessionCalculator.kt"
