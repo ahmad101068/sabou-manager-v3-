@@ -6,6 +6,9 @@ on:
       - phase3-pos2-completion
     paths:
       - ".github/workflows/phase3-source-export.yml"
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
