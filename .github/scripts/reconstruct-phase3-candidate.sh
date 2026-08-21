@@ -10,6 +10,7 @@ hotfix_encoded="${workspace}/phase3-remediation/phase3-hotfix-01.patch.xz.b64"
 hotfix_patch="${workspace}/.phase3-hotfix-01.patch"
 hotfix2_encoded="${workspace}/phase3-remediation/phase3-hotfix-02.patch.xz.b64"
 hotfix2_patch="${workspace}/.phase3-hotfix-02.patch"
+hotfix3_script="${workspace}/phase3-remediation/phase3-hotfix-03.py"
 
 # Always reconstruct the exact verified Phase-2 handoff first.
 bash "${workspace}/.github/scripts/reconstruct-phase2-canonical.sh" "${target}"
@@ -63,6 +64,15 @@ fi
 git -C "${workspace}" apply --check --directory="${target}" "${hotfix2_patch}"
 git -C "${workspace}" apply --directory="${target}" "${hotfix2_patch}"
 
+# Align API35 integration fixtures with Phase-3 scope invariants and pin the Room-testing serializer compatibility runtime.
+test -s "${hotfix3_script}"
+hotfix3_sha="$(sha256sum "${hotfix3_script}" | awk '{print $1}')"
+if [[ "${hotfix3_sha}" != "7aa0916b8c6d9725ca1301ceee8edb51b494d1af0f69df0c0137a9fd0a4c23a8" ]]; then
+  echo "::error::Phase-3 hotfix-03 digest mismatch: ${hotfix3_sha}"
+  exit 1
+fi
+python3 "${hotfix3_script}" "${source_root}"
+
 # Copy Phase-3 verification plumbing into the reconstructed source handoff.
 mkdir -p "${source_root}/.github/scripts" "${source_root}/.github/workflows"
 cp "${workspace}/.github/scripts/reconstruct-phase3-candidate.sh" "${source_root}/.github/scripts/reconstruct-phase3-candidate.sh"
@@ -100,3 +110,4 @@ echo "MIGRATION_ADDED=YES"
 echo "PATCH_SHA256=${patch_sha}"
 echo "HOTFIX_01_SHA256=${hotfix_sha}"
 echo "HOTFIX_02_SHA256=${hotfix2_sha}"
+echo "HOTFIX_03_SHA256=${hotfix3_sha}"
