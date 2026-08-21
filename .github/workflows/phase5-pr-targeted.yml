@@ -31,14 +31,21 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
       - name: Reconstruct Phase-5 candidate
         run: bash .github/scripts/reconstruct-phase5-candidate.sh phase5-source
-      - name: Diagnose Phase-5 API35 fixture collisions
+      - name: Diagnose exact Phase-5 fixture references
         run: |
           set -euo pipefail
-          echo '=== Migration57To58Test ==='
-          nl -ba phase5-source/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt | sed -n '1,120p'
-          echo '=== AssetLifecycleIntegrationTest setup ==='
-          nl -ba phase5-source/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt | sed -n '1,95p'
-          echo '=== DailySalesReversalIntegrationTest setup ==='
-          nl -ba phase5-source/app/src/androidTest/java/ir/restaurant/management/data/repository/DailySalesReversalIntegrationTest.kt | sed -n '1,75p'
-          echo '::error::fixture diagnostic captured; apply exact Phase-5 hotfix-02 before full gate'
+          migration=phase5-source/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt
+          asset=phase5-source/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt
+          sales=phase5-source/app/src/androidTest/java/ir/restaurant/management/data/repository/DailySalesReversalIntegrationTest.kt
+          echo '=== Migration inventory fixture ==='
+          grep -n -E 'inventory_items|VALUES\(10|VALUES\(11|sku' "$migration" || true
+          echo '=== Asset branch references ==='
+          grep -n -E 'BranchEntity|branchId|toBranchId|branch =|toBranch =' "$asset" || true
+          echo '=== Asset helper tail ==='
+          nl -ba "$asset" | tail -n 110
+          echo '=== Daily Sales branch references ==='
+          grep -n -E 'BranchEntity|branchId|locationId|DailySalesDraft|LocalDailySalesRepository' "$sales" || true
+          echo '=== Daily Sales helper tail ==='
+          nl -ba "$sales" | tail -n 100
+          echo '::error::exact fixture diagnostic captured; apply deterministic Phase-5 hotfix-02'
           exit 1
