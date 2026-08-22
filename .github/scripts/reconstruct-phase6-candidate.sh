@@ -82,8 +82,6 @@ fi
 verify_sha "$hotfix_04" "df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74" "Phase-6 hotfix-04"
 python3 "$hotfix_04" "$root"
 
-# Record the exact production Alert API from the reconstructed source. This diagnostic is
-# intentionally before compilation so any test/API mismatch can be corrected from evidence.
 echo 'PHASE6_ALERT_API_CONTRACT_BEGIN'
 sed -n '1,220p' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt"
 find "$root/app/src/main/java/ir/restaurant/management" -type f -name '*Alert*.kt' -print | sort
@@ -92,29 +90,5 @@ while IFS= read -r model_file; do
   grep -nE 'data class|sealed|enum class|class .*Alert|destination|Destination|route|Route|intent|Intent|drill|Drill|snooze|Snooze' "$model_file" || true
 done < <(find "$root/app/src/main/java/ir/restaurant/management" -type f -name '*Alert*.kt' | sort)
 echo 'PHASE6_ALERT_API_CONTRACT_END'
-
-require_contains 'APP_DATABASE_SCHEMA_VERSION = 59' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt" 'Room schema version 59'
-require_recursive 'MIGRATION_58_59' "$root/app/src/main/java/ir/restaurant/management/data/db/migration" 'Room 58 to 59 migration'
-require_contains 'actorRoleSnapshot' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt" 'audit actor role snapshot'
-require_contains 'snoozedUntilEpochMillis' "$root/app/src/main/java/ir/restaurant/management/data/db/AlertEntities.kt" 'durable alert snooze'
-require_contains 'completedByUserId' "$root/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsEntities.kt" 'management maker-checker completion actor'
-management_file="$root/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt"
-if ! grep -Fq 'LocalDataScopeService(database, authorizer)' "$management_file"; then
-  echo '::error::Phase-6 management scope invariant not found in legacy textual form'
-  grep -nE 'LocalDataScopeService|CanonicalBranchResolver|branchResolver|validateAssignedUser|requireActive|user_branch_scopes|branchId' "$management_file" || true
-  exit 1
-fi
-require_contains 'FROM receivables r' "$root/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt" 'canonical receivable alert query'
-require_file "$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt" 'Migration58To59Test'
-require_file "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt" 'Phase6SecurityManagementIntegrationTest'
-require_file "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt" 'Phase6AlertIntegrationTest'
-if grep -R -n 'fallbackToDestructiveMigration' "$root/app/src/main/java"; then echo '::error::destructive migration fallback'; exit 1; fi
-
-echo PHASE6_RECONSTRUCTION=PASS
-echo PHASE5_BASELINE_SHA=5465031036dbe4514a93f34ff9208230fb864e38
-echo ROOM_VERSION=59
-echo PATCH_SHA256=$expected
-echo HOTFIX_01_SHA256=16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52
-echo HOTFIX_02_SHA256=7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6
-echo HOTFIX_03_SHA256=056aa6d451889dfaeec9812ebd479eee194e780efc1c7c8a3afc3f3f1006a8b9
-echo HOTFIX_04_SHA256=df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74
+echo '::error::PHASE6_DIAGNOSTIC_SNAPSHOT_COMPLETE'
+exit 1
