@@ -7,6 +7,7 @@ patch_b64="${workspace}/.phase6-final.patch.xz.b64"
 patch_file="${workspace}/.phase6-final.patch"
 hotfix_01="${workspace}/phase6-remediation/phase6-hotfix-01.py"
 hotfix_02="${workspace}/phase6-remediation/phase6-hotfix-02.py"
+hotfix_03="${workspace}/phase6-remediation/phase6-hotfix-03.py"
 
 verify_sha() {
   local file="$1" expected="$2" label="$3" actual
@@ -46,13 +47,23 @@ if grep -Fq 'AppScreen.PROCUREMENT' "$root/app/src/main/java/ir/restaurant/manag
   exit 1
 fi
 
-# CI root-cause hotfix 02: API35 test fixtures only. Production snooze validation,
-# permissions, schema and migration semantics are intentionally unchanged.
+# CI root-cause hotfix 02: security fixture schema compatibility. Production semantics unchanged.
 verify_sha "$hotfix_02" "7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6" "Phase-6 hotfix-02"
 python3 "$hotfix_02" "$root"
-grep -Fq 'clock = { now }' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt"
 if grep -Fq 'grantedAtEpochMillis' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt"; then
   echo '::error::legacy scope fixture column remains after hotfix-02'
+  exit 1
+fi
+
+# CI root-cause hotfix 03: explicitly pin the alert repository test clock and move the
+# receivable alert fixture to the canonical receivables source of truth used by Phase 6.
+verify_sha "$hotfix_03" "056aa6d451889dfaeec9812ebd479eee194e780efc1c7c8a3afc3f3f1006a8b9" "Phase-6 hotfix-03"
+python3 "$hotfix_03" "$root"
+grep -Fq 'repository = LocalAlertRepository(database, authorizer, clock = { now })' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt"
+grep -Fq 'canonicalReceivableMaster_excludesSettled_andAlertsOnlyPartialOutstanding' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt"
+grep -Fq 'database.businessOperationsDao().insertReceivable' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt"
+if grep -Eq 'SalesInvoiceEntity|CustomerReceivableLedgerEntity|insertCreditInvoice|insertLedger' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt"; then
+  echo '::error::legacy receivable alert fixture remains after hotfix-03'
   exit 1
 fi
 
@@ -65,6 +76,7 @@ grep -Fq 'LocalDataScopeService(database, authorizer)' "$root/app/src/main/java/
 grep -Fq 'FROM receivables r' "$root/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt"
 test -s "$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt"
 test -s "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt"
+test -s "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt"
 if grep -R -n 'fallbackToDestructiveMigration' "$root/app/src/main/java"; then echo '::error::destructive migration fallback'; exit 1; fi
 
 echo PHASE6_RECONSTRUCTION=PASS
@@ -73,3 +85,4 @@ echo ROOM_VERSION=59
 echo PATCH_SHA256=$expected
 echo HOTFIX_01_SHA256=16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52
 echo HOTFIX_02_SHA256=7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6
+echo HOTFIX_03_SHA256=056aa6d451889dfaeec9812ebd479eee194e780efc1c7c8a3afc3f3f1006a8b9
