@@ -138,7 +138,7 @@ jobs:
           {
             grep '^diff --git a/' .phase5-hotfix-01.patch
             grep '^diff --git a/' .phase5-hotfix-02.patch
-            grep '^diff --git a/' .phase5-hotfix-03.patch
+            echo 'app/src/androidTest/java/ir/restaurant/management/data/repository/DailySalesReversalIntegrationTest.kt'
           } | sed -E 's#^diff --git a/([^ ]+) b/.*#\1#' | sort -u > PHASE-5-CHANGED-FILES.txt
           cat > PHASE-5-REPORT.md <<EOF
           # PHASE-5-REPORT
@@ -174,7 +174,7 @@ jobs:
           MIGRATION_ADDED=YES
           HOTFIX_01_SHA256=f4427011155fc4a55a3ef40572a34179f215efc4010d2d521ccdf4b747c90edc
           HOTFIX_02_SHA256=9087124a7f2ebf9a19f16d648a9aeddb248d5d1c565fb39d74105897d08d33ff
-          HOTFIX_03_SHA256=9e7e7702c14440ce24e46f60b45a367faf961204eb19ba2cfea83f8ad9c9936c
+          HOTFIX_03_SHA256=492a6d3b316df3d2bf082e4ffdaa9cb599198bc524d24c6e635d96ac0adb54c4
           SCHEMA57_SHA256=${schema57_hash}
           SCHEMA58_SHA256=${schema58_hash}
           SOURCE_FILE=${zip_name}
