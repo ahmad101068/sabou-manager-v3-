@@ -82,6 +82,17 @@ fi
 verify_sha "$hotfix_04" "df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74" "Phase-6 hotfix-04"
 python3 "$hotfix_04" "$root"
 
+# Record the exact production Alert API from the reconstructed source. This diagnostic is
+# intentionally before compilation so any test/API mismatch can be corrected from evidence.
+echo 'PHASE6_ALERT_API_CONTRACT_BEGIN'
+sed -n '1,220p' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt"
+find "$root/app/src/main/java/ir/restaurant/management" -type f -name '*Alert*.kt' -print | sort
+while IFS= read -r model_file; do
+  echo "--- ${model_file#${root}/} ---"
+  grep -nE 'data class|sealed|enum class|class .*Alert|destination|Destination|route|Route|intent|Intent|drill|Drill|snooze|Snooze' "$model_file" || true
+done < <(find "$root/app/src/main/java/ir/restaurant/management" -type f -name '*Alert*.kt' | sort)
+echo 'PHASE6_ALERT_API_CONTRACT_END'
+
 require_contains 'APP_DATABASE_SCHEMA_VERSION = 59' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt" 'Room schema version 59'
 require_recursive 'MIGRATION_58_59' "$root/app/src/main/java/ir/restaurant/management/data/db/migration" 'Room 58 to 59 migration'
 require_contains 'actorRoleSnapshot' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt" 'audit actor role snapshot'
