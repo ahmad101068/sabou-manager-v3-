@@ -10,6 +10,7 @@ hotfix_02="${workspace}/phase6-remediation/phase6-hotfix-02.py"
 hotfix_03="${workspace}/phase6-remediation/phase6-hotfix-03.py"
 hotfix_04="${workspace}/phase6-remediation/phase6-hotfix-04.py"
 hotfix_05="${workspace}/phase6-remediation/phase6-hotfix-05.py"
+hotfix_06="${workspace}/phase6-remediation/phase6-hotfix-06.py"
 
 verify_sha() {
   local file="$1" expected="$2" label="$3" actual
@@ -65,6 +66,9 @@ python3 "$hotfix_04" "$root"
 verify_sha "$hotfix_05" "ed3fa9c771d1511c1a258a7be23380ecf5bee69e72c77f1185682062bdcff8f3" "Phase-6 hotfix-05"
 python3 "$hotfix_05" "$root"
 
+verify_sha "$hotfix_06" "8e0b0f2ca054100a993a2689e6e501860b64324f47c8f851316e0057c045d331" "Phase-6 hotfix-06"
+python3 "$hotfix_06" "$root"
+
 require_contains 'AppScreen.PURCHASES' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt" 'canonical purchase route'
 if grep -Fq 'AppScreen.PROCUREMENT' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"; then
   echo '::error::obsolete AppScreen.PROCUREMENT remains after hotfix-01'
@@ -85,9 +89,15 @@ for test_file in AlertStateIntegrationTest.kt AlertReceivableIntegrationTest.kt 
     exit 1
   fi
 done
+p6_alert_test="$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt"
+if grep -Fq 'SessionAuthorizer(database, clock' "$p6_alert_test"; then
+  echo '::error::unsupported SessionAuthorizer clock remains in Phase6AlertIntegrationTest'
+  exit 1
+fi
+require_contains 'authorizer = SessionAuthorizer(database)' "$p6_alert_test" 'canonical SessionAuthorizer fixture'
 require_contains 'AlertDrillDownTarget.RECEIVABLE' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt" 'receivable typed drill-down'
-require_contains 'AlertDrillDownTarget.INVENTORY_ITEM' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt" 'low-stock typed drill-down'
-require_contains 'System.currentTimeMillis() + 120_000L' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt" 'real future snooze deadline'
+require_contains 'AlertDrillDownTarget.INVENTORY_ITEM' "$p6_alert_test" 'low-stock typed drill-down'
+require_contains 'System.currentTimeMillis() + 120_000L' "$p6_alert_test" 'real future snooze deadline'
 if grep -Eq 'SalesInvoiceEntity|CustomerReceivableLedgerEntity|insertCreditInvoice|insertLedger' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt"; then
   echo '::error::legacy receivable fixture remains'
   exit 1
@@ -103,7 +113,7 @@ require_contains 'FROM receivables r' "$root/app/src/main/java/ir/restaurant/man
 require_contains 'FROM inventory_balances b' "$root/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt" 'canonical inventory alert query'
 require_file "$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt" 'Migration58To59Test'
 require_file "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt" 'Phase6SecurityManagementIntegrationTest'
-require_file "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt" 'Phase6AlertIntegrationTest'
+require_file "$p6_alert_test" 'Phase6AlertIntegrationTest'
 if grep -R -n 'fallbackToDestructiveMigration' "$root/app/src/main/java"; then
   echo '::error::destructive migration fallback'
   exit 1
@@ -118,3 +128,4 @@ echo HOTFIX_02_SHA256=7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d5
 echo HOTFIX_03_SHA256=056aa6d451889dfaeec9812ebd479eee194e780efc1c7c8a3afc3f3f1006a8b9
 echo HOTFIX_04_SHA256=df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74
 echo HOTFIX_05_SHA256=ed3fa9c771d1511c1a258a7be23380ecf5bee69e72c77f1185682062bdcff8f3
+echo HOTFIX_06_SHA256=8e0b0f2ca054100a993a2689e6e501860b64324f47c8f851316e0057c045d331
