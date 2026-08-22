@@ -9,6 +9,7 @@ hotfix_01="${workspace}/phase6-remediation/phase6-hotfix-01.py"
 hotfix_02="${workspace}/phase6-remediation/phase6-hotfix-02.py"
 hotfix_03="${workspace}/phase6-remediation/phase6-hotfix-03.py"
 hotfix_04="${workspace}/phase6-remediation/phase6-hotfix-04.py"
+hotfix_05="${workspace}/phase6-remediation/phase6-hotfix-05.py"
 
 verify_sha() {
   local file="$1" expected="$2" label="$3" actual
@@ -20,11 +21,6 @@ verify_sha() {
 require_contains() {
   local token="$1" file="$2" label="$3"
   grep -Fq "$token" "$file" || { echo "::error::missing invariant ${label}: ${token}"; return 1; }
-}
-
-require_recursive() {
-  local token="$1" dir="$2" label="$3"
-  grep -Rq "$token" "$dir" || { echo "::error::missing invariant ${label}: ${token}"; return 1; }
 }
 
 require_file() {
@@ -56,39 +52,69 @@ git -C "$workspace" apply --directory="$target" "$patch_file"
 
 verify_sha "$hotfix_01" "16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52" "Phase-6 hotfix-01"
 python3 "$hotfix_01" "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"
+
+verify_sha "$hotfix_02" "7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6" "Phase-6 hotfix-02"
+python3 "$hotfix_02" "$root"
+
+verify_sha "$hotfix_03" "056aa6d451889dfaeec9812ebd479eee194e780efc1c7c8a3afc3f3f1006a8b9" "Phase-6 hotfix-03"
+python3 "$hotfix_03" "$root"
+
+verify_sha "$hotfix_04" "df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74" "Phase-6 hotfix-04"
+python3 "$hotfix_04" "$root"
+
+verify_sha "$hotfix_05" "ed3fa9c771d1511c1a258a7be23380ecf5bee69e72c77f1185682062bdcff8f3" "Phase-6 hotfix-05"
+python3 "$hotfix_05" "$root"
+
 require_contains 'AppScreen.PURCHASES' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt" 'canonical purchase route'
 if grep -Fq 'AppScreen.PROCUREMENT' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"; then
   echo '::error::obsolete AppScreen.PROCUREMENT remains after hotfix-01'
   exit 1
 fi
-
-verify_sha "$hotfix_02" "7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6" "Phase-6 hotfix-02"
-python3 "$hotfix_02" "$root"
 if grep -Fq 'grantedAtEpochMillis' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt"; then
   echo '::error::legacy scope fixture column remains after hotfix-02'
   exit 1
 fi
-
-verify_sha "$hotfix_03" "056aa6d451889dfaeec9812ebd479eee194e780efc1c7c8a3afc3f3f1006a8b9" "Phase-6 hotfix-03"
-python3 "$hotfix_03" "$root"
-require_contains 'repository = LocalAlertRepository(database, authorizer, clock = { now })' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt" 'alert state deterministic clock'
-require_contains 'canonicalReceivableMaster_excludesSettled_andAlertsOnlyPartialOutstanding' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt" 'canonical receivable test'
-require_contains 'database.businessOperationsDao().insertReceivable' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt" 'canonical receivable fixture insert'
+for test_file in AlertStateIntegrationTest.kt AlertReceivableIntegrationTest.kt Phase6AlertIntegrationTest.kt; do
+  path="$root/app/src/androidTest/java/ir/restaurant/management/data/repository/$test_file"
+  if grep -Fq 'LocalAlertRepository(database, authorizer, clock' "$path"; then
+    echo "::error::unsupported LocalAlertRepository clock remains in $test_file"
+    exit 1
+  fi
+  if grep -Eq 'AlertDrillDownType|\.drillDownType' "$path"; then
+    echo "::error::obsolete alert drill-down API remains in $test_file"
+    exit 1
+  fi
+done
+require_contains 'AlertDrillDownTarget.RECEIVABLE' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt" 'receivable typed drill-down'
+require_contains 'AlertDrillDownTarget.INVENTORY_ITEM' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt" 'low-stock typed drill-down'
+require_contains 'System.currentTimeMillis() + 120_000L' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt" 'real future snooze deadline'
 if grep -Eq 'SalesInvoiceEntity|CustomerReceivableLedgerEntity|insertCreditInvoice|insertLedger' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt"; then
-  echo '::error::legacy receivable alert fixture remains after hotfix-03'
+  echo '::error::legacy receivable fixture remains'
   exit 1
 fi
 
-verify_sha "$hotfix_04" "df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74" "Phase-6 hotfix-04"
-python3 "$hotfix_04" "$root"
+require_contains 'APP_DATABASE_SCHEMA_VERSION = 59' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt" 'Room schema version 59'
+grep -Rq 'MIGRATION_58_59' "$root/app/src/main/java/ir/restaurant/management/data/db/migration" || { echo '::error::MIGRATION_58_59 missing'; exit 1; }
+require_contains 'actorRoleSnapshot' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt" 'audit actor role snapshot'
+require_contains 'snoozedUntilEpochMillis' "$root/app/src/main/java/ir/restaurant/management/data/db/AlertEntities.kt" 'durable alert snooze'
+require_contains 'completedByUserId' "$root/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsEntities.kt" 'management maker-checker completion actor'
+require_contains 'LocalDataScopeService(database, authorizer)' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt" 'management data scope'
+require_contains 'FROM receivables r' "$root/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt" 'canonical receivable alert query'
+require_contains 'FROM inventory_balances b' "$root/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt" 'canonical inventory alert query'
+require_file "$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt" 'Migration58To59Test'
+require_file "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt" 'Phase6SecurityManagementIntegrationTest'
+require_file "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt" 'Phase6AlertIntegrationTest'
+if grep -R -n 'fallbackToDestructiveMigration' "$root/app/src/main/java"; then
+  echo '::error::destructive migration fallback'
+  exit 1
+fi
 
-echo 'PHASE6_ALERT_API_CONTRACT_BEGIN'
-sed -n '1,220p' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt"
-find "$root/app/src/main/java/ir/restaurant/management" -type f -name '*Alert*.kt' -print | sort
-while IFS= read -r model_file; do
-  echo "--- ${model_file#${root}/} ---"
-  grep -nE 'data class|sealed|enum class|class .*Alert|destination|Destination|route|Route|intent|Intent|drill|Drill|snooze|Snooze' "$model_file" || true
-done < <(find "$root/app/src/main/java/ir/restaurant/management" -type f -name '*Alert*.kt' | sort)
-echo 'PHASE6_ALERT_API_CONTRACT_END'
-echo '::error::PHASE6_DIAGNOSTIC_SNAPSHOT_COMPLETE'
-exit 1
+echo PHASE6_RECONSTRUCTION=PASS
+echo PHASE5_BASELINE_SHA=5465031036dbe4514a93f34ff9208230fb864e38
+echo ROOM_VERSION=59
+echo PATCH_SHA256=$expected
+echo HOTFIX_01_SHA256=16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52
+echo HOTFIX_02_SHA256=7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6
+echo HOTFIX_03_SHA256=056aa6d451889dfaeec9812ebd479eee194e780efc1c7c8a3afc3f3f1006a8b9
+echo HOTFIX_04_SHA256=df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74
+echo HOTFIX_05_SHA256=ed3fa9c771d1511c1a258a7be23380ecf5bee69e72c77f1185682062bdcff8f3
