@@ -98,7 +98,7 @@ jobs:
           script: >-
             cd "$GITHUB_WORKSPACE/phase6-source" &&
             gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
-            "-Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.data.db.Migration58To59Test,ir.restaurant.management.data.repository.Phase6SecurityManagementIntegrationTest,ir.restaurant.management.data.repository.AlertStateIntegrationTest,ir.restaurant.management.data.repository.ManagementControlTransactionIntegrationTest,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.BackupManagerDeleteTest"
+            "-Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.data.db.Migration58To59Test,ir.restaurant.management.data.repository.Phase6SecurityManagementIntegrationTest,ir.restaurant.management.data.repository.Phase6AlertIntegrationTest,ir.restaurant.management.data.repository.AlertReceivableIntegrationTest,ir.restaurant.management.data.repository.AlertStateIntegrationTest,ir.restaurant.management.data.repository.ManagementControlTransactionIntegrationTest,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.repository.StartupSessionBoundaryIntegrationTest,ir.restaurant.management.data.repository.TreasuryV2IntegrationTest,ir.restaurant.management.data.BackupManagerDeleteTest"
       - name: Build Phase-6 report and source handoff
         run: |
           set -euo pipefail
@@ -124,11 +124,17 @@ jobs:
           PY
           unzip -t "$zip_name" >/dev/null
           zip_hash="$(sha256sum "$zip_name" | awk '{print $1}')"
-          grep '^diff --git a/' .phase6-final.patch | sed -E 's#^diff --git a/([^ ]+) b/.*#\1#' | sort -u > PHASE-6-CHANGED-FILES.txt
+          {
+            grep '^diff --git a/' .phase6-final.patch | sed -E 's#^diff --git a/([^ ]+) b/.*#\1#'
+            printf '%s\n' \
+              'app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt' \
+              'app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt' \
+              'app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt'
+          } | sort -u > PHASE-6-CHANGED-FILES.txt
           cat > PHASE-6-REPORT.md <<EOF
           # PHASE-6-REPORT
           - Phase-5 baseline SHA: ${PHASE5_BASELINE_SHA}
-          - Phase-6 final SHA: ${SOURCE_SHA}
+          - Phase-6 verified source SHA: ${SOURCE_SHA}
           - Branch: ${SOURCE_BRANCH}
           - Completed scope: application-bound branch authorization; idle-session enforcement; recovery/re-auth preservation; audit actor/role/branch snapshots with sensitive-view redaction; canonical scoped alerts with location-aware stock and canonical AR; durable dismiss/snooze; typed drill-down; management assignee enforcement and maker-checker; checklist finalization evidence; transactional audit preservation.
           - DB schema changed: YES (58 -> 59)
@@ -142,7 +148,9 @@ jobs:
           - Full heavy suites: DEFERRED TO PHASE 8 BY POLICY
           - Room 58 schema SHA-256: ${schema58_hash}
           - Room 59 schema SHA-256: ${schema59_hash}
-          - Phase-6 patch SHA-256: 331389fd31e7fddaa2bd1b6806e29905615b7691fccc9aeb9ea7a9588017b937
+          - Phase-6 base patch SHA-256: 331389fd31e7fddaa2bd1b6806e29905615b7691fccc9aeb9ea7a9588017b937
+          - Phase-6 hotfix-01 SHA-256: 16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52
+          - Phase-6 hotfix-02 SHA-256: 7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6
           - Source artifact: ${zip_name}
           - Source artifact SHA-256: ${zip_hash}
           - Known remaining Phase-6 blockers: NONE
@@ -151,12 +159,14 @@ jobs:
           sed 's/^/- /' PHASE-6-CHANGED-FILES.txt >> PHASE-6-REPORT.md
           cat > PHASE-6-EVIDENCE.txt <<EOF
           BASELINE_SHA=${PHASE5_BASELINE_SHA}
-          SOURCE_COMMIT=${SOURCE_SHA}
+          VERIFIED_SOURCE_SHA=${SOURCE_SHA}
           HEAD_SHA=$(git rev-parse HEAD)
           BRANCH=${SOURCE_BRANCH}
           ROOM_VERSION=59
           MIGRATION_ADDED=YES
-          PATCH_SHA256=331389fd31e7fddaa2bd1b6806e29905615b7691fccc9aeb9ea7a9588017b937
+          BASE_PATCH_SHA256=331389fd31e7fddaa2bd1b6806e29905615b7691fccc9aeb9ea7a9588017b937
+          HOTFIX_01_SHA256=16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52
+          HOTFIX_02_SHA256=7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6
           SCHEMA58_SHA256=${schema58_hash}
           SCHEMA59_SHA256=${schema59_hash}
           SOURCE_FILE=${zip_name}
