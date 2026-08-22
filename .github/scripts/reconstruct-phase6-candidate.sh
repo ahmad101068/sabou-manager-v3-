@@ -72,7 +72,12 @@ grep -Rq 'MIGRATION_58_59' "$root/app/src/main/java/ir/restaurant/management/dat
 grep -Fq 'actorRoleSnapshot' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt"
 grep -Fq 'snoozedUntilEpochMillis' "$root/app/src/main/java/ir/restaurant/management/data/db/AlertEntities.kt"
 grep -Fq 'completedByUserId' "$root/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsEntities.kt"
-grep -Fq 'LocalDataScopeService(database, authorizer)' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt"
+management_file="$root/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt"
+if ! grep -Fq 'LocalDataScopeService(database, authorizer)' "$management_file"; then
+  echo '::error::Phase-6 management scope invariant not found in legacy textual form'
+  grep -nE 'LocalDataScopeService|CanonicalBranchResolver|branchResolver|validateAssignedUser|requireActive|user_branch_scopes|branchId' "$management_file" || true
+  exit 1
+fi
 grep -Fq 'FROM receivables r' "$root/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt"
 test -s "$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt"
 test -s "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt"
