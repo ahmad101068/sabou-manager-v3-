@@ -1,0 +1,183 @@
+name: Phase 6 Targeted Verification
+
+on:
+  push:
+    branches: [remediation/phase6-security-audit-management-20260822]
+  pull_request:
+    branches: [remediation/phase5-recipe-assets-20260821]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase6-targeted-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase6-targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    env:
+      PHASE5_BASELINE_SHA: 5465031036dbe4514a93f34ff9208230fb864e38
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Reconstruct Phase-6 candidate
+        run: bash .github/scripts/reconstruct-phase6-candidate.sh phase6-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Static Phase-6 gates
+        working-directory: phase6-source
+        run: |
+          set -euo pipefail
+          grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 59' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          grep -Rq 'MIGRATION_58_59' app/src/main/java/ir/restaurant/management/data/db/migration
+          grep -Fq 'actorRoleSnapshot' app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt
+          grep -Fq 'actorBranchIdSnapshot' app/src/main/java/ir/restaurant/management/data/repository/LocalAuditEventWriter.kt
+          grep -Fq 'AUDIT_SENSITIVE_VIEW' app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+          grep -Fq 'snoozedUntilEpochMillis' app/src/main/java/ir/restaurant/management/data/db/AlertEntities.kt
+          grep -Fq 'FROM receivables r' app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt
+          grep -Fq 'FROM inventory_balances b' app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt
+          grep -Fq 'completedByUserId' app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsEntities.kt
+          grep -Fq 'LocalDataScopeService(database, authorizer)' app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt
+          grep -Fq 'DEFAULT_IDLE_TIMEOUT_MILLIS' app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+          if grep -R -n 'fallbackToDestructiveMigration' app/src/main/java; then exit 1; fi
+      - name: Materialize deterministic Room 58 baseline
+        run: |
+          set -euo pipefail
+          bash .github/scripts/reconstruct-phase5-candidate.sh phase5-schema-source
+          cd phase5-schema-source
+          gradle --no-daemon --console=plain :app:compileDebugKotlin
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json
+          python3 scripts/verify-room-schema.py
+          cd ..
+          mkdir -p phase6-source/app/schemas/ir.restaurant.management.data.db.AppDatabase
+          cp phase5-schema-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json phase6-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json
+      - name: Compile Phase-6 source
+        working-directory: phase6-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+      - name: Verify Room 59 schema
+        working-directory: phase6-source
+        run: |
+          set -euo pipefail
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/59.json
+          python3 scripts/verify-room-schema.py
+      - name: Targeted Phase-6 JVM tests
+        working-directory: phase6-source
+        run: >-
+          gradle --no-daemon --console=plain :app:testDebugUnitTest
+          --tests 'ir.restaurant.management.data.db.MigrationRegistryTest'
+          --tests 'ir.restaurant.management.data.db.MigrationChainContractTest'
+          --tests 'ir.restaurant.management.domain.security.*'
+          --tests 'ir.restaurant.management.domain.control.*'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Targeted API35 Phase-6 migration and integration
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: >-
+            cd "$GITHUB_WORKSPACE/phase6-source" &&
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            "-Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.data.db.Migration58To59Test,ir.restaurant.management.data.repository.Phase6SecurityManagementIntegrationTest,ir.restaurant.management.data.repository.AlertStateIntegrationTest,ir.restaurant.management.data.repository.ManagementControlTransactionIntegrationTest,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.BackupManagerDeleteTest"
+      - name: Build Phase-6 report and source handoff
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_SHA:0:7}"
+          zip_name="restaurant-management-remediation-phase6-source-${short_sha}.zip"
+          schema58="phase6-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json"
+          schema59="phase6-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/59.json"
+          schema58_hash="$(sha256sum "$schema58" | awk '{print $1}')"
+          schema59_hash="$(sha256sum "$schema59" | awk '{print $1}')"
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          root=Path(os.environ['GITHUB_WORKSPACE'])/'phase6-source'
+          out=Path(os.environ['GITHUB_WORKSPACE'])/f"restaurant-management-remediation-phase6-source-{os.environ['SOURCE_SHA'][:7]}.zip"
+          excluded={'.git','.gradle','build'}
+          with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as z:
+              for p in sorted(root.rglob('*')):
+                  if not p.is_file(): continue
+                  rel=p.relative_to(root)
+                  if any(x in excluded for x in rel.parts): continue
+                  if p.name=='local.properties' or p.suffix.lower() in {'.apk','.aab','.jks','.keystore'}: continue
+                  z.write(p,rel.as_posix())
+          PY
+          unzip -t "$zip_name" >/dev/null
+          zip_hash="$(sha256sum "$zip_name" | awk '{print $1}')"
+          grep '^diff --git a/' .phase6-final.patch | sed -E 's#^diff --git a/([^ ]+) b/.*#\1#' | sort -u > PHASE-6-CHANGED-FILES.txt
+          cat > PHASE-6-REPORT.md <<EOF
+          # PHASE-6-REPORT
+          - Phase-5 baseline SHA: ${PHASE5_BASELINE_SHA}
+          - Phase-6 final SHA: ${SOURCE_SHA}
+          - Branch: ${SOURCE_BRANCH}
+          - Completed scope: application-bound branch authorization; idle-session enforcement; recovery/re-auth preservation; audit actor/role/branch snapshots with sensitive-view redaction; canonical scoped alerts with location-aware stock and canonical AR; durable dismiss/snooze; typed drill-down; management assignee enforcement and maker-checker; checklist finalization evidence; transactional audit preservation.
+          - DB schema changed: YES (58 -> 59)
+          - Migration added: YES (MIGRATION_58_59)
+          - Compile + AndroidTest compile: PASS
+          - Room 58 baseline: PASS
+          - Room 59 schema verification: PASS
+          - Targeted JVM: PASS
+          - Targeted API35 migration/integration: PASS
+          - Permission/Audit/Alert/Management regressions: PASS
+          - Full heavy suites: DEFERRED TO PHASE 8 BY POLICY
+          - Room 58 schema SHA-256: ${schema58_hash}
+          - Room 59 schema SHA-256: ${schema59_hash}
+          - Phase-6 patch SHA-256: 331389fd31e7fddaa2bd1b6806e29905615b7691fccc9aeb9ea7a9588017b937
+          - Source artifact: ${zip_name}
+          - Source artifact SHA-256: ${zip_hash}
+          - Known remaining Phase-6 blockers: NONE
+          ## Changed files
+          EOF
+          sed 's/^/- /' PHASE-6-CHANGED-FILES.txt >> PHASE-6-REPORT.md
+          cat > PHASE-6-EVIDENCE.txt <<EOF
+          BASELINE_SHA=${PHASE5_BASELINE_SHA}
+          SOURCE_COMMIT=${SOURCE_SHA}
+          HEAD_SHA=$(git rev-parse HEAD)
+          BRANCH=${SOURCE_BRANCH}
+          ROOM_VERSION=59
+          MIGRATION_ADDED=YES
+          PATCH_SHA256=331389fd31e7fddaa2bd1b6806e29905615b7691fccc9aeb9ea7a9588017b937
+          SCHEMA58_SHA256=${schema58_hash}
+          SCHEMA59_SHA256=${schema59_hash}
+          SOURCE_FILE=${zip_name}
+          SOURCE_SHA256=${zip_hash}
+          TARGETED_PHASE6=PASS
+          API35_MIGRATION_INTEGRATION=PASS
+          FULL_HEAVY_SUITES=DEFERRED_TO_PHASE8
+          EOF
+      - name: Upload Phase-6 handoff
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase6-final-${{ env.SOURCE_SHA }}
+          path: |
+            PHASE-6-REPORT.md
+            PHASE-6-EVIDENCE.txt
+            PHASE-6-CHANGED-FILES.txt
+            restaurant-management-remediation-phase6-source-*.zip
+            phase6-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json
+            phase6-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/59.json
+            phase6-source/app/build/test-results/testDebugUnitTest/**
+            phase6-source/app/build/outputs/androidTest-results/connected/**
+          if-no-files-found: warn
+          retention-days: 30
