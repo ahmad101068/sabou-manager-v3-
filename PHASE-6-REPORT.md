@@ -1,0 +1,71 @@
+# PHASE-6-REPORT
+- Phase-5 baseline SHA: 5465031036dbe4514a93f34ff9208230fb864e38
+- Phase-6 final verified source SHA: 2c68fce41d687d1ab8f7548c2740c9a8cc545ae2
+- Branch: remediation/phase6-security-audit-management-20260822
+- PR: #10
+- Verification workflow run: 32577465657 (run #88)
+- Verification artifact ID: 9477085677
+- Verification artifact SHA-256: e32c05ec3fda18a251b20cdd61858f7100d7d96d8cbb1a7e1ed10d50a1d7383d
+- Completed scope: application-bound branch authorization; idle-session enforcement; recovery/re-auth preservation; audit actor/role/branch snapshots with sensitive-view redaction; canonical scoped alerts with location-aware stock and canonical AR; durable dismiss/snooze; typed drill-down; management assignee enforcement and maker-checker; checklist finalization evidence; transactional audit preservation.
+- DB schema changed: YES (58 -> 59)
+- Migration added: YES (MIGRATION_58_59)
+- Compile + AndroidTest compile: PASS
+- Room 58 baseline: PASS
+- Room 59 schema verification: PASS
+- Targeted JVM: PASS
+- Targeted API35 migration/integration: PASS (30 tests)
+- API35 result integrity / initialization guard: PASS
+- API35 failures/errors/skips: 0 / 0 / 0
+- Phase6AlertIntegrationTest executed: YES
+- initializationError: NONE
+- Permission/Audit/Alert/Management regressions: PASS
+- Destructive migration fallback: NONE
+- Test weakening: NONE
+- Temporary Phase-6 alert diagnostic workflow: REMOVED BEFORE FINAL HANDOFF
+- Full heavy suites: DEFERRED TO PHASE 8 BY POLICY
+- Room 58 schema SHA-256: 3ff188efb092b87ecaa6b3db3a4285a1f6749a992e2ea8611e15c61aade0a0d5
+- Room 59 schema SHA-256: c23b7d1f794cdb6febc643fa79ddf4f68222eb6fe3ba42622bbbd36599a14e00
+- Phase-6 base patch SHA-256: 331389fd31e7fddaa2bd1b6806e29905615b7691fccc9aeb9ea7a9588017b937
+- Phase-6 hotfix-01 SHA-256: 16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52
+- Phase-6 hotfix-02 SHA-256: 7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6
+- Phase-6 hotfix-03 SHA-256: 056aa6d451889dfaeec9812ebd479eee194e780efc1c7c8a3afc3f3f1006a8b9
+- Phase-6 hotfix-04 SHA-256: df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74
+- Phase-6 hotfix-05 SHA-256: ed3fa9c771d1511c1a258a7be23380ecf5bee69e72c77f1185682062bdcff8f3
+- Phase-6 hotfix-06 SHA-256: 8e0b0f2ca054100a993a2689e6e501860b64324f47c8f851316e0057c045d331
+- Phase-6 hotfix-07 SHA-256: 62b2d149c298ae3edb439c69f15f1f90da86fa012441758e28f56aebb80f14a0
+- Source artifact: restaurant-management-remediation-phase6-source-2c68fce.zip
+- Source artifact SHA-256: 6692adb2195f1cf2a88e53b3d0c86d34e8d0e9a94fa44a9a8ea5f7fede2b354a
+- Source file count: 663
+- Known remaining Phase-6 blockers: NONE
+- Formal Phase-6 status: DONE / VERIFIED
+
+## Handoff SHA model
+The verified source SHA above is the commit that passed the complete Phase-6 verification suite. The subsequent commit containing this report/evidence is metadata-only and is intentionally tracked separately in the PR conversation to avoid a self-referential commit SHA inside its own contents.
+
+## Changed files
+- app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt
+- app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt
+- app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
+- app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6AlertIntegrationTest.kt
+- app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt
+- app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt
+- app/src/main/java/ir/restaurant/management/data/db/AlertEntities.kt
+- app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+- app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
+- app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsEntities.kt
+- app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt
+- app/src/main/java/ir/restaurant/management/data/db/SecurityDao.kt
+- app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
+- app/src/main/java/ir/restaurant/management/data/db/migration/Phase6SecurityAuditMigration.kt
+- app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
+- app/src/main/java/ir/restaurant/management/data/repository/LocalAuditEventWriter.kt
+- app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowReadService.kt
+- app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt
+- app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+- app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+- app/src/main/java/ir/restaurant/management/domain/audit/AuditEvent.kt
+- app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
+- app/src/main/java/ir/restaurant/management/domain/operations/OperationsModels.kt
+- app/src/main/java/ir/restaurant/management/ui/AlertScreens.kt
+- app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+- app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
