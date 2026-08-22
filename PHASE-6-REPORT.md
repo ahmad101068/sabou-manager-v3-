@@ -1,7 +1,11 @@
 # PHASE-6-REPORT
 - Phase-5 baseline SHA: 5465031036dbe4514a93f34ff9208230fb864e38
-- Phase-6 verified source SHA: dc0f25f9d221fd876e863f1afab8f40cbee07e66
+- Phase-6 final verified source SHA: 2c68fce41d687d1ab8f7548c2740c9a8cc545ae2
 - Branch: remediation/phase6-security-audit-management-20260822
+- PR: #10
+- Verification workflow run: 32577465657 (run #88)
+- Verification artifact ID: 9477085677
+- Verification artifact SHA-256: e32c05ec3fda18a251b20cdd61858f7100d7d96d8cbb1a7e1ed10d50a1d7383d
 - Completed scope: application-bound branch authorization; idle-session enforcement; recovery/re-auth preservation; audit actor/role/branch snapshots with sensitive-view redaction; canonical scoped alerts with location-aware stock and canonical AR; durable dismiss/snooze; typed drill-down; management assignee enforcement and maker-checker; checklist finalization evidence; transactional audit preservation.
 - DB schema changed: YES (58 -> 59)
 - Migration added: YES (MIGRATION_58_59)
@@ -11,7 +15,13 @@
 - Targeted JVM: PASS
 - Targeted API35 migration/integration: PASS (30 tests)
 - API35 result integrity / initialization guard: PASS
+- API35 failures/errors/skips: 0 / 0 / 0
+- Phase6AlertIntegrationTest executed: YES
+- initializationError: NONE
 - Permission/Audit/Alert/Management regressions: PASS
+- Destructive migration fallback: NONE
+- Test weakening: NONE
+- Temporary Phase-6 alert diagnostic workflow: REMOVED BEFORE FINAL HANDOFF
 - Full heavy suites: DEFERRED TO PHASE 8 BY POLICY
 - Room 58 schema SHA-256: 3ff188efb092b87ecaa6b3db3a4285a1f6749a992e2ea8611e15c61aade0a0d5
 - Room 59 schema SHA-256: c23b7d1f794cdb6febc643fa79ddf4f68222eb6fe3ba42622bbbd36599a14e00
@@ -23,12 +33,14 @@
 - Phase-6 hotfix-05 SHA-256: ed3fa9c771d1511c1a258a7be23380ecf5bee69e72c77f1185682062bdcff8f3
 - Phase-6 hotfix-06 SHA-256: 8e0b0f2ca054100a993a2689e6e501860b64324f47c8f851316e0057c045d331
 - Phase-6 hotfix-07 SHA-256: 62b2d149c298ae3edb439c69f15f1f90da86fa012441758e28f56aebb80f14a0
-- Source artifact: restaurant-management-remediation-phase6-source-dc0f25f.zip
-- Source artifact SHA-256: a0d4f25a40812acdfbc09f598b3dfbc4ef950df3addeb3762e67876cd085a6c3
-- Workflow run: 32556375769 (run #82)
-- Workflow artifact ID: 9471765908
-- Workflow artifact SHA-256: 049c609f4874c71e5f22095aa73b671f0cf220b3c1de5182edcacf0d77a95880
+- Source artifact: restaurant-management-remediation-phase6-source-2c68fce.zip
+- Source artifact SHA-256: 6692adb2195f1cf2a88e53b3d0c86d34e8d0e9a94fa44a9a8ea5f7fede2b354a
+- Source file count: 663
 - Known remaining Phase-6 blockers: NONE
+- Formal Phase-6 status: DONE / VERIFIED
+
+## Handoff SHA model
+The verified source SHA above is the commit that passed the complete Phase-6 verification suite. The subsequent commit containing this report/evidence is metadata-only and is intentionally tracked separately in the PR conversation to avoid a self-referential commit SHA inside its own contents.
 
 ## Changed files
 - app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt
