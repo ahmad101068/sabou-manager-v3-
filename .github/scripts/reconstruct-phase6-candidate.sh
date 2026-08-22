@@ -8,6 +8,7 @@ patch_file="${workspace}/.phase6-final.patch"
 hotfix_01="${workspace}/phase6-remediation/phase6-hotfix-01.py"
 hotfix_02="${workspace}/phase6-remediation/phase6-hotfix-02.py"
 hotfix_03="${workspace}/phase6-remediation/phase6-hotfix-03.py"
+hotfix_04="${workspace}/phase6-remediation/phase6-hotfix-04.py"
 
 verify_sha() {
   local file="$1" expected="$2" label="$3" actual
@@ -78,6 +79,9 @@ if grep -Eq 'SalesInvoiceEntity|CustomerReceivableLedgerEntity|insertCreditInvoi
   exit 1
 fi
 
+verify_sha "$hotfix_04" "df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74" "Phase-6 hotfix-04"
+python3 "$hotfix_04" "$root"
+
 require_contains 'APP_DATABASE_SCHEMA_VERSION = 59' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt" 'Room schema version 59'
 require_recursive 'MIGRATION_58_59' "$root/app/src/main/java/ir/restaurant/management/data/db/migration" 'Room 58 to 59 migration'
 require_contains 'actorRoleSnapshot' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt" 'audit actor role snapshot'
@@ -102,3 +106,4 @@ echo PATCH_SHA256=$expected
 echo HOTFIX_01_SHA256=16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52
 echo HOTFIX_02_SHA256=7d2e21fe26a822396371e2a99fdeb480941d08fb1e4a5e776b30e113d542cce6
 echo HOTFIX_03_SHA256=056aa6d451889dfaeec9812ebd479eee194e780efc1c7c8a3afc3f3f1006a8b9
+echo HOTFIX_04_SHA256=df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74
