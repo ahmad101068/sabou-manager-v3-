@@ -36,14 +36,14 @@ test "$actual" = "$expected" || { echo "::error::Phase6 patch digest mismatch $a
 git -C "$workspace" apply --check --directory="$target" "$patch_file"
 git -C "$workspace" apply --directory="$target" "$patch_file"
 
-# Same-SHA CI root-cause hotfix: the Phase-6 route patch referenced a non-existent
-# coarse permission enum. Apply a guarded one-occurrence replacement to the canonical
-# PURCHASES permission; fail closed if source drift changes the expected shape.
-verify_sha "$hotfix_01" "143f4e8ecb859ea0d51423751ecb3bf405295484064e0a3673ce79fb54489847" "Phase-6 hotfix-01"
+# Same-SHA CI root-cause hotfix: the Phase-6 alert route referenced a non-existent
+# AppScreen.PROCUREMENT destination. Apply a guarded one-occurrence replacement to
+# the canonical AppScreen.PURCHASES route and fail closed on source drift.
+verify_sha "$hotfix_01" "16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52" "Phase-6 hotfix-01"
 python3 "$hotfix_01" "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"
-grep -Fq 'Permission.PURCHASES' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"
-if grep -Fq 'Permission.PROCUREMENT' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"; then
-  echo '::error::obsolete Permission.PROCUREMENT remains after hotfix-01'
+grep -Fq 'AppScreen.PURCHASES' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"
+if grep -Fq 'AppScreen.PROCUREMENT' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"; then
+  echo '::error::obsolete AppScreen.PROCUREMENT remains after hotfix-01'
   exit 1
 fi
 
@@ -62,4 +62,4 @@ echo PHASE6_RECONSTRUCTION=PASS
 echo PHASE5_BASELINE_SHA=5465031036dbe4514a93f34ff9208230fb864e38
 echo ROOM_VERSION=59
 echo PATCH_SHA256=$expected
-echo HOTFIX_01_SHA256=143f4e8ecb859ea0d51423751ecb3bf405295484064e0a3673ce79fb54489847
+echo HOTFIX_01_SHA256=16c9ea3919d705d60e101e7ce602d4433387960d517a59cb2c9aa4d54c716d52
