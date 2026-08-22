@@ -5,6 +5,14 @@ target="${1:-phase6-source}"
 root="${workspace}/${target}"
 patch_b64="${workspace}/.phase6-final.patch.xz.b64"
 patch_file="${workspace}/.phase6-final.patch"
+hotfix_01="${workspace}/phase6-remediation/phase6-hotfix-01.py"
+
+verify_sha() {
+  local file="$1" expected="$2" label="$3" actual
+  test -s "$file" || { echo "::error::${label} missing"; return 1; }
+  actual="$(sha256sum "$file" | awk '{print $1}')"
+  test "$actual" = "$expected" || { echo "::error::${label} digest mismatch: $actual"; return 1; }
+}
 
 bash "${workspace}/.github/scripts/reconstruct-phase5-candidate.sh" "$target"
 
@@ -28,6 +36,17 @@ test "$actual" = "$expected" || { echo "::error::Phase6 patch digest mismatch $a
 git -C "$workspace" apply --check --directory="$target" "$patch_file"
 git -C "$workspace" apply --directory="$target" "$patch_file"
 
+# Same-SHA CI root-cause hotfix: the Phase-6 route patch referenced a non-existent
+# coarse permission enum. Apply a guarded one-occurrence replacement to the canonical
+# PURCHASES permission; fail closed if source drift changes the expected shape.
+verify_sha "$hotfix_01" "143f4e8ecb859ea0d51423751ecb3bf405295484064e0a3673ce79fb54489847" "Phase-6 hotfix-01"
+python3 "$hotfix_01" "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"
+grep -Fq 'Permission.PURCHASES' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"
+if grep -Fq 'Permission.PROCUREMENT' "$root/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt"; then
+  echo '::error::obsolete Permission.PROCUREMENT remains after hotfix-01'
+  exit 1
+fi
+
 grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 59' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 grep -Rq 'MIGRATION_58_59' "$root/app/src/main/java/ir/restaurant/management/data/db/migration"
 grep -Fq 'actorRoleSnapshot' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt"
@@ -43,3 +62,4 @@ echo PHASE6_RECONSTRUCTION=PASS
 echo PHASE5_BASELINE_SHA=5465031036dbe4514a93f34ff9208230fb864e38
 echo ROOM_VERSION=59
 echo PATCH_SHA256=$expected
+echo HOTFIX_01_SHA256=143f4e8ecb859ea0d51423751ecb3bf405295484064e0a3673ce79fb54489847
