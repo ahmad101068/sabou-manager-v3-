@@ -99,6 +99,44 @@ jobs:
             cd "$GITHUB_WORKSPACE/phase6-source" &&
             gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
             "-Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.data.db.Migration58To59Test,ir.restaurant.management.data.repository.Phase6SecurityManagementIntegrationTest,ir.restaurant.management.data.repository.Phase6AlertIntegrationTest,ir.restaurant.management.data.repository.AlertReceivableIntegrationTest,ir.restaurant.management.data.repository.AlertStateIntegrationTest,ir.restaurant.management.data.repository.ManagementControlTransactionIntegrationTest,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.repository.StartupSessionBoundaryIntegrationTest,ir.restaurant.management.data.repository.TreasuryV2IntegrationTest,ir.restaurant.management.data.BackupManagerDeleteTest"
+      - name: Verify API35 result integrity
+        run: |
+          set -euo pipefail
+          results="phase6-source/app/build/outputs/androidTest-results/connected"
+          test -d "$results"
+          if grep -R -n 'failed: initializationError' "$results"; then
+            echo '::error::Android instrumentation initializationError detected'
+            exit 1
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path('phase6-source/app/build/outputs/androidTest-results/connected')
+          xmls = list(root.rglob('TEST-*.xml'))
+          if not xmls:
+              raise SystemExit('no connected Android test XML found')
+          total = failures = errors = skipped = 0
+          seen = set()
+          for path in xmls:
+              suite = ET.parse(path).getroot()
+              total += int(suite.attrib.get('tests', 0))
+              failures += int(suite.attrib.get('failures', 0))
+              errors += int(suite.attrib.get('errors', 0))
+              skipped += int(suite.attrib.get('skipped', 0))
+              for case in suite.findall('.//testcase'):
+                  seen.add((case.attrib.get('classname'), case.attrib.get('name')))
+          expected = (
+              'ir.restaurant.management.data.repository.Phase6AlertIntegrationTest',
+              'alertsAreBranchLocationScopedTypedAndSnoozeIsDurable',
+          )
+          if failures or errors or skipped:
+              raise SystemExit(f'API35 result not clean: tests={total} failures={failures} errors={errors} skipped={skipped}')
+          if expected not in seen:
+              raise SystemExit('Phase6AlertIntegrationTest did not execute successfully')
+          if total < 30:
+              raise SystemExit(f'expected at least 30 targeted API35 tests, found {total}')
+          print(f'PHASE6_API35_RESULT_INTEGRITY=PASS tests={total}')
+          PY
       - name: Build Phase-6 report and source handoff
         run: |
           set -euo pipefail
@@ -108,6 +146,15 @@ jobs:
           schema59="phase6-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/59.json"
           schema58_hash="$(sha256sum "$schema58" | awk '{print $1}')"
           schema59_hash="$(sha256sum "$schema59" | awk '{print $1}')"
+          api35_tests="$(python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          total = 0
+          for path in Path('phase6-source/app/build/outputs/androidTest-results/connected').rglob('TEST-*.xml'):
+              total += int(ET.parse(path).getroot().attrib.get('tests', 0))
+          print(total)
+          PY
+          )"
           python3 - <<'PY'
           import os, zipfile
           from pathlib import Path
@@ -145,7 +192,8 @@ jobs:
           - Room 58 baseline: PASS
           - Room 59 schema verification: PASS
           - Targeted JVM: PASS
-          - Targeted API35 migration/integration: PASS
+          - Targeted API35 migration/integration: PASS (${api35_tests} tests)
+          - API35 result integrity / initialization guard: PASS
           - Permission/Audit/Alert/Management regressions: PASS
           - Full heavy suites: DEFERRED TO PHASE 8 BY POLICY
           - Room 58 schema SHA-256: ${schema58_hash}
@@ -157,6 +205,7 @@ jobs:
           - Phase-6 hotfix-04 SHA-256: df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74
           - Phase-6 hotfix-05 SHA-256: ed3fa9c771d1511c1a258a7be23380ecf5bee69e72c77f1185682062bdcff8f3
           - Phase-6 hotfix-06 SHA-256: 8e0b0f2ca054100a993a2689e6e501860b64324f47c8f851316e0057c045d331
+          - Phase-6 hotfix-07 SHA-256: 62b2d149c298ae3edb439c69f15f1f90da86fa012441758e28f56aebb80f14a0
           - Source artifact: ${zip_name}
           - Source artifact SHA-256: ${zip_hash}
           - Known remaining Phase-6 blockers: NONE
@@ -177,12 +226,15 @@ jobs:
           HOTFIX_04_SHA256=df44d303eec00ab769160a9803cf6ff77d3efe13cc98771ed4feb62ea91e7c74
           HOTFIX_05_SHA256=ed3fa9c771d1511c1a258a7be23380ecf5bee69e72c77f1185682062bdcff8f3
           HOTFIX_06_SHA256=8e0b0f2ca054100a993a2689e6e501860b64324f47c8f851316e0057c045d331
+          HOTFIX_07_SHA256=62b2d149c298ae3edb439c69f15f1f90da86fa012441758e28f56aebb80f14a0
           SCHEMA58_SHA256=${schema58_hash}
           SCHEMA59_SHA256=${schema59_hash}
           SOURCE_FILE=${zip_name}
           SOURCE_SHA256=${zip_hash}
           TARGETED_PHASE6=PASS
           API35_MIGRATION_INTEGRATION=PASS
+          API35_RESULT_INTEGRITY=PASS
+          API35_TEST_COUNT=${api35_tests}
           FULL_HEAVY_SUITES=DEFERRED_TO_PHASE8
           EOF
       - name: Upload Phase-6 handoff
