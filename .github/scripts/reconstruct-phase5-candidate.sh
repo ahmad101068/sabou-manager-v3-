@@ -8,8 +8,6 @@ patch1_b64="${workspace}/.phase5-hotfix-01.patch.xz.b64"
 patch1_file="${workspace}/.phase5-hotfix-01.patch"
 patch2_b64="${workspace}/.phase5-hotfix-02.patch.xz.b64"
 patch2_file="${workspace}/.phase5-hotfix-02.patch"
-patch3_b64="${workspace}/.phase5-hotfix-03.patch.xz.b64"
-patch3_file="${workspace}/.phase5-hotfix-03.patch"
 
 verify_sha() {
   local file="$1" expected="$2" label="$3" actual
@@ -45,14 +43,12 @@ verify_sha "$patch2_file" "9087124a7f2ebf9a19f16d648a9aeddb248d5d1c565fb39d74105
 git -C "$workspace" apply --check --directory="$target" "$patch2_file"
 git -C "$workspace" apply --directory="$target" "$patch2_file"
 
-hotfix3_rel="phase5-remediation/phase5-hotfix-03.patch.xz.b64.00"
-verify_sha "${workspace}/${hotfix3_rel}" "48a77a4b401dd90c7fba50feab586730c0272df7215704b3ef5f56674a02aeee" "Phase-5 hotfix-03 encoded chunk"
-cat "${workspace}/${hotfix3_rel}" > "$patch3_b64"
-verify_sha "$patch3_b64" "48a77a4b401dd90c7fba50feab586730c0272df7215704b3ef5f56674a02aeee" "Phase-5 hotfix-03 encoded stream"
-base64 --decode "$patch3_b64" | xz --decompress > "$patch3_file"
-verify_sha "$patch3_file" "9e7e7702c14440ce24e46f60b45a367faf961204eb19ba2cfea83f8ad9c9936c" "Phase-5 hotfix-03 decoded patch"
-git -C "$workspace" apply --check --directory="$target" "$patch3_file"
-git -C "$workspace" apply --directory="$target" "$patch3_file"
+hotfix3_script="${workspace}/phase5-remediation/phase5-hotfix-03.py"
+verify_sha "$hotfix3_script" "492a6d3b316df3d2bf082e4ffdaa9cb599198bc524d24c6e635d96ac0adb54c4" "Phase-5 hotfix-03 transform"
+if ! python3 "$hotfix3_script" "$root"; then
+  echo '::error::Phase-5 hotfix-03 failed' >&2
+  exit 1
+fi
 
 migration_test="$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt"
 asset_test="$root/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt"
@@ -109,4 +105,4 @@ echo 'SCHEMA_CHANGED=YES'
 echo 'MIGRATION_ADDED=YES'
 echo 'HOTFIX_01_SHA256=f4427011155fc4a55a3ef40572a34179f215efc4010d2d521ccdf4b747c90edc'
 echo 'HOTFIX_02_SHA256=9087124a7f2ebf9a19f16d648a9aeddb248d5d1c565fb39d74105897d08d33ff'
-echo 'HOTFIX_03_SHA256=9e7e7702c14440ce24e46f60b45a367faf961204eb19ba2cfea83f8ad9c9936c'
+echo 'HOTFIX_03_SHA256=492a6d3b316df3d2bf082e4ffdaa9cb599198bc524d24c6e635d96ac0adb54c4'
