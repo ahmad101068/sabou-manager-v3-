@@ -1,0 +1,27 @@
+name: Phase 6 Alert API Diagnostic
+
+on:
+  push:
+    branches: [remediation/phase6-security-audit-management-20260822]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-alert-api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Reconstruct exact Phase-6 source
+        run: bash .github/scripts/reconstruct-phase6-candidate.sh phase6-source
+      - name: Print exact alert API contract
+        run: |
+          set -euo pipefail
+          root=phase6-source/app/src/main/java/ir/restaurant/management
+          echo '=== LOCAL_ALERT_REPOSITORY ==='
+          sed -n '1,230p' "$root/data/repository/LocalAlertRepository.kt"
+          echo '=== ALERT MODEL SEARCH ==='
+          grep -R -n -E 'data class .*Alert|class .*Alert|enum class .*Alert|Drill|drill|destination|Destination|route|Route|intent|Intent' "$root/domain" "$root/data" "$root/ui" | head -n 250 || true
+          echo '=== ALERT MODEL FILE CANDIDATES ==='
+          find "$root" -type f -name '*Alert*.kt' -print | sort
