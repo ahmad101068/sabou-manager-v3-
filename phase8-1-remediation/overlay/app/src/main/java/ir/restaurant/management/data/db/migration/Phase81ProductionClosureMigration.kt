@@ -1,4 +1,4 @@
-package ir.restaurant.management.data.db.migration
+package ir.restaurant.management.data.db
 
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
