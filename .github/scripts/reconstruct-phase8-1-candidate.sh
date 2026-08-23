@@ -15,6 +15,7 @@ expected_followup_sha="3fba390239ed0206278e053a1cc79fabf429cf98f01527f051569ab7a
 expected_followup2_sha="e9f97f7b34f1e96708a2a0830a7e239b7347f1e69fb43e1d5b6ef752a7f51e45"
 expected_followup3_sha="1ad5d32997c25d06bd56bc4f4c7fac9ac5ff90821e4d8c357f8e33c169528127"
 expected_schema59_sha="c23b7d1f794cdb6febc643fa79ddf4f68222eb6fe3ba42622bbbd36599a14e00"
+expected_schema59_b64_sha="6148cc2a64e3d51c483dde5cfcdb3576f2341d328736d7d0ef3741ff38da55f2"
 
 verify_copy() {
   local rel="$1"
@@ -64,8 +65,19 @@ verify_git_blob_copy 'app/src/androidTest/java/ir/restaurant/management/data/db/
 
 schema_dir="${root}/app/schemas/ir.restaurant.management.data.db.AppDatabase"
 mkdir -p "$schema_dir"
-test -s "${schema_history}/59.json.gz.b64" || { echo '::error::missing canonical Room 59 schema payload'; exit 1; }
-base64 --decode "${schema_history}/59.json.gz.b64" | gzip -dc > "${schema_dir}/59.json"
+schema59_b64="${workspace}/phase8-1-schema59.b64"
+: > "$schema59_b64"
+for i in 00 01 02 03 04 05; do
+  part="${schema_history}/59.json.gz.b64.part${i}"
+  test -s "$part" || { echo "::error::missing canonical Room 59 schema chunk ${i}"; exit 1; }
+  cat "$part" >> "$schema59_b64"
+done
+actual_schema59_b64_sha="$(sha256sum "$schema59_b64" | awk '{print $1}')"
+test "$actual_schema59_b64_sha" = "$expected_schema59_b64_sha" || {
+  echo "::error::canonical Room 59 base64 payload digest mismatch: $actual_schema59_b64_sha"
+  exit 1
+}
+base64 --decode "$schema59_b64" | gzip -dc > "${schema_dir}/59.json"
 actual_schema59_sha="$(sha256sum "${schema_dir}/59.json" | awk '{print $1}')"
 test "$actual_schema59_sha" = "$expected_schema59_sha" || {
   echo "::error::canonical Room 59 schema digest mismatch: $actual_schema59_sha"
@@ -128,6 +140,7 @@ if grep -R -nE 'MAX\(revisionNo\)|MAX\(integritySequence\)[[:space:]]*\+[[:space
 fi
 
 echo PHASE8_1_OVERLAY_FILES=7
+echo PHASE8_1_SCHEMA59_B64_SHA256=$actual_schema59_b64_sha
 echo PHASE8_1_SCHEMA59_SHA256=$actual_schema59_sha
 echo PHASE8_1_FOLLOWUP_SHA256=$actual_followup_sha
 echo PHASE8_1_FOLLOWUP2_SHA256=$actual_followup2_sha
