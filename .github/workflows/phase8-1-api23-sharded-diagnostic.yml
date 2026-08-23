@@ -2,6 +2,8 @@ name: Phase 8.1 API23 Sharded Diagnostic
 on:
   push:
     branches: [diagnostic/phase8-1-api23-shards]
+  pull_request:
+    branches: [remediation/phase8-1-final-production-closure]
 permissions:
   contents: read
   actions: read
