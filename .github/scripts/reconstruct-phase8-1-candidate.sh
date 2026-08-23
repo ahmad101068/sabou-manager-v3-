@@ -5,7 +5,17 @@ target="${1:-phase8-1-source}"
 root="${workspace}/${target}"
 base_phase8_sha="38b2b13883bcb806796c9de41ac8914a8974b016"
 hotfix="${workspace}/phase8-1-remediation/phase8-1-hotfix-chunked.py"
+overlay="${workspace}/phase8-1-remediation/overlay"
 expected_patch_sha="865b2d29bad1ee39b116fd6e1e201cd40663f4e7aaa4254af664e255400284f4"
+
+verify_copy() {
+  local rel="$1" expected="$2" source="${overlay}/${rel}" destination="${root}/${rel}" actual
+  test -s "$source" || { echo "::error::missing Phase8.1 overlay $rel"; exit 1; }
+  actual="$(sha256sum "$source" | awk '{print $1}')"
+  test "$actual" = "$expected" || { echo "::error::Phase8.1 overlay digest mismatch $rel: $actual"; exit 1; }
+  mkdir -p "$(dirname "$destination")"
+  cp "$source" "$destination"
+}
 
 bash "${workspace}/.github/scripts/reconstruct-phase8-candidate.sh" "$target"
 test -s "$hotfix"
@@ -18,6 +28,13 @@ done
 python3 "$hotfix" "$root" | tee "${workspace}/phase8-1-patch-apply.log"
 grep -Fq "PHASE8_1_PATCH_SHA256=${expected_patch_sha}" "${workspace}/phase8-1-patch-apply.log"
 grep -Fq 'PHASE8_1_PATCH_APPLIED=PASS' "${workspace}/phase8-1-patch-apply.log"
+
+verify_copy 'app/src/main/java/ir/restaurant/management/core/BusinessCalendar.kt' '28c0d302cf768a562378666233c5a06a2fe27bcc14e90cdf68e10e13fa0b9321'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/repository/OperationalAlertWriter.kt' 'bbb79c23061bb6c036fe4cc87ac39431cbcae6704b5ad7382bb35a8104e04288'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/repository/AuditIntegrityVerifier.kt' '12b4b12d83ad47ad415daa66eabf000fd692bae87f0e02d99c7074d6eda40195'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt' 'ab5721f4a70ba57b844e0fcddb0aad688395d8203b992b2b413f73223431878c'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/security/AuditIntegrity.kt' 'e56b8cec658934b15d99cfacdc06b8004afeddbdb860f3c79bd982a643f037cc'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/security/ForensicIntegrityLedger.kt' '4c5360fe7f540e1660d94c0f9584644e790c4d0c55740df6d73b194735348ccc'
 
 grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 grep -Fq 'MIGRATION_59_60' "$root/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt"
@@ -34,6 +51,7 @@ if grep -R -nE '@Ignore|@Disabled' "$root/app/src"; then
   exit 1
 fi
 
+echo PHASE8_1_OVERLAY_FILES=6
 echo PHASE8_1_RECONSTRUCTION=PASS
 echo BASE_PHASE8_SHA=$base_phase8_sha
 echo ROOM_VERSION=60
