@@ -1,0 +1,299 @@
+name: Phase 8.1 Final Production Verification
+
+on:
+  push:
+    branches: [remediation/phase8-1-final-production-closure]
+  pull_request:
+    branches: [remediation/phase8-final-verification-20260823]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase8-1-final-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase8-1-final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    env:
+      PHASE8_BASELINE_SHA: 38b2b13883bcb806796c9de41ac8914a8974b016
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+      MATRIX_CLASSES: ir.restaurant.management.data.db.FullMigration1ToCurrentTest,ir.restaurant.management.data.db.Migration59To60Test,ir.restaurant.management.ui.EnterpriseCoreComposeE2ETest,ir.restaurant.management.data.repository.Phase2CorrectionIntegrationTest,ir.restaurant.management.data.repository.DailySalesReversalIntegrationTest,ir.restaurant.management.data.repository.BranchPurchasePostingIntegrationTest,ir.restaurant.management.data.repository.BranchPayrollPostingIntegrationTest,ir.restaurant.management.data.repository.AssetLifecycleIntegrationTest,ir.restaurant.management.data.repository.ManagementControlTransactionIntegrationTest,ir.restaurant.management.data.repository.RecipeVersionIntegrationTest,ir.restaurant.management.data.repository.RecipeLifecycleIntegrationTest,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.repository.TreasuryV2IntegrationTest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+
+      - name: Reconstruct exact Phase 8.1 candidate
+        run: bash .github/scripts/reconstruct-phase8-1-candidate.sh phase8-1-source
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+
+      - name: Compile production and instrumentation source
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+
+      - name: Verify Room 60 schema and migration registration
+        working-directory: phase8-1-source
+        run: |
+          set -euo pipefail
+          schema_dir='app/schemas/ir.restaurant.management.data.db.AppDatabase'
+          test -s "${schema_dir}/1.json"
+          test -s "${schema_dir}/59.json"
+          test -s "${schema_dir}/60.json"
+          test "$(sha256sum "${schema_dir}/59.json" | awk '{print $1}')" = 'c23b7d1f794cdb6febc643fa79ddf4f68222eb6fe3ba42622bbbd36599a14e00'
+          python3 scripts/verify-room-schema.py
+          grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          grep -Fq 'MIGRATION_59_60' app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
+          grep -Fq 'ALL_MIGRATIONS' app/src/androidTest/java/ir/restaurant/management/data/db/FullMigration1ToCurrentTest.kt
+          grep -Fq 'Migration59To60Test' app/src/androidTest/java/ir/restaurant/management/data/db/Migration59To60Test.kt
+          if grep -R -n 'fallbackToDestructiveMigration' app/src/main/java; then exit 1; fi
+          if grep -R -nE '@Ignore|@Disabled' app/src; then exit 1; fi
+
+      - name: Full JVM regression suite
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest
+
+      - name: Performance contract
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest --tests 'ir.restaurant.management.ui.Part3BPerformanceContractTest'
+
+      - name: Lint debug
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:lintDebug
+
+      - name: Assemble debug release and androidTest
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:assembleDebug :app:assembleRelease :app:assembleDebugAndroidTest
+
+      - name: Verify APK 16KB ZIP alignment
+        working-directory: phase8-1-source
+        run: |
+          set -euo pipefail
+          zipalign="$(find "${ANDROID_HOME}/build-tools" -type f -name zipalign | sort -V | tail -1)"
+          test -x "$zipalign"
+          debug_apk='app/build/outputs/apk/debug/app-debug.apk'
+          test -s "$debug_apk"
+          "$zipalign" -c -P 16 -v 4 "$debug_apk"
+          release_apk="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -1)"
+          test -n "$release_apk"
+          test -s "$release_apk"
+          "$zipalign" -c -P 16 -v 4 "$release_apk"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: API23 critical full-flow and migration matrix
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 23
+          arch: x86_64
+          target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: >-
+            cd "$GITHUB_WORKSPACE/phase8-1-source" &&
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            "-Pandroid.testInstrumentationRunnerArguments.class=${MATRIX_CLASSES}"
+
+      - name: Preserve and verify API23 results
+        run: |
+          set -euo pipefail
+          mkdir -p phase8-1-results/api23
+          cp -R phase8-1-source/app/build/outputs/androidTest-results/connected/. phase8-1-results/api23/
+          python3 .github/scripts/verify-phase8-matrix-results.py phase8-1-results/api23 API23
+
+      - name: API35 critical full-flow and migration matrix
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: >-
+            cd "$GITHUB_WORKSPACE/phase8-1-source" &&
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            "-Pandroid.testInstrumentationRunnerArguments.class=${MATRIX_CLASSES}"
+
+      - name: Preserve and verify API35 results
+        run: |
+          set -euo pipefail
+          mkdir -p phase8-1-results/api35
+          cp -R phase8-1-source/app/build/outputs/androidTest-results/connected/. phase8-1-results/api35/
+          python3 .github/scripts/verify-phase8-matrix-results.py phase8-1-results/api35 API35
+
+      - name: Android 15 API35 16KB page-size full-flow matrix
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis_ps16k
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: >-
+            mkdir -p "$GITHUB_WORKSPACE/phase8-1-results" &&
+            page_size="$(adb shell getconf PAGE_SIZE | tr -d '\r')" &&
+            echo "$page_size" | tee "$GITHUB_WORKSPACE/phase8-1-results/api35-16k-page-size.txt" &&
+            test "$page_size" = '16384' &&
+            cd "$GITHUB_WORKSPACE/phase8-1-source" &&
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            "-Pandroid.testInstrumentationRunnerArguments.class=${MATRIX_CLASSES}"
+
+      - name: Preserve and verify Android 15 16KB results
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < phase8-1-results/api35-16k-page-size.txt)" = '16384'
+          mkdir -p phase8-1-results/api35-16k
+          cp -R phase8-1-source/app/build/outputs/androidTest-results/connected/. phase8-1-results/api35-16k/
+          python3 .github/scripts/verify-phase8-matrix-results.py phase8-1-results/api35-16k API35_16K
+
+      - name: Build Phase 8.1 formal production handoff
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_SHA:0:7}"
+          zip_name="restaurant-management-phase8-1-final-source-${short_sha}.zip"
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          root=Path(os.environ['GITHUB_WORKSPACE'])/'phase8-1-source'
+          out=Path(os.environ['GITHUB_WORKSPACE'])/f"restaurant-management-phase8-1-final-source-{os.environ['SOURCE_SHA'][:7]}.zip"
+          excluded={'.git','.gradle','build'}
+          with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as z:
+              for p in sorted(root.rglob('*')):
+                  if not p.is_file():
+                      continue
+                  rel=p.relative_to(root)
+                  if any(x in excluded for x in rel.parts):
+                      continue
+                  if p.name=='local.properties' or p.suffix.lower() in {'.apk','.aab','.jks','.keystore'}:
+                      continue
+                  z.write(p,rel.as_posix())
+          PY
+          unzip -t "$zip_name" >/dev/null
+          src_hash="$(sha256sum "$zip_name" | awk '{print $1}')"
+          src_count="$(unzip -Z1 "$zip_name" | wc -l)"
+          schema59_hash="$(sha256sum phase8-1-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/59.json | awk '{print $1}')"
+          schema60_hash="$(sha256sum phase8-1-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/60.json | awk '{print $1}')"
+          api23_count="$(python3 .github/scripts/count-phase8-tests.py phase8-1-results/api23)"
+          api35_count="$(python3 .github/scripts/count-phase8-tests.py phase8-1-results/api35)"
+          api35_16k_count="$(python3 .github/scripts/count-phase8-tests.py phase8-1-results/api35-16k)"
+          cat > PHASE-8.1-REPORT.md <<EOF2
+          # PHASE 8.1 — FINAL PRODUCTION CLOSURE REPORT
+          - Phase-8 verified baseline SHA: ${PHASE8_BASELINE_SHA}
+          - Phase-8.1 final verified source SHA: ${SOURCE_SHA}
+          - Branch: ${SOURCE_BRANCH}
+          - Reconstruction hash guards: PASS
+          - Compile production + AndroidTest: PASS
+          - Full JVM regression suite: PASS
+          - Performance contract: PASS
+          - Lint debug: PASS
+          - Debug build: PASS
+          - Release build: PASS
+          - AndroidTest build: PASS
+          - APK 16KB ZIP alignment: PASS
+          - Room schema target: 60
+          - Canonical Room 59 schema SHA-256: ${schema59_hash}
+          - Generated Room 60 schema SHA-256: ${schema60_hash}
+          - Migration 59 -> 60 real database validation: PASS
+          - Full Room 1 -> 60 migration: PASS on API23, API35 and API35-16KB
+          - API23 critical full-flow matrix: PASS (${api23_count} tests)
+          - API35 critical full-flow matrix: PASS (${api35_count} tests)
+          - Android 15 API35 16KB matrix: PASS (${api35_16k_count} tests)
+          - Android 15 runtime PAGE_SIZE: 16384
+          - Purchase -> GL: PASS
+          - Sale -> COGS -> GL: PASS
+          - Attendance -> Payroll -> GL: PASS
+          - Asset -> Depreciation -> GL: PASS
+          - Reversal controls: PASS
+          - Period close transaction/audit: PASS
+          - Historical recipe selection and COGS snapshot integrity: PASS
+          - Permission/Treasury regressions: PASS
+          - Tamper-evident audit migration/backfill: PASS
+          - Optimistic concurrency migration state: PASS
+          - Destructive migration fallback: NONE
+          - Ignored/disabled tests: NONE
+          - Final source ZIP: ${zip_name}
+          - Final source ZIP SHA-256: ${src_hash}
+          - Final source file count: ${src_count}
+          - Known remaining production blockers: NONE
+          - Final status: PRODUCTION_READY_VERIFIED
+          EOF2
+          cat > PHASE-8.1-EVIDENCE.txt <<EOF2
+          PHASE8_BASELINE_SHA=${PHASE8_BASELINE_SHA}
+          VERIFIED_SOURCE_SHA=${SOURCE_SHA}
+          HEAD_SHA=${SOURCE_SHA}
+          BRANCH=${SOURCE_BRANCH}
+          ROOM_VERSION=60
+          DB_SCHEMA_CHANGED=YES
+          MIGRATION_59_60=PASS
+          FULL_JVM=PASS
+          PERFORMANCE_CONTRACT=PASS
+          LINT_DEBUG=PASS
+          ASSEMBLE_DEBUG=PASS
+          ASSEMBLE_RELEASE=PASS
+          ASSEMBLE_ANDROID_TEST=PASS
+          APK_16KB_ZIPALIGN=PASS
+          FULL_MIGRATION_1_TO_60_API23=PASS
+          FULL_MIGRATION_1_TO_60_API35=PASS
+          FULL_MIGRATION_1_TO_60_API35_16K=PASS
+          API23_MATRIX=PASS
+          API35_MATRIX=PASS
+          API35_16K_MATRIX=PASS
+          API23_TEST_COUNT=${api23_count}
+          API35_TEST_COUNT=${api35_count}
+          API35_16K_TEST_COUNT=${api35_16k_count}
+          ANDROID15_PAGE_SIZE=16384
+          ROOM59_SHA256=${schema59_hash}
+          ROOM60_SHA256=${schema60_hash}
+          PURCHASE_TO_GL=PASS
+          SALE_TO_COGS_TO_GL=PASS
+          ATTENDANCE_TO_PAYROLL_TO_GL=PASS
+          ASSET_TO_DEPRECIATION_TO_GL=PASS
+          REVERSAL=PASS
+          PERIOD_CLOSE=PASS
+          HISTORICAL_RECIPE_COGS=PASS
+          TAMPER_EVIDENT_AUDIT=PASS
+          OPTIMISTIC_CONCURRENCY=PASS
+          DESTRUCTIVE_MIGRATION_FALLBACK=NONE
+          IGNORED_DISABLED_TESTS=NONE
+          SOURCE_FILE=${zip_name}
+          SOURCE_SHA256=${src_hash}
+          SOURCE_FILE_COUNT=${src_count}
+          FORMAL_PHASE8_1_STATUS=PRODUCTION_READY_VERIFIED
+          EOF2
+
+      - name: Upload Phase 8.1 final handoff
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase8-1-final-${{ env.SOURCE_SHA }}
+          path: |
+            PHASE-8.1-REPORT.md
+            PHASE-8.1-EVIDENCE.txt
+            restaurant-management-phase8-1-final-source-*.zip
+            phase8-1-results/
+            phase8-1-source/app/build/reports/tests/testDebugUnitTest/
+            phase8-1-source/app/build/test-results/testDebugUnitTest/
+            phase8-1-source/app/build/reports/lint-results-debug.html
+          if-no-files-found: warn
+          retention-days: 90
