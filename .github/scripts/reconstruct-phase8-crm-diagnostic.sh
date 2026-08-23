@@ -2,14 +2,28 @@
 set -euo pipefail
 workspace="${GITHUB_WORKSPACE:-$(pwd)}"
 target="${1:-phase8-source}"
-hotfix="${workspace}/phase8-remediation/phase8-hotfix-05.py"
-expected="53e20c842bdea38b78029f54848c075057a1f70e94b060548bce791ee7e4f843"
+root="${workspace}/${target}"
 
+# The focused diagnostic must exercise the exact same hash-pinned Phase-8
+# candidate as final verification. Do not layer a second, diagnostic-only
+# source mutation on top of the release candidate.
 bash "${workspace}/.github/scripts/reconstruct-phase8-candidate.sh" "$target"
-test -s "$hotfix"
-actual="$(sha256sum "$hotfix" | awk '{print $1}')"
-test "$actual" = "$expected" || { echo "::error::Phase8 CRM diagnostic hotfix digest mismatch: $actual"; exit 1; }
-python3 "$hotfix" "${workspace}/${target}"
-grep -Fq 'PHASE8_CRM_COLLECTION_UI_ERROR' "${workspace}/${target}/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt"
-grep -Fq 'crm_command_error' "${workspace}/${target}/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt"
+
+e2e="$root/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt"
+crm="$root/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt"
+
+test -s "$e2e"
+test -s "$crm"
+grep -Fq 'fun crmCollection_viaCrmUi_updatesReceivableLedgerAndAgingBalance()' "$e2e"
+grep -Fq 'listTestTag = "receivables_open_list"' "$crm"
+grep -Fq 'rowTestTag = { "receivable_select_${it.id}" }' "$crm"
+grep -Fq 'scrollTo("receivables_open_list", "receivable_select_$receivableId")' "$e2e"
+grep -Fq 'composeRule.onNodeWithTag("receivable_select_$receivableId").performClick()' "$e2e"
+grep -Fq 'receivable_collection_confirm").assertIsEnabled()' "$e2e"
+grep -Fq 'entryType == "COLLECTION"' "$e2e"
+if grep -Fq 'composeRule.onAllNodesWithText(customerName)[0].performClick()' "$e2e"; then
+  echo '::error::stale viewport-dependent CRM click remains in diagnostic candidate'
+  exit 1
+fi
+
 echo PHASE8_CRM_DIAGNOSTIC_RECONSTRUCTION=PASS
