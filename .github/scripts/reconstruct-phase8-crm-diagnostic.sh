@@ -3,7 +3,7 @@ set -euo pipefail
 workspace="${GITHUB_WORKSPACE:-$(pwd)}"
 target="${1:-phase8-source}"
 hotfix="${workspace}/phase8-remediation/phase8-hotfix-05.py"
-expected="6343104427312e1d5bcc8d8626cc4a0a87a6fbae6b6cdffd49ca7bb33e66fc9a"
+expected="53e20c842bdea38b78029f54848c075057a1f70e94b060548bce791ee7e4f843"
 
 bash "${workspace}/.github/scripts/reconstruct-phase8-candidate.sh" "$target"
 test -s "$hotfix"
