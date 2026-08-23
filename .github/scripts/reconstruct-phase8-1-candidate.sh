@@ -8,7 +8,7 @@ hotfix="${workspace}/phase8-1-remediation/phase8-1-hotfix-chunked.py"
 overlay="${workspace}/phase8-1-remediation/overlay"
 followup="${workspace}/phase8-1-remediation/followup/phase8-1-followup-01.patch"
 expected_patch_sha="865b2d29bad1ee39b116fd6e1e201cd40663f4e7aaa4254af664e255400284f4"
-expected_followup_sha="46f7375ff1809a52e276cdde4234fbf05f3c73aeacae35e8aed8b0a1e3041254"
+expected_followup_sha="3fba390239ed0206278e053a1cc79fabf429cf98f01527f051569ab7adfad283"
 
 verify_copy() {
   local rel="$1"
