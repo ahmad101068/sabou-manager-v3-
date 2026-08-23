@@ -1,0 +1,70 @@
+name: Phase 8 CRM API23 Diagnostic
+
+on:
+  push:
+    branches: [remediation/phase8-final-verification-20260823]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase8-crm-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  crm-api23:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: ${{ github.sha }}
+      CRM_TEST: ir.restaurant.management.ui.EnterpriseCoreComposeE2ETest#crmCollection_viaCrmUi_updatesReceivableLedgerAndAgingBalance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Reconstruct diagnostic candidate
+        run: bash .github/scripts/reconstruct-phase8-crm-diagnostic.sh phase8-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Compile CRM diagnostic source
+        working-directory: phase8-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run focused CRM collection on API23
+        id: crm
+        continue-on-error: true
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 23
+          arch: x86_64
+          target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: cd "$GITHUB_WORKSPACE/phase8-source" && gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=${CRM_TEST}"
+      - name: Surface CRM diagnostic XML
+        if: always()
+        run: |
+          set +e
+          find phase8-source/app/build/outputs/androidTest-results -type f -name '*.xml' -print -exec cat {} \;
+      - name: Upload CRM diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase8-crm-api23-diagnostic-${{ env.SOURCE_SHA }}
+          path: |
+            phase8-source/app/build/outputs/androidTest-results/
+            phase8-source/app/build/reports/androidTests/
+          if-no-files-found: warn
+      - name: Enforce focused CRM result
+        if: always()
+        run: test '${{ steps.crm.outcome }}' = 'success'
