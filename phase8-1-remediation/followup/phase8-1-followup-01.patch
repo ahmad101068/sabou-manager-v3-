@@ -22,7 +22,8 @@
 --- a/app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt
 +++ b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt
 @@ -53,8 +53,12 @@
-         // One-time historical bootstrap only. Runtime allocation is CAS-based and never queries MAX(revisionNo).
+-        // One-time historical bootstrap only. Runtime allocation is CAS-based and never queries MAX(revisionNo).
++        // One-time historical bootstrap only. Runtime allocation is CAS-based and never uses aggregate numbering.
          db.execSQL("""
              INSERT OR IGNORE INTO document_sequences(sequenceKey,nextValue,updatedAtEpochMillis)
 -            SELECT 'SALES_CASH_REVISION:' || businessEpochDay, MAX(revisionNo)+1, 0
