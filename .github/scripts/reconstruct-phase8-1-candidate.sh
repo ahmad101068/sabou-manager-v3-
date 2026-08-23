@@ -6,7 +6,9 @@ root="${workspace}/${target}"
 base_phase8_sha="38b2b13883bcb806796c9de41ac8914a8974b016"
 hotfix="${workspace}/phase8-1-remediation/phase8-1-hotfix-chunked.py"
 overlay="${workspace}/phase8-1-remediation/overlay"
+followup="${workspace}/phase8-1-remediation/followup/phase8-1-followup-01.patch"
 expected_patch_sha="865b2d29bad1ee39b116fd6e1e201cd40663f4e7aaa4254af664e255400284f4"
+expected_followup_sha="46f7375ff1809a52e276cdde4234fbf05f3c73aeacae35e8aed8b0a1e3041254"
 
 verify_copy() {
   local rel="$1"
@@ -40,6 +42,15 @@ verify_copy 'app/src/main/java/ir/restaurant/management/data/db/migration/Phase8
 verify_copy 'app/src/main/java/ir/restaurant/management/data/security/AuditIntegrity.kt' 'e56b8cec658934b15d99cfacdc06b8004afeddbdb860f3c79bd982a643f037cc'
 verify_copy 'app/src/main/java/ir/restaurant/management/data/security/ForensicIntegrityLedger.kt' '4c5360fe7f540e1660d94c0f9584644e790c4d0c55740df6d73b194735348ccc'
 
+test -s "$followup"
+actual_followup_sha="$(sha256sum "$followup" | awk '{print $1}')"
+test "$actual_followup_sha" = "$expected_followup_sha" || {
+  echo "::error::Phase8.1 followup digest mismatch: $actual_followup_sha"
+  exit 1
+}
+patch --dry-run --batch --forward -p1 -d "$root" -i "$followup"
+patch --batch --forward -p1 -d "$root" -i "$followup"
+
 grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 grep -Fq 'MIGRATION_59_60' "$root/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt"
 grep -Fq 'integritySequence' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt"
@@ -54,8 +65,13 @@ if grep -R -nE '@Ignore|@Disabled' "$root/app/src"; then
   echo '::error::ignored/disabled test found in Phase8.1 candidate'
   exit 1
 fi
+if grep -R -nE 'MAX\(revisionNo\)|MAX\(integritySequence\)[[:space:]]*\+[[:space:]]*1' "$root/app/src/main/java"; then
+  echo '::error::sensitive MAX()+1 allocation remains'
+  exit 1
+fi
 
 echo PHASE8_1_OVERLAY_FILES=6
+echo PHASE8_1_FOLLOWUP_SHA256=$actual_followup_sha
 echo PHASE8_1_RECONSTRUCTION=PASS
 echo BASE_PHASE8_SHA=$base_phase8_sha
 echo ROOM_VERSION=60
