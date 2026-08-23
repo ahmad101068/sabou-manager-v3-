@@ -6,30 +6,52 @@ crm = root / 'app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt'
 e2e = root / 'app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt'
 
 text = crm.read_text()
-old = '        state.message?.let { message -> item { MessageCard(message, state.isError) } }\n'
-new = '''        state.message?.let { message ->\n            item {\n                Column(Modifier.testTag(if (state.isError) "crm_command_error" else "crm_command_message")) {\n                    MessageCard(message, state.isError)\n                }\n            }\n        }\n'''
+old = '''                    emptyMessage = "مطالبه بازی برای این شعبه وجود ندارد.",
+                    onRowClick = { collectingReceivable = it },
+'''
+new = '''                    emptyMessage = "مطالبه بازی برای این شعبه وجود ندارد.",
+                    listTestTag = "receivables_open_list",
+                    rowTestTag = { "receivable_select_${it.id}" },
+                    onRowClick = { collectingReceivable = it },
+'''
 if old in text:
     text = text.replace(old, new, 1)
-elif 'crm_command_error' not in text:
-    raise SystemExit('CRM command message anchor missing')
+elif 'listTestTag = "receivables_open_list"' not in text or 'rowTestTag = { "receivable_select_${it.id}" }' not in text:
+    raise SystemExit('open receivables list anchor missing')
 crm.write_text(text)
 
 text = e2e.read_text()
-old = '''        composeRule.waitUntil(timeoutMillis = 10_000) {\n            runBlocking {\n                app.container.crmUseCases.ledger(customerId).first().any {\n                    it.entryType == "COLLECTION" && it.creditRial == receiptAmount\n                }\n            }\n        }\n'''
-new = '''        composeRule.waitUntil(timeoutMillis = 15_000) {\n            runBlocking {\n                app.container.crmUseCases.ledger(customerId).first().any {\n                    it.entryType == "COLLECTION" && it.creditRial == receiptAmount\n                }\n            } || composeRule.onAllNodesWithTag("crm_command_error").fetchSemanticsNodes().isNotEmpty()\n        }\n        composeRule.onAllNodesWithTag("crm_command_error").fetchSemanticsNodes().firstOrNull()?.let { node ->\n            error("PHASE8_CRM_COLLECTION_UI_ERROR:${node.config}")\n        }\n'''
+old = '''        composeRule.waitUntil(timeoutMillis = 10_000) {
+            runBlocking { app.container.receivableService.observeOpen(branchId).first().any { it.id == receivableId } } &&
+                composeRule.onAllNodesWithText(customerName).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onAllNodesWithText(customerName)[0].performClick()
+'''
+new = '''        composeRule.waitUntil(timeoutMillis = 10_000) {
+            runBlocking { app.container.receivableService.observeOpen(branchId).first().any { it.id == receivableId } }
+        }
+        scrollTo("crm_list", "receivables_open_list")
+        scrollTo("receivables_open_list", "receivable_select_$receivableId")
+        composeRule.onNodeWithTag("receivable_select_$receivableId").performClick()
+'''
 if old in text:
     text = text.replace(old, new, 1)
-elif 'PHASE8_CRM_COLLECTION_UI_ERROR' not in text:
-    raise SystemExit('CRM post-collection wait anchor missing')
+elif 'scrollTo("receivables_open_list", "receivable_select_$receivableId")' not in text:
+    raise SystemExit('CRM receivable viewport wait anchor missing')
 e2e.write_text(text)
 
-checks = [
-    (crm, 'crm_command_error'),
-    (crm, 'crm_command_message'),
-    (e2e, 'PHASE8_CRM_COLLECTION_UI_ERROR'),
-    (e2e, 'timeoutMillis = 15_000'),
-]
-for path, needle in checks:
-    if needle not in path.read_text():
-        raise SystemExit(f'missing diagnostic invariant {needle}')
-print('PHASE8_HOTFIX_05_CRM_ERROR_OBSERVABILITY=PASS')
+final_crm = crm.read_text()
+final_e2e = e2e.read_text()
+checks = (
+    (final_crm, 'listTestTag = "receivables_open_list"'),
+    (final_crm, 'rowTestTag = { "receivable_select_${it.id}" }'),
+    (final_e2e, 'scrollTo("crm_list", "receivables_open_list")'),
+    (final_e2e, 'scrollTo("receivables_open_list", "receivable_select_$receivableId")'),
+    (final_e2e, 'composeRule.onNodeWithTag("receivable_select_$receivableId").performClick()'),
+)
+for text, needle in checks:
+    if needle not in text:
+        raise SystemExit(f'missing Phase8 CRM lazy-list invariant: {needle}')
+if 'composeRule.onAllNodesWithText(customerName)[0].performClick()' in final_e2e:
+    raise SystemExit('stale viewport-dependent CRM click remains')
+print('PHASE8_HOTFIX_05_CRM_LAZY_LIST_NAVIGATION=PASS')
