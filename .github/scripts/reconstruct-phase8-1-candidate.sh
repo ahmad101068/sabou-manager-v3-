@@ -9,7 +9,11 @@ overlay="${workspace}/phase8-1-remediation/overlay"
 expected_patch_sha="865b2d29bad1ee39b116fd6e1e201cd40663f4e7aaa4254af664e255400284f4"
 
 verify_copy() {
-  local rel="$1" expected="$2" source="${overlay}/${rel}" destination="${root}/${rel}" actual
+  local rel="$1"
+  local expected="$2"
+  local source="${overlay}/${rel}"
+  local destination="${root}/${rel}"
+  local actual
   test -s "$source" || { echo "::error::missing Phase8.1 overlay $rel"; exit 1; }
   actual="$(sha256sum "$source" | awk '{print $1}')"
   test "$actual" = "$expected" || { echo "::error::Phase8.1 overlay digest mismatch $rel: $actual"; exit 1; }
