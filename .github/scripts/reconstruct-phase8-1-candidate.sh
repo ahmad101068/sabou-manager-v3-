@@ -7,8 +7,10 @@ base_phase8_sha="38b2b13883bcb806796c9de41ac8914a8974b016"
 hotfix="${workspace}/phase8-1-remediation/phase8-1-hotfix-chunked.py"
 overlay="${workspace}/phase8-1-remediation/overlay"
 followup="${workspace}/phase8-1-remediation/followup/phase8-1-followup-01.patch"
+followup2="${workspace}/phase8-1-remediation/followup/phase8-1-followup-02.py"
 expected_patch_sha="865b2d29bad1ee39b116fd6e1e201cd40663f4e7aaa4254af664e255400284f4"
 expected_followup_sha="3fba390239ed0206278e053a1cc79fabf429cf98f01527f051569ab7adfad283"
+expected_followup2_sha="d4349e570f1836ea1b3a0882520d375f93e8151aa754e51dd666bcaae20a326d"
 
 verify_copy() {
   local rel="$1"
@@ -51,6 +53,15 @@ test "$actual_followup_sha" = "$expected_followup_sha" || {
 patch --dry-run --batch --forward -p1 -d "$root" -i "$followup"
 patch --batch --forward -p1 -d "$root" -i "$followup"
 
+test -s "$followup2"
+actual_followup2_sha="$(sha256sum "$followup2" | awk '{print $1}')"
+test "$actual_followup2_sha" = "$expected_followup2_sha" || {
+  echo "::error::Phase8.1 followup-02 digest mismatch: $actual_followup2_sha"
+  exit 1
+}
+python3 "$followup2" "$root" | tee "${workspace}/phase8-1-followup-02.log"
+grep -Fq 'PHASE8_1_TEST_API_ALIGNMENT=PASS' "${workspace}/phase8-1-followup-02.log"
+
 grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 grep -Fq 'MIGRATION_59_60' "$root/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt"
 grep -Fq 'integritySequence' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt"
@@ -72,6 +83,7 @@ fi
 
 echo PHASE8_1_OVERLAY_FILES=6
 echo PHASE8_1_FOLLOWUP_SHA256=$actual_followup_sha
+echo PHASE8_1_FOLLOWUP2_SHA256=$actual_followup2_sha
 echo PHASE8_1_RECONSTRUCTION=PASS
 echo BASE_PHASE8_SHA=$base_phase8_sha
 echo ROOM_VERSION=60
