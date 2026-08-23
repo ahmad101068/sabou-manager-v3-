@@ -7,6 +7,7 @@ phase7_sha="e7dcf11a7b56a6f738313f2a7dfd41fa4159ea80"
 hotfix_01="${workspace}/phase8-remediation/phase8-hotfix-01.py"
 hotfix_02="${workspace}/phase8-remediation/phase8-hotfix-02.py"
 hotfix_03="${workspace}/phase8-remediation/phase8-hotfix-03.py"
+hotfix_04="${workspace}/phase8-remediation/phase8-hotfix-04.py"
 
 verify_sha() {
   local file="$1" expected="$2" label="$3" actual
@@ -23,9 +24,11 @@ grep -Fq "PHASE7_FORMAL_HANDOFF_SHA=${phase7_sha}" "${workspace}/phase8-remediat
 verify_sha "$hotfix_01" "8d3babc233b9067435283615249eddd1aa194cb2a18a9ed65b141d68d5b43d01" "Phase-8 hotfix-01"
 verify_sha "$hotfix_02" "b216d25d7a4690989a78386ab820b0adc75f9b825907e4a45c021f6ed63f93b9" "Phase-8 hotfix-02"
 verify_sha "$hotfix_03" "3288aadb8b8e3fbb275d7a7ead7c679e52df39c0fe1c0a01dca31876d293eef5" "Phase-8 hotfix-03"
+verify_sha "$hotfix_04" "3a413423f81f2b3801cb899d7c7aca5a295fb404722c72d692ea0079771a9bd2" "Phase-8 hotfix-04"
 python3 "$hotfix_01" "$root"
 python3 "$hotfix_02" "$root"
 python3 "$hotfix_03" "$root"
+python3 "$hotfix_04" "$root"
 
 grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 59' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 if grep -R -n 'fallbackToDestructiveMigration' "$root/app/src/main/java"; then
@@ -75,6 +78,10 @@ grep -Fq 'UserDataScope(' "$e2e"
 grep -Fq 'allowedBranchIds = setOf(branchId)' "$e2e"
 grep -Fq 'destinationLocationId = destinationLocationId' "$e2e"
 grep -Fq 'branchId = branchId' "$e2e"
+grep -Fq 'destinationLocationId = order.destinationLocationId' "$root/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt"
+grep -Fq 'asset_depreciation_reason' "$root/app/src/main/java/ir/restaurant/management/ui/AssetScreens.kt"
+grep -Fq 'receivable_collection_confirm").assertIsEnabled()' "$e2e"
+grep -Fq 'استهلاک ماهانه E2E' "$e2e"
 if grep -Fq 'UI_E2E_RECEIPT' "$e2e" || grep -Fq 'UI_E2E_REVERSAL' "$e2e" || grep -Fq 'performTextReplacement("CUSTOMER_RECEIVABLE")' "$e2e"; then
   echo '::error::stale/untyped manual treasury E2E intent remains'
   exit 1
@@ -97,3 +104,4 @@ echo ROOM_VERSION=59
 echo HOTFIX_01_SHA256=8d3babc233b9067435283615249eddd1aa194cb2a18a9ed65b141d68d5b43d01
 echo HOTFIX_02_SHA256=b216d25d7a4690989a78386ab820b0adc75f9b825907e4a45c021f6ed63f93b9
 echo HOTFIX_03_SHA256=3288aadb8b8e3fbb275d7a7ead7c679e52df39c0fe1c0a01dca31876d293eef5
+echo HOTFIX_04_SHA256=3a413423f81f2b3801cb899d7c7aca5a295fb404722c72d692ea0079771a9bd2
