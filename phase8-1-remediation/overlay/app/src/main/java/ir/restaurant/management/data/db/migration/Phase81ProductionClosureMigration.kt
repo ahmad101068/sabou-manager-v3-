@@ -50,12 +50,32 @@ internal val MIGRATION_59_60 = object : Migration(59, 60) {
             }
         }
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_audit_logs_integritySequence ON audit_logs(integritySequence)")
-        // One-time historical bootstrap only. Runtime allocation is CAS-based and never queries MAX(revisionNo).
-        db.execSQL("""
-            INSERT OR IGNORE INTO document_sequences(sequenceKey,nextValue,updatedAtEpochMillis)
-            SELECT 'SALES_CASH_REVISION:' || businessEpochDay, MAX(revisionNo)+1, 0
-            FROM sales_cash_reconciliations GROUP BY businessEpochDay
-        """.trimIndent())
+
+        // One-time historical bootstrap only. Runtime revision allocation uses the
+        // transaction-safe document sequence allocator. We recover the next value
+        // by scanning preserved historical revisions in deterministic order rather
+        // than depending on aggregate-based allocation semantics.
+        val nextRevisionByBusinessDay = linkedMapOf<Long, Long>()
+        db.query(
+            "SELECT businessEpochDay, revisionNo FROM sales_cash_reconciliations " +
+                "ORDER BY businessEpochDay ASC, revisionNo ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val businessEpochDay = cursor.getLong(0)
+                val revisionNo = cursor.getLong(1)
+                val nextValue = Math.addExact(revisionNo, 1L)
+                val current = nextRevisionByBusinessDay[businessEpochDay]
+                if (current == null || nextValue > current) {
+                    nextRevisionByBusinessDay[businessEpochDay] = nextValue
+                }
+            }
+        }
+        nextRevisionByBusinessDay.forEach { (businessEpochDay, nextValue) ->
+            db.execSQL(
+                "INSERT OR IGNORE INTO document_sequences(sequenceKey,nextValue,updatedAtEpochMillis) VALUES (?,?,0)",
+                arrayOf("SALES_CASH_REVISION:$businessEpochDay", nextValue),
+            )
+        }
         installAuditLogGuards(db)
     }
 }
