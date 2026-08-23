@@ -6,6 +6,7 @@ root="${workspace}/${target}"
 base_phase8_sha="38b2b13883bcb806796c9de41ac8914a8974b016"
 hotfix="${workspace}/phase8-1-remediation/phase8-1-hotfix-chunked.py"
 overlay="${workspace}/phase8-1-remediation/overlay"
+schema_history="${workspace}/phase8-1-remediation/schema-history"
 followup="${workspace}/phase8-1-remediation/followup/phase8-1-followup-01.patch"
 followup2="${workspace}/phase8-1-remediation/followup/phase8-1-followup-02.py"
 followup3="${workspace}/phase8-1-remediation/followup/phase8-1-followup-03.patch"
@@ -13,6 +14,7 @@ expected_patch_sha="865b2d29bad1ee39b116fd6e1e201cd40663f4e7aaa4254af664e2554002
 expected_followup_sha="3fba390239ed0206278e053a1cc79fabf429cf98f01527f051569ab7adfad283"
 expected_followup2_sha="e9f97f7b34f1e96708a2a0830a7e239b7347f1e69fb43e1d5b6ef752a7f51e45"
 expected_followup3_sha="1ad5d32997c25d06bd56bc4f4c7fac9ac5ff90821e4d8c357f8e33c169528127"
+expected_schema59_sha="c23b7d1f794cdb6febc643fa79ddf4f68222eb6fe3ba42622bbbd36599a14e00"
 
 verify_copy() {
   local rel="$1"
@@ -23,6 +25,19 @@ verify_copy() {
   test -s "$source" || { echo "::error::missing Phase8.1 overlay $rel"; exit 1; }
   actual="$(sha256sum "$source" | awk '{print $1}')"
   test "$actual" = "$expected" || { echo "::error::Phase8.1 overlay digest mismatch $rel: $actual"; exit 1; }
+  mkdir -p "$(dirname "$destination")"
+  cp "$source" "$destination"
+}
+
+verify_git_blob_copy() {
+  local rel="$1"
+  local expected="$2"
+  local source="${overlay}/${rel}"
+  local destination="${root}/${rel}"
+  local actual
+  test -s "$source" || { echo "::error::missing Phase8.1 overlay $rel"; exit 1; }
+  actual="$(git -C "$workspace" hash-object "$source")"
+  test "$actual" = "$expected" || { echo "::error::Phase8.1 overlay git-blob mismatch $rel: $actual"; exit 1; }
   mkdir -p "$(dirname "$destination")"
   cp "$source" "$destination"
 }
@@ -45,6 +60,17 @@ verify_copy 'app/src/main/java/ir/restaurant/management/data/repository/AuditInt
 verify_copy 'app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt' '13af4513abfa26532f17ba91bebe51c6fbf90c8a3a31ca65cba6719a5fd810ef'
 verify_copy 'app/src/main/java/ir/restaurant/management/data/security/AuditIntegrity.kt' 'e56b8cec658934b15d99cfacdc06b8004afeddbdb860f3c79bd982a643f037cc'
 verify_copy 'app/src/main/java/ir/restaurant/management/data/security/ForensicIntegrityLedger.kt' '4c5360fe7f540e1660d94c0f9584644e790c4d0c55740df6d73b194735348ccc'
+verify_git_blob_copy 'app/src/androidTest/java/ir/restaurant/management/data/db/Migration59To60Test.kt' 'dfb8a6700dd3ef81176676fd5abe7f043b5838da'
+
+schema_dir="${root}/app/schemas/ir.restaurant.management.data.db.AppDatabase"
+mkdir -p "$schema_dir"
+test -s "${schema_history}/59.json.gz.b64" || { echo '::error::missing canonical Room 59 schema payload'; exit 1; }
+base64 --decode "${schema_history}/59.json.gz.b64" | gzip -dc > "${schema_dir}/59.json"
+actual_schema59_sha="$(sha256sum "${schema_dir}/59.json" | awk '{print $1}')"
+test "$actual_schema59_sha" = "$expected_schema59_sha" || {
+  echo "::error::canonical Room 59 schema digest mismatch: $actual_schema59_sha"
+  exit 1
+}
 
 test -s "$followup"
 actual_followup_sha="$(sha256sum "$followup" | awk '{print $1}')"
@@ -83,6 +109,7 @@ grep -Fq 'dropLast(2)' "$root/app/src/test/java/ir/restaurant/management/ui/Inpu
 
 grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 grep -Fq 'MIGRATION_59_60' "$root/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt"
+grep -Fq 'MIGRATION_59_60' "$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration59To60Test.kt"
 grep -Fq 'integritySequence' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt"
 grep -Fq 'rowVersion' "$root/app/src/main/java/ir/restaurant/management/data/db/SecurityEntities.kt"
 grep -Fq 'ForensicIntegrityLedger' "$root/app/src/main/java/ir/restaurant/management/data/AppContainer.kt"
@@ -100,7 +127,8 @@ if grep -R -nE 'MAX\(revisionNo\)|MAX\(integritySequence\)[[:space:]]*\+[[:space
   exit 1
 fi
 
-echo PHASE8_1_OVERLAY_FILES=6
+echo PHASE8_1_OVERLAY_FILES=7
+echo PHASE8_1_SCHEMA59_SHA256=$actual_schema59_sha
 echo PHASE8_1_FOLLOWUP_SHA256=$actual_followup_sha
 echo PHASE8_1_FOLLOWUP2_SHA256=$actual_followup2_sha
 echo PHASE8_1_FOLLOWUP3_SHA256=$actual_followup3_sha
