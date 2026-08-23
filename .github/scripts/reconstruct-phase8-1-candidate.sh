@@ -36,7 +36,7 @@ grep -Fq 'PHASE8_1_PATCH_APPLIED=PASS' "${workspace}/phase8-1-patch-apply.log"
 verify_copy 'app/src/main/java/ir/restaurant/management/core/BusinessCalendar.kt' '28c0d302cf768a562378666233c5a06a2fe27bcc14e90cdf68e10e13fa0b9321'
 verify_copy 'app/src/main/java/ir/restaurant/management/data/repository/OperationalAlertWriter.kt' 'bbb79c23061bb6c036fe4cc87ac39431cbcae6704b5ad7382bb35a8104e04288'
 verify_copy 'app/src/main/java/ir/restaurant/management/data/repository/AuditIntegrityVerifier.kt' '12b4b12d83ad47ad415daa66eabf000fd692bae87f0e02d99c7074d6eda40195'
-verify_copy 'app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt' 'ab5721f4a70ba57b844e0fcddb0aad688395d8203b992b2b413f73223431878c'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt' '13af4513abfa26532f17ba91bebe51c6fbf90c8a3a31ca65cba6719a5fd810ef'
 verify_copy 'app/src/main/java/ir/restaurant/management/data/security/AuditIntegrity.kt' 'e56b8cec658934b15d99cfacdc06b8004afeddbdb860f3c79bd982a643f037cc'
 verify_copy 'app/src/main/java/ir/restaurant/management/data/security/ForensicIntegrityLedger.kt' '4c5360fe7f540e1660d94c0f9584644e790c4d0c55740df6d73b194735348ccc'
 
