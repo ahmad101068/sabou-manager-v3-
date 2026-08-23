@@ -1,0 +1,48 @@
+name: Phase 8.1 Targeted Verification
+
+on:
+  push:
+    branches: [remediation/phase8-1-final-production-closure]
+  pull_request:
+    branches: [remediation/phase8-final-verification-20260823]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase8-1-targeted-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Reconstruct Phase 8.1 candidate
+        run: bash .github/scripts/reconstruct-phase8-1-candidate.sh phase8-1-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Compile production and instrumentation source
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+      - name: JVM regression suite
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest
+      - name: Lint debug
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:lintDebug
+      - name: Assemble debug + androidTest
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:assembleDebug :app:assembleDebugAndroidTest
