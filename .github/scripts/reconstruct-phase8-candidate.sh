@@ -22,7 +22,7 @@ grep -Fq "PHASE7_FORMAL_HANDOFF_SHA=${phase7_sha}" "${workspace}/phase8-remediat
 
 verify_sha "$hotfix_01" "8d3babc233b9067435283615249eddd1aa194cb2a18a9ed65b141d68d5b43d01" "Phase-8 hotfix-01"
 verify_sha "$hotfix_02" "b216d25d7a4690989a78386ab820b0adc75f9b825907e4a45c021f6ed63f93b9" "Phase-8 hotfix-02"
-verify_sha "$hotfix_03" "1745c96521eee97201f1d63dc5ddd0c761edfdd5dadba4d53a2e93264b5492e1" "Phase-8 hotfix-03"
+verify_sha "$hotfix_03" "3288aadb8b8e3fbb275d7a7ead7c679e52df39c0fe1c0a01dca31876d293eef5" "Phase-8 hotfix-03"
 python3 "$hotfix_01" "$root"
 python3 "$hotfix_02" "$root"
 python3 "$hotfix_03" "$root"
@@ -96,4 +96,4 @@ echo PHASE7_FORMAL_HANDOFF_SHA=$phase7_sha
 echo ROOM_VERSION=59
 echo HOTFIX_01_SHA256=8d3babc233b9067435283615249eddd1aa194cb2a18a9ed65b141d68d5b43d01
 echo HOTFIX_02_SHA256=b216d25d7a4690989a78386ab820b0adc75f9b825907e4a45c021f6ed63f93b9
-echo HOTFIX_03_SHA256=1745c96521eee97201f1d63dc5ddd0c761edfdd5dadba4d53a2e93264b5492e1
+echo HOTFIX_03_SHA256=3288aadb8b8e3fbb275d7a7ead7c679e52df39c0fe1c0a01dca31876d293eef5
