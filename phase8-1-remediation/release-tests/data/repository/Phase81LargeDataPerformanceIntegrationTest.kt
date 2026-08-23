@@ -101,6 +101,10 @@ class Phase81LargeDataPerformanceIntegrationTest {
                     SELECT ((x-1)%10000)+1,'RECEIPT',1000,100,'PERF',x,21000,'',${now}+x,'perf-m-'||x,'perf-idem-'||x,'perf-corr-'||x,'test',100,'PERF' FROM seq
                 """.trimIndent())
             }
+            val auditHead = db.query("SELECT COALESCE(MAX(integritySequence),0), COALESCE((SELECT eventHash FROM audit_logs ORDER BY integritySequence DESC LIMIT 1),'') FROM audit_logs").use { c ->
+                c.moveToFirst()
+                c.getLong(0) to c.getString(1)
+            }
             for (start in 1..50_000 step 1_000) {
                 val end = minOf(start + 999, 50_000)
                 db.execSQL("""
@@ -116,7 +120,7 @@ class Phase81LargeDataPerformanceIntegrationTest {
                 db.execSQL("""
                     WITH RECURSIVE seq(x) AS (SELECT $start UNION ALL SELECT x+1 FROM seq WHERE x<$end)
                     INSERT INTO audit_logs(action,entityType,entityId,description,actor,createdAtEpochMillis,globalId,deviceId,reason,correlationId,actorRoleSnapshot,integritySequence,previousEventHash,eventHash)
-                    SELECT 'PERF','ENTITY',x,'عملکرد '||x,'perf',${now}+x,'perf-a-'||x,'test','','perf-ac-'||x,'OWNER',x,CASE WHEN x=1 THEN '' ELSE 'perf-h-'||(x-1) END,'perf-h-'||x FROM seq
+                    SELECT 'PERF','ENTITY',x,'عملکرد '||x,'perf',${now}+x,'perf-a-'||x,'test','','perf-ac-'||x,'OWNER',${auditHead.first}+x,CASE WHEN x=1 THEN '${auditHead.second}' ELSE 'perf-h-'||(x-1) END,'perf-h-'||x FROM seq
                 """.trimIndent())
             }
             db.setTransactionSuccessful()
