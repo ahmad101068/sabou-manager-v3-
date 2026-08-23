@@ -31,7 +31,7 @@ jobs:
         run: |
           zip -qr "phase8-1-candidate-${SOURCE_SHA}.zip" phase8-1-source
           sha256sum "phase8-1-candidate-${SOURCE_SHA}.zip" > phase8-1-candidate-sha256.txt
-      - uses: actions/upload-artifact@043fb46eaca79a7c74a9a00401b1e40c09c2bd4f
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: phase8-1-candidate-${{ env.SOURCE_SHA }}
           path: |
