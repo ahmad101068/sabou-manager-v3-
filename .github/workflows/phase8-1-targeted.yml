@@ -14,6 +14,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Reconstruct Phase 8.1 candidate
+        run: bash .github/scripts/reconstruct-phase8-1-candidate.sh phase8-1-source
+      - name: Archive exact reconstructed candidate
+        run: |
+          zip -qr "phase8-1-candidate-${SOURCE_SHA}.zip" phase8-1-source
+          sha256sum "phase8-1-candidate-${SOURCE_SHA}.zip" > phase8-1-candidate-sha256.txt
+      - uses: actions/upload-artifact@043fb46eaca79a7c74a9a00401b1e40c09c2bd4f
+        with:
+          name: phase8-1-candidate-${{ env.SOURCE_SHA }}
+          path: |
+            phase8-1-candidate-${{ env.SOURCE_SHA }}.zip
+            phase8-1-candidate-sha256.txt
+          if-no-files-found: error
+          retention-days: 14
+
   targeted:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
