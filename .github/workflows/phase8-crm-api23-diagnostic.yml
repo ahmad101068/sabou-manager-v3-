@@ -3,6 +3,8 @@ name: Phase 8 CRM API23 Diagnostic
 on:
   push:
     branches: [remediation/phase8-final-verification-20260823]
+  pull_request:
+    branches: [remediation/phase7-dashboard-reports-ui-20260823]
 
 permissions:
   contents: read
@@ -16,12 +18,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      SOURCE_SHA: ${{ github.sha }}
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       CRM_TEST: ir.restaurant.management.ui.EnterpriseCoreComposeE2ETest#crmCollection_viaCrmUi_updatesReceivableLedgerAndAgingBalance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ env.SOURCE_SHA }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
       - name: Reconstruct diagnostic candidate
         run: bash .github/scripts/reconstruct-phase8-crm-diagnostic.sh phase8-source
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
