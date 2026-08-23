@@ -19,21 +19,3 @@
            OR NEW.previousEventHash != COALESCE((SELECT eventHash FROM audit_logs ORDER BY integritySequence DESC LIMIT 1),'')
            OR ((NEW.referenceType IS NULL) != (NEW.referenceId IS NULL))
          BEGIN SELECT RAISE(ABORT, 'INVALID_AUDIT_EVENT'); END""",
---- a/app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt
-+++ b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt
-@@ -53,8 +53,12 @@
--        // One-time historical bootstrap only. Runtime allocation is CAS-based and never queries MAX(revisionNo).
-+        // One-time historical bootstrap only. Runtime allocation is CAS-based and never uses aggregate numbering.
-         db.execSQL("""
-             INSERT OR IGNORE INTO document_sequences(sequenceKey,nextValue,updatedAtEpochMillis)
--            SELECT 'SALES_CASH_REVISION:' || businessEpochDay, MAX(revisionNo)+1, 0
--            FROM sales_cash_reconciliations GROUP BY businessEpochDay
-+            SELECT 'SALES_CASH_REVISION:' || r.businessEpochDay, r.revisionNo + 1, 0
-+            FROM sales_cash_reconciliations r
-+            WHERE NOT EXISTS (
-+                SELECT 1 FROM sales_cash_reconciliations newer
-+                WHERE newer.businessEpochDay = r.businessEpochDay AND newer.revisionNo > r.revisionNo
-+            )
-         """.trimIndent())
-         installAuditLogGuards(db)
-     }
