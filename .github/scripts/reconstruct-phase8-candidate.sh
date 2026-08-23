@@ -8,6 +8,7 @@ hotfix_01="${workspace}/phase8-remediation/phase8-hotfix-01.py"
 hotfix_02="${workspace}/phase8-remediation/phase8-hotfix-02.py"
 hotfix_03="${workspace}/phase8-remediation/phase8-hotfix-03.py"
 hotfix_04="${workspace}/phase8-remediation/phase8-hotfix-04.py"
+hotfix_05="${workspace}/phase8-remediation/phase8-hotfix-05.py"
 
 verify_sha() {
   local file="$1" expected="$2" label="$3" actual
@@ -25,10 +26,12 @@ verify_sha "$hotfix_01" "8d3babc233b9067435283615249eddd1aa194cb2a18a9ed65b141d6
 verify_sha "$hotfix_02" "b216d25d7a4690989a78386ab820b0adc75f9b825907e4a45c021f6ed63f93b9" "Phase-8 hotfix-02"
 verify_sha "$hotfix_03" "3288aadb8b8e3fbb275d7a7ead7c679e52df39c0fe1c0a01dca31876d293eef5" "Phase-8 hotfix-03"
 verify_sha "$hotfix_04" "bc430e1ea7d53f79a9b503279416fc135a7b77967cc3b1c71c6cce5fb43f51f0" "Phase-8 hotfix-04"
+verify_sha "$hotfix_05" "ee77d721314cbe5576522007b4e184a2a0827764f5b55edb9d116d7f2a784b99" "Phase-8 hotfix-05"
 python3 "$hotfix_01" "$root"
 python3 "$hotfix_02" "$root"
 python3 "$hotfix_03" "$root"
 python3 "$hotfix_04" "$root"
+python3 "$hotfix_05" "$root"
 
 grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 59' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 if grep -R -n 'fallbackToDestructiveMigration' "$root/app/src/main/java"; then
@@ -70,6 +73,7 @@ for rel in \
 done
 
 e2e="$root/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt"
+crm="$root/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt"
 test "$(grep -Fc 'val sourceType = "OTHER_INCOME"' "$e2e")" -ge 2
 grep -Fq 'fun crmCollection_viaCrmUi_updatesReceivableLedgerAndAgingBalance()' "$e2e"
 grep -Fq 'app.container.receivableService.createFromDailySales(' "$e2e"
@@ -82,6 +86,14 @@ grep -Fq 'destinationLocationId = order.destinationLocationId' "$root/app/src/ma
 grep -Fq 'asset_depreciation_reason' "$root/app/src/main/java/ir/restaurant/management/ui/AssetScreens.kt"
 grep -Fq 'receivable_collection_confirm").assertIsEnabled()' "$e2e"
 grep -Fq 'استهلاک ماهانه E2E' "$e2e"
+grep -Fq 'listTestTag = "receivables_open_list"' "$crm"
+grep -Fq 'rowTestTag = { "receivable_select_${it.id}" }' "$crm"
+grep -Fq 'scrollTo("receivables_open_list", "receivable_select_$receivableId")' "$e2e"
+grep -Fq 'composeRule.onNodeWithTag("receivable_select_$receivableId").performClick()' "$e2e"
+if grep -Fq 'composeRule.onAllNodesWithText(customerName)[0].performClick()' "$e2e"; then
+  echo '::error::stale viewport-dependent CRM click remains'
+  exit 1
+fi
 if grep -Fq 'UI_E2E_RECEIPT' "$e2e" || grep -Fq 'UI_E2E_REVERSAL' "$e2e" || grep -Fq 'performTextReplacement("CUSTOMER_RECEIVABLE")' "$e2e"; then
   echo '::error::stale/untyped manual treasury E2E intent remains'
   exit 1
@@ -105,3 +117,4 @@ echo HOTFIX_01_SHA256=8d3babc233b9067435283615249eddd1aa194cb2a18a9ed65b141d68d5
 echo HOTFIX_02_SHA256=b216d25d7a4690989a78386ab820b0adc75f9b825907e4a45c021f6ed63f93b9
 echo HOTFIX_03_SHA256=3288aadb8b8e3fbb275d7a7ead7c679e52df39c0fe1c0a01dca31876d293eef5
 echo HOTFIX_04_SHA256=bc430e1ea7d53f79a9b503279416fc135a7b77967cc3b1c71c6cce5fb43f51f0
+echo HOTFIX_05_SHA256=ee77d721314cbe5576522007b4e184a2a0827764f5b55edb9d116d7f2a784b99
