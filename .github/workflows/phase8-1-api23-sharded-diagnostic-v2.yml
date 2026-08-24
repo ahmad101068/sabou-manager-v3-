@@ -16,7 +16,7 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     env:
-      SOURCE_SHA: 8b49cb887d882e38d7b7cc4064f0f327bcafab2b
+      SOURCE_SHA: 7b0c36ef157f4e2e0628cadfc93714b8b6edd245
       PHASE8_BASELINE_SHA: 38b2b13883bcb806796c9de41ac8914a8974b016
       PHASE4_ARTIFACT_ID: '9443574109'
       PHASE5_ARTIFACT_ID: '9466675671'
