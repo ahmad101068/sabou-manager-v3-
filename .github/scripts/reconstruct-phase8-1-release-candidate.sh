@@ -7,8 +7,10 @@ overlay="${workspace}/phase8-1-remediation/release-tests"
 release_fixes="${workspace}/phase8-1-remediation/release-fixes"
 release_fix6="${release_fixes}/phase8-1-release-fix-06.patch"
 release_fix7="${release_fixes}/phase8-1-release-fix-07.patch"
+release_fix8="${release_fixes}/phase8-1-release-fix-08.patch"
 expected_release_fix6_sha="26b3a1af42b77aab959558bd93b9ba7ea0548ce3615cdcbd5f3d7b6240f29e46"
 expected_release_fix7_sha="06195430ffe396996fa6e1e7c84890b30d31ed716e96ae8c44aff703eef5951f"
+expected_release_fix8_sha="d374f5a68435670fb5df09a2b41dcd3f9db48a64dd332832fee3ce25d1a30ac0"
 
 apply_release_patch() {
   local file="$1" expected="$2" label="$3"
@@ -23,11 +25,16 @@ apply_release_patch() {
 bash "${workspace}/.github/scripts/reconstruct-phase8-1-candidate.sh" "$target"
 actual_release_fix6_sha="$(apply_release_patch "$release_fix6" "$expected_release_fix6_sha" 'Phase8.1 release-fix-06')"
 actual_release_fix7_sha="$(apply_release_patch "$release_fix7" "$expected_release_fix7_sha" 'Phase8.1 release-fix-07')"
+actual_release_fix8_sha="$(apply_release_patch "$release_fix8" "$expected_release_fix8_sha" 'Phase8.1 release-fix-08')"
 grep -Fq 'role.allows(Permission.DAILY_BRIEF_VIEW)' "$root/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt"
 grep -Fq 'normalizedInvoiceNo = no.trim().uppercase()' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt"
 grep -Fq 'trackLot = false' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt"
 grep -Fq 'branch payroll must post a positive salary expense' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPayrollPostingIntegrationTest.kt"
 grep -Fq 'assertEquals(postedPayrollRial, brief.profitability.payrollRial)' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt"
+grep -Fq 'role?.allows(Permission.PERSONNEL_VIEW) == true' "$root/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt"
+grep -Fq 'role?.allows(Permission.INVENTORY_VIEW) == true' "$root/app/src/main/java/ir/restaurant/management/ui/InventoryWorkspaceViewModel.kt"
+grep -Fq 'branchId = requireNotNull(mainLocation.branchId)' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt"
+grep -Fq 'arrayOf<Any?>' "$root/app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt"
 
 copy_test() {
   local rel="$1" expected="$2"
@@ -47,7 +54,12 @@ if grep -R -nE '@Ignore|@Disabled' "$root/app/src"; then
   echo '::error::ignored/disabled tests are forbidden'
   exit 1
 fi
+if grep -R -n 'fallbackToDestructiveMigration' "$root/app/src/main/java"; then
+  echo '::error::destructive migration fallback found in release candidate'
+  exit 1
+fi
 echo PHASE8_1_RELEASE_FIX6_SHA256=$actual_release_fix6_sha
 echo PHASE8_1_RELEASE_FIX7_SHA256=$actual_release_fix7_sha
+echo PHASE8_1_RELEASE_FIX8_SHA256=$actual_release_fix8_sha
 echo PHASE8_1_RELEASE_TEST_OVERLAYS=5
 echo PHASE8_1_RELEASE_RECONSTRUCTION=PASS
