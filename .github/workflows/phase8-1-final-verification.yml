@@ -87,7 +87,7 @@ jobs:
           heap-size: 768M
           disable-animations: false
           script: |
-            set -euo pipefail
+            set -eu
             ready=0
             for i in $(seq 1 90); do
               if adb shell pm path android >/dev/null 2>&1; then ready=1; break; fi
