@@ -1,0 +1,22 @@
+name: Phase 8.1 Alert Boundary Inspect
+on:
+  push:
+    branches: [diagnostic/phase8-1-alert-boundary-inspect-43929e3]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Reconstruct exact Phase 8.1 release candidate
+        run: bash .github/scripts/reconstruct-phase8-1-release-candidate.sh phase8-1-source
+      - name: Print alert repository and failing test
+        run: |
+          echo '===== LocalAlertRepository.kt ====='
+          nl -ba phase8-1-source/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt | sed -n '1,260p'
+          echo '===== AlertStateIntegrationTest.kt ====='
+          nl -ba phase8-1-source/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt | sed -n '1,240p'
+          echo '===== Permission.kt alert-related ====='
+          grep -n -B 12 -A 40 'OPERATIONAL_ALERT_PERMISSIONS' phase8-1-source/app/src/main/java/ir/restaurant/management/domain/security/Permission.kt || true
