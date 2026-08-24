@@ -9,10 +9,12 @@ release_fix6="${release_fixes}/phase8-1-release-fix-06.patch"
 release_fix7="${release_fixes}/phase8-1-release-fix-07.patch"
 release_fix8="${release_fixes}/phase8-1-release-fix-08.patch"
 release_fix9="${release_fixes}/phase8-1-release-fix-09.patch"
+release_fix10="${release_fixes}/phase8-1-release-fix-10.patch"
 expected_release_fix6_sha="26b3a1af42b77aab959558bd93b9ba7ea0548ce3615cdcbd5f3d7b6240f29e46"
 expected_release_fix7_sha="06195430ffe396996fa6e1e7c84890b30d31ed716e96ae8c44aff703eef5951f"
 expected_release_fix8_sha="d374f5a68435670fb5df09a2b41dcd3f9db48a64dd332832fee3ce25d1a30ac0"
 expected_release_fix9_sha="bbd1142e20061390c6b49cd85fd2b3d16ba34cdc4087a7e4bb4ffc6341995a8c"
+expected_release_fix10_sha="c48e4d6c96c292f2fe2706ddf343a39e4501a90b055768cc1e054f3408dd1124"
 
 apply_release_patch() {
   local file="$1" expected="$2" label="$3"
@@ -29,6 +31,7 @@ actual_release_fix6_sha="$(apply_release_patch "$release_fix6" "$expected_releas
 actual_release_fix7_sha="$(apply_release_patch "$release_fix7" "$expected_release_fix7_sha" 'Phase8.1 release-fix-07')"
 actual_release_fix8_sha="$(apply_release_patch "$release_fix8" "$expected_release_fix8_sha" 'Phase8.1 release-fix-08')"
 actual_release_fix9_sha="$(apply_release_patch "$release_fix9" "$expected_release_fix9_sha" 'Phase8.1 release-fix-09')"
+actual_release_fix10_sha="$(apply_release_patch "$release_fix10" "$expected_release_fix10_sha" 'Phase8.1 release-fix-10')"
 grep -Fq 'role.allows(Permission.DAILY_BRIEF_VIEW)' "$root/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt"
 grep -Fq 'normalizedInvoiceNo = no.trim().uppercase()' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt"
 grep -Fq 'trackLot = false' "$root/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt"
@@ -42,6 +45,27 @@ grep -Fq 'Reactive reads are fail-closed across logout/role transitions.' "$root
 grep -Fq 'SharingStarted.WhileSubscribed()' "$root/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt"
 grep -Fq 'canObserveOperationalAlerts()' "$root/app/src/main/java/ir/restaurant/management/ui/AppScreenAccess.kt"
 grep -Fq 'performScrollToNode(hasTestTag(moduleTag))' "$root/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt"
+python3 - "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text(encoding='utf-8')
+start = text.index('    override fun alerts() = flow {')
+end = text.index('    override suspend fun refresh(', start)
+body = text[start:end]
+required = [
+    'authorizer.actorIdentity()',
+    'requireAnyAlertDomainPermission()',
+    'val permissions = permittedSourceTypes()',
+    'if (permissions.isEmpty())',
+    'emptyList()',
+]
+missing = [token for token in required if token not in body]
+if missing:
+    raise SystemExit(f'alert data-boundary/reactive fail-closed invariant missing: {missing}')
+if body.index('requireAnyAlertDomainPermission()') > body.index('emitAll('):
+    raise SystemExit('alert hard authorization must run before reactive emitAll')
+print('PHASE8_1_ALERT_BOUNDARY_HYBRID_AUTH=PASS')
+PY
 
 copy_test() {
   local rel="$1" expected="$2"
@@ -69,5 +93,6 @@ echo PHASE8_1_RELEASE_FIX6_SHA256=$actual_release_fix6_sha
 echo PHASE8_1_RELEASE_FIX7_SHA256=$actual_release_fix7_sha
 echo PHASE8_1_RELEASE_FIX8_SHA256=$actual_release_fix8_sha
 echo PHASE8_1_RELEASE_FIX9_SHA256=$actual_release_fix9_sha
+echo PHASE8_1_RELEASE_FIX10_SHA256=$actual_release_fix10_sha
 echo PHASE8_1_RELEASE_TEST_OVERLAYS=5
 echo PHASE8_1_RELEASE_RECONSTRUCTION=PASS
