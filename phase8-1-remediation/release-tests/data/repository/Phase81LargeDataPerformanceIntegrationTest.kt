@@ -2,14 +2,16 @@ package ir.restaurant.management.data.repository
 
 import android.content.Context
 import android.os.SystemClock
-import java.io.File
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import ir.restaurant.management.data.db.AppDatabase
+import ir.restaurant.management.data.db.AuditLogEntity
+import ir.restaurant.management.data.security.AuditIntegrityCanonicalizer
 import ir.restaurant.management.data.security.SessionAuthorizer
 import ir.restaurant.management.domain.operations.UserDraft
 import ir.restaurant.management.domain.operations.UserRole
+import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertTrue
@@ -79,53 +81,117 @@ class Phase81LargeDataPerformanceIntegrationTest {
         try {
             for (start in 1..10_000 step 1_000) {
                 val end = minOf(start + 999, 10_000)
-                db.execSQL("""
+                db.execSQL(
+                    """
                     WITH RECURSIVE seq(x) AS (SELECT $start UNION ALL SELECT x+1 FROM seq WHERE x<$end)
                     INSERT INTO inventory_items(name,category,unit,sku,itemType,purchaseUnit,purchaseToStockNumerator,purchaseToStockDenominator,recipeUnit,recipeToStockNumerator,recipeToStockDenominator,stockMicros,inventoryValueRial,alertEnabled,alertThresholdMicros,brand,storageCondition,trackLot,trackExpiry,minimumStockMicros,maximumStockMicros,safetyStockMicros,reorderPointMicros,leadTimeDays,isActive,createdAtEpochMillis,updatedAtEpochMillis)
                     SELECT CASE WHEN x=10000 THEN 'کالای needle ویژه' ELSE 'کالای '||x END,'مواد','عدد','PERF-I-'||x,'INGREDIENT','عدد',1,1,'عدد',1,1,1000000,100000,1,0,'','AMBIENT',0,0,0,0,0,0,0,1,$now,$now FROM seq
-                """.trimIndent())
+                    """.trimIndent(),
+                )
             }
             for (start in 1..50_000 step 1_000) {
                 val end = minOf(start + 999, 50_000)
-                db.execSQL("""
+                db.execSQL(
+                    """
                     WITH RECURSIVE seq(x) AS (SELECT $start UNION ALL SELECT x+1 FROM seq WHERE x<$end)
-                    INSERT INTO customers(customerCode,name,phone,nationalId,creditLimitRial,notes,isActive,createdAtEpochMillis,updatedAtEpochMillis,mobile,address,branch,paymentTermsDays,status,partyType)
-                    SELECT 'PERF-C-'||x,CASE WHEN x=50000 THEN 'مشتری needle ویژه' ELSE 'مشتری '||x END,'071'||x,'N'||x,0,'',1,$now,$now,'','','',0,'ACTIVE','PERSON' FROM seq
-                """.trimIndent())
+                    INSERT INTO customers(id,customerCode,name,phone,nationalId,creditLimitRial,notes,isActive,createdAtEpochMillis,updatedAtEpochMillis,mobile,address,branch,paymentTermsDays,status,partyType)
+                    SELECT 1000000+x,'PERF-C-'||x,CASE WHEN x=50000 THEN 'مشتری needle ویژه' ELSE 'مشتری '||x END,'071'||x,'N'||x,0,'',1,$now,$now,'','','',0,'ACTIVE','PERSON' FROM seq
+                    """.trimIndent(),
+                )
             }
+            // Representative operational/event-outbox volume. Do not forge the immutable stock
+            // ledger merely to create volume; inventory ledger invariants have dedicated E2E tests.
             for (start in 1..100_000 step 1_000) {
                 val end = minOf(start + 999, 100_000)
-                db.execSQL("""
+                db.execSQL(
+                    """
                     WITH RECURSIVE seq(x) AS (SELECT $start UNION ALL SELECT x+1 FROM seq WHERE x<$end)
-                    INSERT INTO stock_movements(itemId,movementType,quantityDeltaMicros,valueDeltaRial,referenceType,referenceId,movementEpochDay,notes,createdAtEpochMillis,globalId,idempotencyKey,correlationId,deviceId,unitCostRial,reasonCode)
-                    SELECT ((x-1)%10000)+1,'RECEIPT',1000,100,'PERF',x,21000,'',${now}+x,'perf-m-'||x,'perf-idem-'||x,'perf-corr-'||x,'test',100,'PERF' FROM seq
-                """.trimIndent())
-            }
-            val auditHead = db.query("SELECT COALESCE(MAX(integritySequence),0), COALESCE((SELECT eventHash FROM audit_logs ORDER BY integritySequence DESC LIMIT 1),'') FROM audit_logs").use { c ->
-                c.moveToFirst()
-                c.getLong(0) to c.getString(1)
+                    INSERT INTO sync_changes(changeId,entityType,entityId,changeType,deviceId,occurredAtEpochMillis,revision,payloadVersion,payload,payloadHash,idempotencyKey,state,lastError,attemptCount,lastAttemptAtEpochMillis,nextAttemptAtEpochMillis)
+                    SELECT 'perf-change-'||x,'PERF_ENTITY',x,'UPSERT','perf-device',${now}+x,x,1,'perf-payload-'||x,'perf-hash-'||x,'perf-sync-idem-'||x,'PENDING','',0,0,0 FROM seq
+                    """.trimIndent(),
+                )
             }
             for (start in 1..50_000 step 1_000) {
                 val end = minOf(start + 999, 50_000)
-                db.execSQL("""
+                db.execSQL(
+                    """
                     WITH RECURSIVE seq(x) AS (SELECT $start UNION ALL SELECT x+1 FROM seq WHERE x<$end)
                     INSERT INTO journal_entries(entryNo,entryEpochDay,description,sourceType,sourceId,status,createdAtEpochMillis,globalId,idempotencyKey,correlationId,accountingScope)
-                    SELECT 'PERF-J-'||x,21000,'سند عملکرد '||x,'PERF',x,'POSTED',${now}+x,'perf-jg-'||x,'perf-ji-'||x,'perf-jc-'||x,'GENERAL' FROM seq
-                """.trimIndent())
-                db.execSQL("""
+                    SELECT 'PERF-J-'||x,21000,'سند عملکرد '||x,'PERF',x,'DRAFT',${now}+x,'perf-jg-'||x,'perf-ji-'||x,'perf-jc-'||x,'GENERAL' FROM seq
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    """
                     WITH RECURSIVE seq(x) AS (SELECT $start UNION ALL SELECT x+1 FROM seq WHERE x<$end)
                     INSERT INTO customer_receivable_ledger(customerId,businessEpochDay,entryType,debitRial,creditRial,sourceType,sourceId,reference,actorId,createdAtEpochMillis)
-                    SELECT ((x-1)%50000)+1,21000,'INVOICE',1000,0,'PERF',x,'PERF-R-'||x,1,${now}+x FROM seq
-                """.trimIndent())
-                db.execSQL("""
-                    WITH RECURSIVE seq(x) AS (SELECT $start UNION ALL SELECT x+1 FROM seq WHERE x<$end)
-                    INSERT INTO audit_logs(action,entityType,entityId,description,actor,createdAtEpochMillis,globalId,deviceId,reason,correlationId,actorRoleSnapshot,integritySequence,previousEventHash,eventHash)
-                    SELECT 'PERF','ENTITY',x,'عملکرد '||x,'perf',${now}+x,'perf-a-'||x,'test','','perf-ac-'||x,'OWNER',${auditHead.first}+x,CASE WHEN x=1 THEN '${auditHead.second}' ELSE 'perf-h-'||(x-1) END,'perf-h-'||x FROM seq
-                """.trimIndent())
+                    SELECT 1000000+((x-1)%50000)+1,21000,'INVOICE',1000,0,'PERF',x,'PERF-R-'||x,(SELECT id FROM app_users WHERE username='phase81-perf-owner' LIMIT 1),${now}+x FROM seq
+                    """.trimIndent(),
+                )
             }
+            seedCanonicalAuditEvents(db, 50_000)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
+        }
+    }
+
+    private fun seedCanonicalAuditEvents(db: SupportSQLiteDatabase, count: Int) {
+        val head = db.query("SELECT integritySequence,eventHash FROM audit_logs ORDER BY integritySequence DESC LIMIT 1").use { cursor ->
+            if (cursor.moveToFirst()) cursor.getLong(0) to cursor.getString(1) else 0L to ""
+        }
+        val actorId = db.query("SELECT id FROM app_users WHERE username='phase81-perf-owner' LIMIT 1").use { cursor ->
+            check(cursor.moveToFirst())
+            cursor.getLong(0)
+        }
+        val statement = db.compileStatement(
+            "INSERT INTO audit_logs(action,entityType,entityId,description,actor,createdAtEpochMillis,globalId,actorId,businessEpochDay,deviceId,referenceType,referenceId,reason,beforeSnapshot,afterSnapshot,correlationId,actorRoleSnapshot,actorBranchIdSnapshot,integritySequence,previousEventHash,eventHash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        var previousHash = head.second
+        repeat(count) { index ->
+            val number = index + 1L
+            val sequence = head.first + number
+            val event = AuditLogEntity(
+                action = "PERF",
+                entityType = "PERF_ENTITY",
+                entityId = number,
+                description = "رویداد عملکرد $number",
+                actor = "phase81-perf-owner",
+                createdAtEpochMillis = now + number,
+                globalId = "perf-a-$number",
+                actorId = actorId,
+                businessEpochDay = 21_000L,
+                deviceId = "instrumentation",
+                reason = "PERFORMANCE_FIXTURE",
+                correlationId = "perf-ac-$number",
+                actorRoleSnapshot = "OWNER",
+                integritySequence = sequence,
+                previousEventHash = previousHash,
+            )
+            val eventHash = AuditIntegrityCanonicalizer.hashEvent(event)
+            statement.clearBindings()
+            statement.bindString(1, event.action)
+            statement.bindString(2, event.entityType)
+            statement.bindLong(3, number)
+            statement.bindString(4, event.description)
+            statement.bindString(5, event.actor)
+            statement.bindLong(6, event.createdAtEpochMillis)
+            statement.bindString(7, event.globalId)
+            statement.bindLong(8, actorId)
+            statement.bindLong(9, 21_000L)
+            statement.bindString(10, event.deviceId)
+            statement.bindNull(11)
+            statement.bindNull(12)
+            statement.bindString(13, event.reason)
+            statement.bindNull(14)
+            statement.bindNull(15)
+            statement.bindString(16, event.correlationId)
+            statement.bindString(17, event.actorRoleSnapshot)
+            statement.bindNull(18)
+            statement.bindLong(19, sequence)
+            statement.bindString(20, previousHash)
+            statement.bindString(21, eventHash)
+            check(statement.executeInsert() > 0L)
+            previousHash = eventHash
         }
     }
 }
