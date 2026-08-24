@@ -1,0 +1,60 @@
+name: Phase 8.1 API23 Final Diagnostic
+on:
+  push:
+    branches: [diagnostic/phase8-1-api23-final-43929e3]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  api23-full:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: 43929e3464bf23bf99c05b1809000392b9d83299
+      PHASE4_ARTIFACT_ID: '9443574109'
+      PHASE5_ARTIFACT_ID: '9466675671'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Reconstruct exact release candidate
+        run: bash .github/scripts/reconstruct-phase8-1-release-candidate.sh phase8-1-source
+      - name: Recover authentic Room schemas
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/recover-phase8-1-schemas.sh phase8-1-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Assemble API23 test APKs
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules; sudo udevadm trigger --name-match=kvm
+      - name: API23 COMPLETE instrumentation suite
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 23
+          arch: x86_64
+          target: google_apis
+          ram-size: 4096M
+          heap-size: 768M
+          disable-animations: false
+          script: >-
+            for i in $(seq 1 90); do adb shell pm path android >/dev/null 2>&1 && break; sleep 2; done;
+            adb shell pm path android >/dev/null;
+            adb shell settings put global window_animation_scale 0.0 || true;
+            adb shell settings put global transition_animation_scale 0.0 || true;
+            adb shell settings put global animator_duration_scale 0.0 || true;
+            cd "$GITHUB_WORKSPACE/phase8-1-source";
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+      - name: Verify complete API23 results
+        run: python3 .github/scripts/verify-phase81-full-suite-results.py phase8-1-source/app/build/outputs/androidTest-results/connected API23_DIAGNOSTIC
