@@ -16,11 +16,12 @@ jobs:
           - 'ir.restaurant.management.data.repository.InventoryLedgerIntegrationTest#stockAtAnotherLocationCannotMaskLocationShortage'
           - 'ir.restaurant.management.ui.DashboardNavigationSettingsUx2ComposeTest#cashierHome_filtersSensitiveKpisAndActionsBeforeRendering'
           - 'ir.restaurant.management.ui.DashboardNavigationSettingsUx2ComposeTest#inventoryHome_showsInventoryContext_withoutFinancialKpis'
+          - 'ir.restaurant.management.ui.DashboardNavigationSettingsUx2ComposeTest#controlHub_exposesDedicatedManagementWorkflowRoutes'
           - 'ir.restaurant.management.ui.StartupAuthenticationBoundaryComposeTest#cashierWithoutPayrollPermission_logsInWithoutPayrollSubscription_andLogoutTearsDownProtectedGraph'
           - 'ir.restaurant.management.ui.StartupAuthenticationBoundaryComposeTest#ownerWithPayrollPermission_afterLoginCanLoadPayrollWorkspace'
           - 'ir.restaurant.management.ui.EnterpriseCoreComposeE2ETest#treasuryReversal_uiCreatesCompensatingJournalLedgerReferenceAndMarksOriginalReversed'
     env:
-      SOURCE_SHA: 7b0c36ef157f4e2e0628cadfc93714b8b6edd245
+      SOURCE_SHA: cd15f49024f7e58c4b086d1256d12f2aa2438eec
       PHASE4_ARTIFACT_ID: '9443574109'
       PHASE5_ARTIFACT_ID: '9466675671'
     steps:
