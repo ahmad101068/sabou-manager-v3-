@@ -52,8 +52,8 @@ apply_followup_patch() {
   test -s "$file"
   local actual="$(sha256sum "$file" | awk '{print $1}')"
   test "$actual" = "$expected" || { echo "::error::${label} digest mismatch: $actual"; exit 1; }
-  patch --dry-run --batch --forward -p1 -d "$root" -i "$file"
-  patch --batch --forward -p1 -d "$root" -i "$file"
+  patch --dry-run --batch --forward -p1 -d "$root" -i "$file" >/dev/null
+  patch --batch --forward -p1 -d "$root" -i "$file" >/dev/null
   printf '%s' "$actual"
 }
 
