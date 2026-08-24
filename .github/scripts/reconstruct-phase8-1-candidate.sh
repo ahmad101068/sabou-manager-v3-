@@ -10,10 +10,14 @@ schema_history="${workspace}/phase8-1-remediation/schema-history"
 followup="${workspace}/phase8-1-remediation/followup/phase8-1-followup-01.patch"
 followup2="${workspace}/phase8-1-remediation/followup/phase8-1-followup-02.py"
 followup3="${workspace}/phase8-1-remediation/followup/phase8-1-followup-03.patch"
+followup4="${workspace}/phase8-1-remediation/followup/phase8-1-followup-04.patch"
+followup5="${workspace}/phase8-1-remediation/followup/phase8-1-followup-05.patch"
 expected_patch_sha="865b2d29bad1ee39b116fd6e1e201cd40663f4e7aaa4254af664e255400284f4"
 expected_followup_sha="f9590666c6bb94c58da3c3ae72668a171cadc35c68e41075045c107e0d62309c"
 expected_followup2_sha="e9f97f7b34f1e96708a2a0830a7e239b7347f1e69fb43e1d5b6ef752a7f51e45"
 expected_followup3_sha="1ad5d32997c25d06bd56bc4f4c7fac9ac5ff90821e4d8c357f8e33c169528127"
+expected_followup4_sha="add75c6498d1d26a6fd5c696e2aaec3a698a49a824973a1f0099612fe3321c2b"
+expected_followup5_sha="a317d66fd2274d50a2514dbc802e823546517d4676aebf22dfa804aaebe43a6d"
 expected_schema59_sha="c23b7d1f794cdb6febc643fa79ddf4f68222eb6fe3ba42622bbbd36599a14e00"
 expected_schema59_b64_sha="6148cc2a64e3d51c483dde5cfcdb3576f2341d328736d7d0ef3741ff38da55f2"
 
@@ -41,6 +45,16 @@ verify_git_blob_copy() {
   test "$actual" = "$expected" || { echo "::error::Phase8.1 overlay git-blob mismatch $rel: $actual"; exit 1; }
   mkdir -p "$(dirname "$destination")"
   cp "$source" "$destination"
+}
+
+apply_followup_patch() {
+  local file="$1" expected="$2" label="$3"
+  test -s "$file"
+  local actual="$(sha256sum "$file" | awk '{print $1}')"
+  test "$actual" = "$expected" || { echo "::error::${label} digest mismatch: $actual"; exit 1; }
+  patch --dry-run --batch --forward -p1 -d "$root" -i "$file"
+  patch --batch --forward -p1 -d "$root" -i "$file"
+  printf '%s' "$actual"
 }
 
 bash "${workspace}/.github/scripts/reconstruct-phase8-candidate.sh" "$target"
@@ -84,14 +98,7 @@ test "$actual_schema59_sha" = "$expected_schema59_sha" || {
   exit 1
 }
 
-test -s "$followup"
-actual_followup_sha="$(sha256sum "$followup" | awk '{print $1}')"
-test "$actual_followup_sha" = "$expected_followup_sha" || {
-  echo "::error::Phase8.1 followup digest mismatch: $actual_followup_sha"
-  exit 1
-}
-patch --dry-run --batch --forward -p1 -d "$root" -i "$followup"
-patch --batch --forward -p1 -d "$root" -i "$followup"
+actual_followup_sha="$(apply_followup_patch "$followup" "$expected_followup_sha" 'Phase8.1 followup-01')"
 
 test -s "$followup2"
 actual_followup2_sha="$(sha256sum "$followup2" | awk '{print $1}')"
@@ -103,14 +110,7 @@ python3 "$followup2" "$root" | tee "${workspace}/phase8-1-followup-02.log"
 grep -Fq 'PHASE8_1_TEST_API_ALIGNMENT=PASS' "${workspace}/phase8-1-followup-02.log"
 grep -Fq 'PRESERVED_RESOURCE_ID=1' "${workspace}/phase8-1-followup-02.log"
 
-test -s "$followup3"
-actual_followup3_sha="$(sha256sum "$followup3" | awk '{print $1}')"
-test "$actual_followup3_sha" = "$expected_followup3_sha" || {
-  echo "::error::Phase8.1 followup-03 digest mismatch: $actual_followup3_sha"
-  exit 1
-}
-patch --dry-run --batch --forward -p1 -d "$root" -i "$followup3"
-patch --batch --forward -p1 -d "$root" -i "$followup3"
+actual_followup3_sha="$(apply_followup_patch "$followup3" "$expected_followup3_sha" 'Phase8.1 followup-03')"
 grep -Fq 'Math.multiplyExact(businessEpochDay, 86_400_000L)' "$root/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceCalculationEngine.kt"
 if grep -Fq 'BusinessCalendar.startOfDayEpochMillis(businessEpochDay)' "$root/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceCalculationEngine.kt"; then
   echo '::error::attendance engine illegally reinterprets an existing businessEpochDay through timezone conversion'
@@ -118,6 +118,13 @@ if grep -Fq 'BusinessCalendar.startOfDayEpochMillis(businessEpochDay)' "$root/ap
 fi
 grep -Fq 'dropLast(1)' "$root/app/src/test/java/ir/restaurant/management/ui/InputParsersTest.kt"
 grep -Fq 'dropLast(2)' "$root/app/src/test/java/ir/restaurant/management/ui/InputParsersTest.kt"
+
+actual_followup4_sha="$(apply_followup_patch "$followup4" "$expected_followup4_sha" 'Phase8.1 followup-04')"
+actual_followup5_sha="$(apply_followup_patch "$followup5" "$expected_followup5_sha" 'Phase8.1 followup-05')"
+grep -Fq 'Regex("[A-Za-z0-9:._-]{3,120}")' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalDocumentNumberAllocator.kt"
+grep -Fq 'components.sortedBy(PayrollComponentEntity::id)' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalHrPayrollService.kt"
+grep -Fq 'requireAnyAlertDomainPermission()' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt"
+grep -Fq 'treasury_source_type_${intent.storedValue}' "$root/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt"
 
 grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
 grep -Fq 'MIGRATION_59_60' "$root/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt"
@@ -145,6 +152,8 @@ echo PHASE8_1_SCHEMA59_SHA256=$actual_schema59_sha
 echo PHASE8_1_FOLLOWUP_SHA256=$actual_followup_sha
 echo PHASE8_1_FOLLOWUP2_SHA256=$actual_followup2_sha
 echo PHASE8_1_FOLLOWUP3_SHA256=$actual_followup3_sha
+echo PHASE8_1_FOLLOWUP4_SHA256=$actual_followup4_sha
+echo PHASE8_1_FOLLOWUP5_SHA256=$actual_followup5_sha
 echo PHASE8_1_RECONSTRUCTION=PASS
 echo BASE_PHASE8_SHA=$base_phase8_sha
 echo ROOM_VERSION=60
