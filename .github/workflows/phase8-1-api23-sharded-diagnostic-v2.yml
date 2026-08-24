@@ -1,23 +1,26 @@
-name: Phase 8.1 API23 Sharded Diagnostic V2
+name: Phase 8.1 API23 Blocker Isolation
 on:
   push:
     branches: [diagnostic/phase8-1-api23-shards-v2]
-  pull_request:
-    branches: [remediation/phase8-1-final-production-closure]
 permissions:
   contents: read
   actions: read
 jobs:
-  api23-shard:
+  api23-blocker:
     runs-on: ubuntu-24.04
-    timeout-minutes: 110
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        test:
+          - 'ir.restaurant.management.data.repository.InventoryLedgerIntegrationTest#stockAtAnotherLocationCannotMaskLocationShortage'
+          - 'ir.restaurant.management.ui.DashboardNavigationSettingsUx2ComposeTest#cashierHome_filtersSensitiveKpisAndActionsBeforeRendering'
+          - 'ir.restaurant.management.ui.DashboardNavigationSettingsUx2ComposeTest#inventoryHome_showsInventoryContext_withoutFinancialKpis'
+          - 'ir.restaurant.management.ui.StartupAuthenticationBoundaryComposeTest#cashierWithoutPayrollPermission_logsInWithoutPayrollSubscription_andLogoutTearsDownProtectedGraph'
+          - 'ir.restaurant.management.ui.StartupAuthenticationBoundaryComposeTest#ownerWithPayrollPermission_afterLoginCanLoadPayrollWorkspace'
+          - 'ir.restaurant.management.ui.EnterpriseCoreComposeE2ETest#treasuryReversal_uiCreatesCompensatingJournalLedgerReferenceAndMarksOriginalReversed'
     env:
       SOURCE_SHA: 7b0c36ef157f4e2e0628cadfc93714b8b6edd245
-      PHASE8_BASELINE_SHA: 38b2b13883bcb806796c9de41ac8914a8974b016
       PHASE4_ARTIFACT_ID: '9443574109'
       PHASE5_ARTIFACT_ID: '9466675671'
     steps:
@@ -39,20 +42,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
         with:
           gradle-version: '8.13'
-      - name: Compile and generate Room 60 schema
+      - name: Compile blocker instrumentation
         working-directory: phase8-1-source
         run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
-      - name: Verify complete migration assets
-        working-directory: phase8-1-source
-        run: |
-          d='app/schemas/ir.restaurant.management.data.db.AppDatabase'
-          for v in 1 55 56 57 58 59 60; do test -s "$d/$v.json"; done
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: API23 shard ${{ matrix.shard }} of 4
+      - name: API23 isolated blocker
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 23
@@ -60,9 +58,10 @@ jobs:
           target: google_apis
           ram-size: 4096M
           heap-size: 768M
-          disable-animations: true
+          disable-animations: false
           script: >-
+            adb wait-for-device &&
+            until adb shell pm path android >/dev/null 2>&1; do sleep 2; done &&
             cd "$GITHUB_WORKSPACE/phase8-1-source" &&
             gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
-            -Pandroid.testInstrumentationRunnerArguments.numShards=4
-            -Pandroid.testInstrumentationRunnerArguments.shardIndex=${{ matrix.shard }}
+            "-Pandroid.testInstrumentationRunnerArguments.class=${{ matrix.test }}"
