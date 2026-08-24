@@ -14,13 +14,14 @@ expected_release_fix6_sha="26b3a1af42b77aab959558bd93b9ba7ea0548ce3615cdcbd5f3d7
 expected_release_fix7_sha="06195430ffe396996fa6e1e7c84890b30d31ed716e96ae8c44aff703eef5951f"
 expected_release_fix8_sha="d374f5a68435670fb5df09a2b41dcd3f9db48a64dd332832fee3ce25d1a30ac0"
 expected_release_fix9_sha="bbd1142e20061390c6b49cd85fd2b3d16ba34cdc4087a7e4bb4ffc6341995a8c"
-expected_release_fix10_sha="c48e4d6c96c292f2fe2706ddf343a39e4501a90b055768cc1e054f3408dd1124"
+expected_release_fix10_sha="3004d6613705abebd6c6c546b628ff86959532f8a2cb9746fcc9d40f72b5ae33"
 
 apply_release_patch() {
   local file="$1" expected="$2" label="$3"
-  test -s "$file" || { echo "::error::missing ${label}"; exit 1; }
+  test -s "$file" || { echo "::error::missing ${label}" >&2; exit 1; }
   local actual="$(sha256sum "$file" | awk '{print $1}')"
-  test "$actual" = "$expected" || { echo "::error::${label} digest mismatch: $actual"; exit 1; }
+  echo "::notice::${label} sha256=${actual}" >&2
+  test "$actual" = "$expected" || { echo "::error::${label} digest mismatch: $actual" >&2; exit 1; }
   patch --dry-run --batch --forward -p1 -d "$root" -i "$file" >/dev/null
   patch --batch --forward -p1 -d "$root" -i "$file" >/dev/null
   printf '%s' "$actual"
