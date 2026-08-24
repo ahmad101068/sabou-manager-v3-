@@ -85,8 +85,20 @@ jobs:
           target: google_apis
           ram-size: 4096M
           heap-size: 768M
-          disable-animations: true
-          script: cd "$GITHUB_WORKSPACE/phase8-1-source" && gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+          disable-animations: false
+          script: |
+            set -euo pipefail
+            ready=0
+            for i in $(seq 1 90); do
+              if adb shell pm path android >/dev/null 2>&1; then ready=1; break; fi
+              sleep 2
+            done
+            test "$ready" = 1
+            adb shell settings put global window_animation_scale 0.0 || true
+            adb shell settings put global transition_animation_scale 0.0 || true
+            adb shell settings put global animator_duration_scale 0.0 || true
+            cd "$GITHUB_WORKSPACE/phase8-1-source"
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
       - name: Verify API23 COMPLETE results
         run: |
           mkdir -p phase8-1-results/api23-full; cp -R phase8-1-source/app/build/outputs/androidTest-results/connected/. phase8-1-results/api23-full/
@@ -101,7 +113,9 @@ jobs:
           heap-size: 768M
           disable-animations: true
           script: >-
-            mkdir -p "$GITHUB_WORKSPACE/phase8-1-results" && cd "$GITHUB_WORKSPACE/phase8-1-source" &&
+            mkdir -p "$GITHUB_WORKSPACE/phase8-1-results" &&
+            for i in $(seq 1 60); do adb shell pm path android >/dev/null 2>&1 && break; sleep 2; done &&
+            adb shell pm path android >/dev/null && cd "$GITHUB_WORKSPACE/phase8-1-source" &&
             gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest &&
             adb shell run-as ir.restaurant.management cat files/phase81-performance-results.txt > "$GITHUB_WORKSPACE/phase8-1-results/performance-api35.txt"
       - name: Verify API35 COMPLETE results
@@ -119,7 +133,9 @@ jobs:
           heap-size: 768M
           disable-animations: true
           script: >-
-            mkdir -p "$GITHUB_WORKSPACE/phase8-1-results" && p="$(adb shell getconf PAGE_SIZE|tr -d '\r')" &&
+            mkdir -p "$GITHUB_WORKSPACE/phase8-1-results" &&
+            for i in $(seq 1 60); do adb shell pm path android >/dev/null 2>&1 && break; sleep 2; done &&
+            adb shell pm path android >/dev/null && p="$(adb shell getconf PAGE_SIZE|tr -d '\r')" &&
             echo "$p" | tee "$GITHUB_WORKSPACE/phase8-1-results/api35-16k-page-size.txt" && test "$p" = 16384 &&
             cd "$GITHUB_WORKSPACE/phase8-1-source" && gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
             "-Pandroid.testInstrumentationRunnerArguments.class=${CRITICAL_16K_CLASSES}"
