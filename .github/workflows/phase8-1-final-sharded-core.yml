@@ -1,0 +1,393 @@
+name: Phase 8.1 Final Sharded Core
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      source_branch:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PHASE8_BASELINE_SHA: 38b2b13883bcb806796c9de41ac8914a8974b016
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  SOURCE_BRANCH: ${{ inputs.source_branch }}
+  REPO: ahmad101068/sabou-manager-v3-
+  PHASE4_ARTIFACT_ID: '9443574109'
+  PHASE5_ARTIFACT_ID: '9466675671'
+  CRITICAL_16K_CLASSES: ir.restaurant.management.data.db.FullMigration1ToCurrentTest,ir.restaurant.management.data.db.Migration59To60Test,ir.restaurant.management.data.db.Phase81RecentMigrationMatrixTest,ir.restaurant.management.ui.EnterpriseCoreComposeE2ETest,ir.restaurant.management.data.repository.Phase2CorrectionIntegrationTest,ir.restaurant.management.data.repository.DailySalesReversalIntegrationTest,ir.restaurant.management.data.repository.BranchPurchasePostingIntegrationTest,ir.restaurant.management.data.repository.BranchPayrollPostingIntegrationTest,ir.restaurant.management.data.repository.AssetLifecycleIntegrationTest,ir.restaurant.management.data.repository.ManagementControlTransactionIntegrationTest,ir.restaurant.management.data.repository.RecipeVersionIntegrationTest,ir.restaurant.management.data.repository.RecipeLifecycleIntegrationTest,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.repository.TreasuryV2IntegrationTest,ir.restaurant.management.data.repository.Phase81AuditIntegrityIntegrationTest,ir.restaurant.management.data.security.Phase81ForensicIntegrityLedgerIntegrationTest,ir.restaurant.management.data.repository.Phase81UserOptimisticConcurrencyIntegrationTest
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Reconstruct exact Phase 8.1 release candidate
+        run: bash .github/scripts/reconstruct-phase8-1-release-candidate.sh phase8-1-source
+      - name: Recover authentic Room 56 57 58 schemas
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/recover-phase8-1-schemas.sh phase8-1-source
+      - name: Verify exact instrumentation inventory
+        run: python3 .github/scripts/list-phase81-instrumentation-classes.py phase8-1-source/app/src/androidTest/java --shards 3 --summary
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Compile production and all instrumentation source
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+      - name: Verify Room 60 schema and migration evidence
+        working-directory: phase8-1-source
+        run: |
+          set -euo pipefail
+          d='app/schemas/ir.restaurant.management.data.db.AppDatabase'
+          for v in 1 55 56 57 58 59 60; do test -s "$d/$v.json"; done
+          test "$(sha256sum "$d/56.json"|awk '{print $1}')" = 3218181977b7fb8079bd478db3eac97c72874628da427d0b39b6ef2fe12f92fd
+          test "$(sha256sum "$d/57.json"|awk '{print $1}')" = 50eb41e5dc49e6b0f03275510f32c2ef9ac49db0ad157253be0531650cb88894
+          test "$(sha256sum "$d/58.json"|awk '{print $1}')" = 3ff188efb092b87ecaa6b3db3a4285a1f6749a992e2ea8611e15c61aade0a0d5
+          test "$(sha256sum "$d/59.json"|awk '{print $1}')" = c23b7d1f794cdb6febc643fa79ddf4f68222eb6fe3ba42622bbbd36599a14e00
+          python3 scripts/verify-room-schema.py
+          grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          grep -Fq 'MIGRATION_59_60' app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
+      - name: Static production security and integrity gate
+        run: bash .github/scripts/verify-phase8-1-static-security.sh phase8-1-source
+      - name: Full JVM regression suite
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest
+      - name: Existing performance contract
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest --tests 'ir.restaurant.management.ui.Part3BPerformanceContractTest'
+      - name: Lint debug
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:lintDebug
+      - name: Assemble debug release and androidTest
+        working-directory: phase8-1-source
+        run: gradle --no-daemon --console=plain :app:assembleDebug :app:assembleRelease :app:assembleDebugAndroidTest
+      - name: Verify APK 16KB ZIP alignment
+        working-directory: phase8-1-source
+        run: |
+          set -euo pipefail
+          z="$(find "${ANDROID_HOME}/build-tools" -type f -name zipalign|sort -V|tail -1)"
+          "$z" -c -P 16 -v 4 app/build/outputs/apk/debug/app-debug.apk
+          r="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk'|head -1)"
+          test -s "$r"
+          "$z" -c -P 16 -v 4 "$r"
+      - name: Package immutable runtime candidate and preflight evidence
+        run: |
+          set -euo pipefail
+          tar --exclude='phase8-1-source/app/build' --exclude='phase8-1-source/.gradle' -czf phase8-1-source-runtime.tgz phase8-1-source
+          tar -czf phase8-1-preflight-evidence.tgz \
+            phase8-1-source/app/build/reports/tests/testDebugUnitTest \
+            phase8-1-source/app/build/test-results/testDebugUnitTest \
+            phase8-1-source/app/build/reports/lint-results-debug.html
+          sha256sum phase8-1-source-runtime.tgz phase8-1-preflight-evidence.tgz > phase8-1-preflight-sha256.txt
+      - name: Upload immutable preflight candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase8-1-preflight-${{ inputs.source_sha }}
+          path: |
+            phase8-1-source-runtime.tgz
+            phase8-1-preflight-evidence.tgz
+            phase8-1-preflight-sha256.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  api23:
+    name: api23-shard-${{ matrix.shard }}
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Download immutable preflight candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: phase8-1-preflight-${{ inputs.source_sha }}
+          path: preflight-artifact
+      - name: Extract runtime candidate
+        run: tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: API23 full-suite shard ${{ matrix.shard }}
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 23
+          arch: x86_64
+          target: google_apis
+          ram-size: 4096M
+          heap-size: 768M
+          disable-animations: false
+          script: >-
+            for i in $(seq 1 90); do adb shell pm path android >/dev/null 2>&1 && break; sleep 2; done;
+            adb shell pm path android >/dev/null;
+            adb shell settings put global window_animation_scale 0.0 || true;
+            adb shell settings put global transition_animation_scale 0.0 || true;
+            adb shell settings put global animator_duration_scale 0.0 || true;
+            classes="$(python3 "$GITHUB_WORKSPACE/.github/scripts/list-phase81-instrumentation-classes.py" "$GITHUB_WORKSPACE/phase8-1-source/app/src/androidTest/java" --shards 3 --shard ${{ matrix.shard }})";
+            test -n "$classes";
+            cd "$GITHUB_WORKSPACE/phase8-1-source";
+            rm -rf app/build/outputs/androidTest-results/connected;
+            timeout 45m gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=$classes";
+            dest="$GITHUB_WORKSPACE/phase8-1-results/api23-full/shard-${{ matrix.shard }}";
+            mkdir -p "$dest";
+            cp -R app/build/outputs/androidTest-results/connected/. "$dest/"
+      - name: Archive API23 shard evidence
+        if: always()
+        run: |
+          if [ -d "phase8-1-results/api23-full/shard-${{ matrix.shard }}" ]; then
+            tar -czf "api23-shard-${{ matrix.shard }}.tgz" -C phase8-1-results/api23-full "shard-${{ matrix.shard }}"
+          fi
+      - name: Upload API23 shard evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase8-1-api23-${{ matrix.shard }}-${{ inputs.source_sha }}
+          path: api23-shard-${{ matrix.shard }}.tgz
+          if-no-files-found: warn
+          retention-days: 14
+
+  api35:
+    name: api35-shard-${{ matrix.shard }}
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Download immutable preflight candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: phase8-1-preflight-${{ inputs.source_sha }}
+          path: preflight-artifact
+      - name: Extract runtime candidate
+        run: tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: API35 full-suite shard ${{ matrix.shard }}
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          ram-size: 4096M
+          heap-size: 768M
+          disable-animations: true
+          script: >-
+            for i in $(seq 1 60); do adb shell pm path android >/dev/null 2>&1 && break; sleep 2; done;
+            adb shell pm path android >/dev/null;
+            classes="$(python3 "$GITHUB_WORKSPACE/.github/scripts/list-phase81-instrumentation-classes.py" "$GITHUB_WORKSPACE/phase8-1-source/app/src/androidTest/java" --shards 3 --shard ${{ matrix.shard }})";
+            test -n "$classes";
+            cd "$GITHUB_WORKSPACE/phase8-1-source";
+            rm -rf app/build/outputs/androidTest-results/connected;
+            timeout 45m gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=$classes";
+            dest="$GITHUB_WORKSPACE/phase8-1-results/api35-full/shard-${{ matrix.shard }}";
+            mkdir -p "$dest";
+            cp -R app/build/outputs/androidTest-results/connected/. "$dest/";
+            adb shell run-as ir.restaurant.management cat files/phase81-performance-results.txt > "$dest/performance-api35.txt" 2>/dev/null || true
+      - name: Archive API35 shard evidence
+        if: always()
+        run: |
+          if [ -d "phase8-1-results/api35-full/shard-${{ matrix.shard }}" ]; then
+            tar -czf "api35-shard-${{ matrix.shard }}.tgz" -C phase8-1-results/api35-full "shard-${{ matrix.shard }}"
+          fi
+      - name: Upload API35 shard evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase8-1-api35-${{ matrix.shard }}-${{ inputs.source_sha }}
+          path: api35-shard-${{ matrix.shard }}.tgz
+          if-no-files-found: warn
+          retention-days: 14
+
+  api35-16k:
+    name: api35-16k-critical
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Download immutable preflight candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: phase8-1-preflight-${{ inputs.source_sha }}
+          path: preflight-artifact
+      - name: Extract runtime candidate
+        run: tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Android 15 API35 16KB runtime critical full-flow matrix
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis_ps16k
+          ram-size: 4096M
+          heap-size: 768M
+          disable-animations: true
+          script: >-
+            for i in $(seq 1 60); do adb shell pm path android >/dev/null 2>&1 && break; sleep 2; done;
+            adb shell pm path android >/dev/null;
+            p="$(adb shell getconf PAGE_SIZE|tr -d '\r')";
+            test "$p" = 16384;
+            cd "$GITHUB_WORKSPACE/phase8-1-source";
+            rm -rf app/build/outputs/androidTest-results/connected;
+            timeout 45m gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=${CRITICAL_16K_CLASSES}";
+            dest="$GITHUB_WORKSPACE/phase8-1-results/api35-16k";
+            mkdir -p "$dest";
+            printf '%s\n' "$p" > "$dest/page-size.txt";
+            cp -R app/build/outputs/androidTest-results/connected/. "$dest/"
+      - name: Archive API35 16KB evidence
+        if: always()
+        run: |
+          if [ -d phase8-1-results/api35-16k ]; then
+            tar -czf api35-16k.tgz -C phase8-1-results api35-16k
+          fi
+      - name: Upload API35 16KB evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase8-1-api35-16k-${{ inputs.source_sha }}
+          path: api35-16k.tgz
+          if-no-files-found: warn
+          retention-days: 14
+
+  handoff:
+    name: formal-handoff
+    needs: [preflight, api23, api35, api35-16k]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Download immutable preflight candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: phase8-1-preflight-${{ inputs.source_sha }}
+          path: preflight-artifact
+      - name: Download API23 shard evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: phase8-1-api23-*-${{ inputs.source_sha }}
+          path: runtime-artifacts/api23
+          merge-multiple: true
+      - name: Download API35 shard evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: phase8-1-api35-[0-2]-${{ inputs.source_sha }}
+          path: runtime-artifacts/api35
+          merge-multiple: true
+      - name: Download API35 16KB evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: phase8-1-api35-16k-${{ inputs.source_sha }}
+          path: runtime-artifacts/api35-16k
+      - name: Restore candidate, reports and runtime evidence
+        run: |
+          set -euo pipefail
+          (cd preflight-artifact && sha256sum -c phase8-1-preflight-sha256.txt)
+          tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
+          tar -xzf preflight-artifact/phase8-1-preflight-evidence.tgz
+          mkdir -p phase8-1-results/api23-full phase8-1-results/api35-full phase8-1-results
+          test "$(find runtime-artifacts/api23 -name 'api23-shard-*.tgz' | wc -l)" -eq 3
+          test "$(find runtime-artifacts/api35 -name 'api35-shard-*.tgz' | wc -l)" -eq 3
+          for f in runtime-artifacts/api23/api23-shard-*.tgz; do tar -xzf "$f" -C phase8-1-results/api23-full; done
+          for f in runtime-artifacts/api35/api35-shard-*.tgz; do tar -xzf "$f" -C phase8-1-results/api35-full; done
+          tar -xzf runtime-artifacts/api35-16k/api35-16k.tgz -C phase8-1-results
+      - name: Verify API23 COMPLETE results across fresh-emulator shards
+        run: python3 .github/scripts/verify-phase81-full-suite-results.py phase8-1-results/api23-full API23
+      - name: Verify API35 COMPLETE results across fresh-emulator shards
+        run: |
+          python3 .github/scripts/verify-phase81-full-suite-results.py phase8-1-results/api35-full API35
+          cat phase8-1-results/api35-full/shard-*/performance-api35.txt > phase8-1-results/performance-api35.txt
+          grep -Fq 'PHASE81_PERF inventory=10000 customers=50000 operational=100000' phase8-1-results/performance-api35.txt
+      - name: Verify Android 15 API35 16KB results
+        run: |
+          test "$(tr -d '\r\n' < phase8-1-results/api35-16k/page-size.txt)" = 16384
+          python3 .github/scripts/verify-phase8-matrix-results.py phase8-1-results/api35-16k API35_16K
+      - name: Build exact Phase 8.1 formal production handoff
+        run: bash .github/scripts/build-phase8-1-handoff.sh
+      - name: Upload Phase 8.1 final production handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase8-1-production-final-${{ inputs.source_sha }}
+          path: |
+            PHASE-8.1-FINAL-PRODUCTION-REPORT.md
+            PHASE-8.1-EVIDENCE.txt
+            PHASE-8.1-CHANGED-FILES.txt
+            PHASE-8.1-TEST-MATRIX.md
+            PHASE-8.1-SECURITY-CLOSURE.md
+            PHASE-8.1-PERFORMANCE-RESULTS.md
+            PHASE-8.1-MIGRATION-REPORT.md
+            restaurant-management-production-final-source-*.zip
+            phase8-1-results/
+            phase8-1-source/app/build/reports/tests/testDebugUnitTest/
+            phase8-1-source/app/build/test-results/testDebugUnitTest/
+            phase8-1-source/app/build/reports/lint-results-debug.html
+          if-no-files-found: error
+          retention-days: 90
