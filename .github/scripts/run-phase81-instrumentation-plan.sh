@@ -18,6 +18,9 @@ test -s "$test_apk"
 test -s "$plan"
 mkdir -p "$out"
 adb shell pm path android >/dev/null
+adb shell settings put global window_animation_scale 0.0 >/dev/null 2>&1 || true
+adb shell settings put global transition_animation_scale 0.0 >/dev/null 2>&1 || true
+adb shell settings put global animator_duration_scale 0.0 >/dev/null 2>&1 || true
 adb install -r -t "$app_apk" >/dev/null
 adb install -r -t "$test_apk" >/dev/null
 
