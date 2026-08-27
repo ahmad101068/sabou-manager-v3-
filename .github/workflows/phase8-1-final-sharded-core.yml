@@ -8,6 +8,7 @@ on:
       source_branch:
         required: true
         type: string
+
 permissions:
   contents: read
   actions: read
@@ -86,7 +87,7 @@ jobs:
           r="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk'|head -1)"
           test -s "$r"
           "$z" -c -P 16 -v 4 "$r"
-      - name: Package immutable runtime candidate and preflight evidence
+      - name: Package immutable runtime candidate APKs and preflight evidence
         run: |
           set -euo pipefail
           tar --exclude='phase8-1-source/app/build' --exclude='phase8-1-source/.gradle' -czf phase8-1-source-runtime.tgz phase8-1-source
@@ -94,7 +95,16 @@ jobs:
             phase8-1-source/app/build/reports/tests/testDebugUnitTest \
             phase8-1-source/app/build/test-results/testDebugUnitTest \
             phase8-1-source/app/build/reports/lint-results-debug.html
-          sha256sum phase8-1-source-runtime.tgz phase8-1-preflight-evidence.tgz > phase8-1-preflight-sha256.txt
+          cp phase8-1-source/app/build/outputs/apk/debug/app-debug.apk phase8-1-app-debug.apk
+          test_apk="$(find phase8-1-source/app/build/outputs/apk -type f -name '*androidTest*.apk' -print -quit)"
+          test -n "$test_apk"
+          test -s "$test_apk"
+          cp "$test_apk" phase8-1-test-debug.apk
+          sha256sum \
+            phase8-1-source-runtime.tgz \
+            phase8-1-preflight-evidence.tgz \
+            phase8-1-app-debug.apk \
+            phase8-1-test-debug.apk > phase8-1-preflight-sha256.txt
       - name: Upload immutable preflight candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -102,6 +112,8 @@ jobs:
           path: |
             phase8-1-source-runtime.tgz
             phase8-1-preflight-evidence.tgz
+            phase8-1-app-debug.apk
+            phase8-1-test-debug.apk
             phase8-1-preflight-sha256.txt
           if-no-files-found: error
           retention-days: 14
@@ -110,7 +122,7 @@ jobs:
     name: api23-shard-${{ matrix.shard }}
     needs: preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
@@ -126,21 +138,17 @@ jobs:
         with:
           name: phase8-1-preflight-${{ inputs.source_sha }}
           path: preflight-artifact
-      - name: Extract runtime candidate
-        run: tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
-        with:
-          gradle-version: '8.13'
+      - name: Verify and extract runtime candidate
+        run: |
+          set -euo pipefail
+          (cd preflight-artifact && sha256sum -c phase8-1-preflight-sha256.txt)
+          tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: API23 full-suite shard ${{ matrix.shard }}
+      - name: API23 exact direct-instrumentation shard ${{ matrix.shard }}
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 23
@@ -150,39 +158,29 @@ jobs:
           heap-size: 768M
           disable-animations: false
           script: >-
-            for i in $(seq 1 90); do adb shell pm path android >/dev/null 2>&1 && break; sleep 2; done;
-            adb shell pm path android >/dev/null;
-            adb shell settings put global window_animation_scale 0.0 || true;
-            adb shell settings put global transition_animation_scale 0.0 || true;
-            adb shell settings put global animator_duration_scale 0.0 || true;
-            classes="$(python3 "$GITHUB_WORKSPACE/.github/scripts/list-phase81-instrumentation-classes.py" "$GITHUB_WORKSPACE/phase8-1-source/app/src/androidTest/java" --shards 3 --shard ${{ matrix.shard }})";
-            test -n "$classes";
-            cd "$GITHUB_WORKSPACE/phase8-1-source";
-            rm -rf app/build/outputs/androidTest-results/connected;
-            timeout 45m gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=$classes";
-            dest="$GITHUB_WORKSPACE/phase8-1-results/api23-full/shard-${{ matrix.shard }}";
-            mkdir -p "$dest";
-            cp -R app/build/outputs/androidTest-results/connected/. "$dest/"
-      - name: Archive API23 shard evidence
-        if: always()
+            python3 "$GITHUB_WORKSPACE/.github/scripts/list-phase81-instrumentation-classes.py" "$GITHUB_WORKSPACE/phase8-1-source/app/src/androidTest/java" --shards 3 --shard ${{ matrix.shard }} --plan > "$RUNNER_TEMP/phase81-api23-plan.tsv" &&
+            bash "$GITHUB_WORKSPACE/.github/scripts/run-phase81-instrumentation-plan.sh" "$GITHUB_WORKSPACE/preflight-artifact/phase8-1-app-debug.apk" "$GITHUB_WORKSPACE/preflight-artifact/phase8-1-test-debug.apk" "$RUNNER_TEMP/phase81-api23-plan.tsv" "$GITHUB_WORKSPACE/phase8-1-results/api23-full/shard-${{ matrix.shard }}" "API23-shard-${{ matrix.shard }}"
+      - name: Verify shard expected-count evidence
         run: |
-          if [ -d "phase8-1-results/api23-full/shard-${{ matrix.shard }}" ]; then
-            tar -czf "api23-shard-${{ matrix.shard }}.tgz" -C phase8-1-results/api23-full "shard-${{ matrix.shard }}"
-          fi
+          set -euo pipefail
+          d="phase8-1-results/api23-full/shard-${{ matrix.shard }}"
+          expected="$(awk -F '\t' '{s+=$2} END {print s+0}' "$RUNNER_TEMP/phase81-api23-plan.tsv")"
+          test "$(cat "$d/expected-test-count.txt")" = "$expected"
+      - name: Archive API23 shard evidence
+        run: tar -czf "api23-shard-${{ matrix.shard }}.tgz" -C phase8-1-results/api23-full "shard-${{ matrix.shard }}"
       - name: Upload API23 shard evidence
-        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: phase8-1-api23-${{ matrix.shard }}-${{ inputs.source_sha }}
           path: api23-shard-${{ matrix.shard }}.tgz
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   api35:
     name: api35-shard-${{ matrix.shard }}
     needs: preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
@@ -198,21 +196,17 @@ jobs:
         with:
           name: phase8-1-preflight-${{ inputs.source_sha }}
           path: preflight-artifact
-      - name: Extract runtime candidate
-        run: tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
-        with:
-          gradle-version: '8.13'
+      - name: Verify and extract runtime candidate
+        run: |
+          set -euo pipefail
+          (cd preflight-artifact && sha256sum -c phase8-1-preflight-sha256.txt)
+          tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: API35 full-suite shard ${{ matrix.shard }}
+      - name: API35 exact direct-instrumentation shard ${{ matrix.shard }}
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 35
@@ -222,37 +216,29 @@ jobs:
           heap-size: 768M
           disable-animations: true
           script: >-
-            for i in $(seq 1 60); do adb shell pm path android >/dev/null 2>&1 && break; sleep 2; done;
-            adb shell pm path android >/dev/null;
-            classes="$(python3 "$GITHUB_WORKSPACE/.github/scripts/list-phase81-instrumentation-classes.py" "$GITHUB_WORKSPACE/phase8-1-source/app/src/androidTest/java" --shards 3 --shard ${{ matrix.shard }})";
-            test -n "$classes";
-            cd "$GITHUB_WORKSPACE/phase8-1-source";
-            rm -rf app/build/outputs/androidTest-results/connected;
-            timeout 45m gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=$classes";
-            dest="$GITHUB_WORKSPACE/phase8-1-results/api35-full/shard-${{ matrix.shard }}";
-            mkdir -p "$dest";
-            cp -R app/build/outputs/androidTest-results/connected/. "$dest/";
-            adb shell run-as ir.restaurant.management cat files/phase81-performance-results.txt > "$dest/performance-api35.txt" 2>/dev/null || true
-      - name: Archive API35 shard evidence
-        if: always()
+            python3 "$GITHUB_WORKSPACE/.github/scripts/list-phase81-instrumentation-classes.py" "$GITHUB_WORKSPACE/phase8-1-source/app/src/androidTest/java" --shards 3 --shard ${{ matrix.shard }} --plan > "$RUNNER_TEMP/phase81-api35-plan.tsv" &&
+            bash "$GITHUB_WORKSPACE/.github/scripts/run-phase81-instrumentation-plan.sh" "$GITHUB_WORKSPACE/preflight-artifact/phase8-1-app-debug.apk" "$GITHUB_WORKSPACE/preflight-artifact/phase8-1-test-debug.apk" "$RUNNER_TEMP/phase81-api35-plan.tsv" "$GITHUB_WORKSPACE/phase8-1-results/api35-full/shard-${{ matrix.shard }}" "API35-shard-${{ matrix.shard }}" 1
+      - name: Verify shard expected-count evidence
         run: |
-          if [ -d "phase8-1-results/api35-full/shard-${{ matrix.shard }}" ]; then
-            tar -czf "api35-shard-${{ matrix.shard }}.tgz" -C phase8-1-results/api35-full "shard-${{ matrix.shard }}"
-          fi
+          set -euo pipefail
+          d="phase8-1-results/api35-full/shard-${{ matrix.shard }}"
+          expected="$(awk -F '\t' '{s+=$2} END {print s+0}' "$RUNNER_TEMP/phase81-api35-plan.tsv")"
+          test "$(cat "$d/expected-test-count.txt")" = "$expected"
+      - name: Archive API35 shard evidence
+        run: tar -czf "api35-shard-${{ matrix.shard }}.tgz" -C phase8-1-results/api35-full "shard-${{ matrix.shard }}"
       - name: Upload API35 shard evidence
-        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: phase8-1-api35-${{ matrix.shard }}-${{ inputs.source_sha }}
           path: api35-shard-${{ matrix.shard }}.tgz
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   api35-16k:
     name: api35-16k-critical
     needs: preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 80
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -264,21 +250,17 @@ jobs:
         with:
           name: phase8-1-preflight-${{ inputs.source_sha }}
           path: preflight-artifact
-      - name: Extract runtime candidate
-        run: tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
-        with:
-          gradle-version: '8.13'
+      - name: Verify and extract runtime candidate
+        run: |
+          set -euo pipefail
+          (cd preflight-artifact && sha256sum -c phase8-1-preflight-sha256.txt)
+          tar -xzf preflight-artifact/phase8-1-source-runtime.tgz
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Android 15 API35 16KB runtime critical full-flow matrix
+      - name: Android 15 API35 16KB exact direct-instrumentation critical matrix
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 35
@@ -288,30 +270,18 @@ jobs:
           heap-size: 768M
           disable-animations: true
           script: >-
-            for i in $(seq 1 60); do adb shell pm path android >/dev/null 2>&1 && break; sleep 2; done;
-            adb shell pm path android >/dev/null;
-            p="$(adb shell getconf PAGE_SIZE|tr -d '\r')";
-            test "$p" = 16384;
-            cd "$GITHUB_WORKSPACE/phase8-1-source";
-            rm -rf app/build/outputs/androidTest-results/connected;
-            timeout 45m gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=${CRITICAL_16K_CLASSES}";
-            dest="$GITHUB_WORKSPACE/phase8-1-results/api35-16k";
-            mkdir -p "$dest";
-            printf '%s\n' "$p" > "$dest/page-size.txt";
-            cp -R app/build/outputs/androidTest-results/connected/. "$dest/"
+            python3 "$GITHUB_WORKSPACE/.github/scripts/list-phase81-instrumentation-classes.py" "$GITHUB_WORKSPACE/phase8-1-source/app/src/androidTest/java" --only "$CRITICAL_16K_CLASSES" --plan > "$RUNNER_TEMP/phase81-api35-16k-plan.tsv" &&
+            p="$(adb shell getconf PAGE_SIZE | tr -d '\r')" && test "$p" = 16384 &&
+            mkdir -p "$GITHUB_WORKSPACE/phase8-1-results/api35-16k" && printf '%s\n' "$p" > "$GITHUB_WORKSPACE/phase8-1-results/api35-16k/page-size.txt" &&
+            bash "$GITHUB_WORKSPACE/.github/scripts/run-phase81-instrumentation-plan.sh" "$GITHUB_WORKSPACE/preflight-artifact/phase8-1-app-debug.apk" "$GITHUB_WORKSPACE/preflight-artifact/phase8-1-test-debug.apk" "$RUNNER_TEMP/phase81-api35-16k-plan.tsv" "$GITHUB_WORKSPACE/phase8-1-results/api35-16k" "API35_16K"
       - name: Archive API35 16KB evidence
-        if: always()
-        run: |
-          if [ -d phase8-1-results/api35-16k ]; then
-            tar -czf api35-16k.tgz -C phase8-1-results api35-16k
-          fi
+        run: tar -czf api35-16k.tgz -C phase8-1-results api35-16k
       - name: Upload API35 16KB evidence
-        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: phase8-1-api35-16k-${{ inputs.source_sha }}
           path: api35-16k.tgz
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   handoff:
@@ -347,7 +317,7 @@ jobs:
         with:
           name: phase8-1-api35-16k-${{ inputs.source_sha }}
           path: runtime-artifacts/api35-16k
-      - name: Restore candidate, reports and runtime evidence
+      - name: Restore candidate reports and runtime evidence
         run: |
           set -euo pipefail
           (cd preflight-artifact && sha256sum -c phase8-1-preflight-sha256.txt)
@@ -359,15 +329,17 @@ jobs:
           for f in runtime-artifacts/api23/api23-shard-*.tgz; do tar -xzf "$f" -C phase8-1-results/api23-full; done
           for f in runtime-artifacts/api35/api35-shard-*.tgz; do tar -xzf "$f" -C phase8-1-results/api35-full; done
           tar -xzf runtime-artifacts/api35-16k/api35-16k.tgz -C phase8-1-results
-      - name: Verify API23 COMPLETE results across fresh-emulator shards
+      - name: Verify API23 COMPLETE exact results
         run: python3 .github/scripts/verify-phase81-full-suite-results.py phase8-1-results/api23-full API23
-      - name: Verify API35 COMPLETE results across fresh-emulator shards
+      - name: Verify API35 COMPLETE exact results
         run: |
+          set -euo pipefail
           python3 .github/scripts/verify-phase81-full-suite-results.py phase8-1-results/api35-full API35
           cat phase8-1-results/api35-full/shard-*/performance-api35.txt > phase8-1-results/performance-api35.txt
           grep -Fq 'PHASE81_PERF inventory=10000 customers=50000 operational=100000' phase8-1-results/performance-api35.txt
-      - name: Verify Android 15 API35 16KB results
+      - name: Verify Android 15 API35 16KB exact results
         run: |
+          set -euo pipefail
           test "$(tr -d '\r\n' < phase8-1-results/api35-16k/page-size.txt)" = 16384
           python3 .github/scripts/verify-phase8-matrix-results.py phase8-1-results/api35-16k API35_16K
       - name: Build exact Phase 8.1 formal production handoff
