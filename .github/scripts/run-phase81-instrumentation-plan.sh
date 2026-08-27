@@ -40,8 +40,9 @@ while IFS=$'\t' read -r selector expected extra; do
   xml="$out/TEST-$(printf '%03d' "$index").xml"
   echo "PHASE81_SELECTOR_START label=$label index=$index expected=$expected selector=$selector"
 
+  adb shell am force-stop ir.restaurant.management >/dev/null 2>&1 || true
   set +e
-  adb shell am instrument -w -r -e class "$selector" "$runner" | tee "$raw"
+  timeout 15m adb shell am instrument -w -r -e class "$selector" "$runner" | tee "$raw"
   adb_rc=${PIPESTATUS[0]}
   set -e
 
