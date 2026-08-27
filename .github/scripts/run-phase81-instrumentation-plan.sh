@@ -17,6 +17,11 @@ test -s "$app_apk"
 test -s "$test_apk"
 test -s "$plan"
 mkdir -p "$out"
+
+plan_rows="$(awk -F '\t' 'NF { if (NF != 2 || $2 !~ /^[1-9][0-9]*$/) exit 2; rows++; tests += $2 } END { if (rows == 0) exit 3; print rows }' "$plan")"
+plan_expected="$(awk -F '\t' 'NF { tests += $2 } END { print tests + 0 }' "$plan")"
+echo "PHASE81_PLAN_INPUT label=$label selectors=$plan_rows expected_tests=$plan_expected"
+
 adb shell pm path android >/dev/null
 adb shell settings put global window_animation_scale 0.0 >/dev/null 2>&1 || true
 adb shell settings put global transition_animation_scale 0.0 >/dev/null 2>&1 || true
@@ -33,7 +38,8 @@ fi
 
 index=0
 executed_expected=0
-while IFS=$'\t' read -r selector expected extra; do
+exec 3< "$plan"
+while IFS=$'\t' read -r selector expected extra <&3; do
   [ -n "${selector:-}" ] || continue
   if [ -n "${extra:-}" ] || ! [[ "$expected" =~ ^[1-9][0-9]*$ ]]; then
     echo "Invalid plan row: selector='$selector' expected='$expected' extra='$extra'" >&2
@@ -45,7 +51,7 @@ while IFS=$'\t' read -r selector expected extra; do
 
   adb shell am force-stop ir.restaurant.management >/dev/null 2>&1 || true
   set +e
-  timeout 15m adb shell am instrument -w -r -e class "$selector" "$runner" | tee "$raw"
+  timeout 15m adb shell am instrument -w -r -e class "$selector" "$runner" </dev/null | tee "$raw"
   adb_rc=${PIPESTATUS[0]}
   set -e
 
@@ -67,11 +73,16 @@ while IFS=$'\t' read -r selector expected extra; do
   executed_expected=$((executed_expected + expected))
   index=$((index + 1))
   adb shell am force-stop ir.restaurant.management >/dev/null 2>&1 || true
-done < "$plan"
+done
+exec 3<&-
 
 if [ "$index" -le 0 ]; then
   echo "Instrumentation plan contained no selectors" >&2
   exit 68
+fi
+if [ "$index" -ne "$plan_rows" ] || [ "$executed_expected" -ne "$plan_expected" ]; then
+  echo "PHASE81_PLAN_INCOMPLETE label=$label executed_selectors=$index/$plan_rows executed_tests=$executed_expected/$plan_expected" >&2
+  exit 69
 fi
 printf '%s\n' "$executed_expected" > "$out/expected-test-count.txt"
 echo "PHASE81_PLAN_PASS label=$label selectors=$index expected_tests=$executed_expected"
