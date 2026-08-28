@@ -45,22 +45,50 @@ while IFS=$'\t' read -r selector expected extra <&3; do
     echo "Invalid plan row: selector='$selector' expected='$expected' extra='$extra'" >&2
     exit 66
   fi
-  raw="$out/raw-$(printf '%03d' "$index").txt"
   xml="$out/TEST-$(printf '%03d' "$index").xml"
   echo "PHASE81_SELECTOR_START label=$label index=$index expected=$expected selector=$selector"
 
-  adb shell am force-stop ir.restaurant.management >/dev/null 2>&1 || true
-  set +e
-  timeout 15m adb shell am instrument -w -r -e class "$selector" "$runner" </dev/null | tee "$raw"
-  adb_rc=${PIPESTATUS[0]}
-  set -e
+  selector_passed=0
+  for attempt in 1 2; do
+    raw="$out/raw-$(printf '%03d' "$index")-attempt-${attempt}.txt"
+    rm -f "$xml"
+    adb shell am force-stop ir.restaurant.management >/dev/null 2>&1 || true
 
-  parser_rc=0
-  python3 "$GITHUB_WORKSPACE/.github/scripts/parse-phase81-instrumentation-output.py" \
-    "$raw" "$xml" "$label" "$selector" "$expected" || parser_rc=$?
+    set +e
+    timeout 15m adb shell am instrument -w -r -e class "$selector" "$runner" </dev/null | tee "$raw"
+    adb_rc=${PIPESTATUS[0]}
+    set -e
 
-  if [ "$adb_rc" -ne 0 ] || [ "$parser_rc" -ne 0 ]; then
-    echo "PHASE81_SELECTOR_FAIL label=$label index=$index adb_rc=$adb_rc parser_rc=$parser_rc selector=$selector" >&2
+    parser_rc=0
+    python3 "$GITHUB_WORKSPACE/.github/scripts/parse-phase81-instrumentation-output.py" \
+      "$raw" "$xml" "$label" "$selector" "$expected" || parser_rc=$?
+
+    if [ "$adb_rc" -eq 0 ] && [ "$parser_rc" -eq 0 ]; then
+      selector_passed=1
+      break
+    fi
+
+    infra_crash=0
+    if grep -Eq 'Native crash|Process crashed|Instrumentation run failed due to Native crash|INSTRUMENTATION_FAILED' "$raw"; then
+      infra_crash=1
+    fi
+    if [ "$attempt" -lt 2 ] && [ "$infra_crash" -eq 1 ]; then
+      echo "PHASE81_SELECTOR_INFRA_RETRY label=$label index=$index attempt=$attempt selector=$selector" >&2
+      rm -f "$xml"
+      adb shell pm path android >/dev/null
+      adb shell am force-stop ir.restaurant.management >/dev/null 2>&1 || true
+      adb install -r -t "$app_apk" >/dev/null
+      adb install -r -t "$test_apk" >/dev/null
+      sleep 2
+      continue
+    fi
+
+    echo "PHASE81_SELECTOR_FAIL label=$label index=$index attempt=$attempt adb_rc=$adb_rc parser_rc=$parser_rc infra_crash=$infra_crash selector=$selector" >&2
+    exit 67
+  done
+
+  if [ "$selector_passed" -ne 1 ]; then
+    echo "PHASE81_SELECTOR_FAIL label=$label index=$index selector=$selector" >&2
     exit 67
   fi
 
