@@ -1,0 +1,150 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt
+index 762b0a8..85aa6f3 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt
+@@ -4,6 +4,9 @@ import android.content.Context
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.security.SessionAuthorizer
++import ir.restaurant.management.domain.operations.UserDraft
++import ir.restaurant.management.domain.operations.UserRole
+ import ir.restaurant.management.data.db.CustomerEntity
+ import ir.restaurant.management.data.db.CustomerReceivableLedgerEntity
+ import ir.restaurant.management.data.db.SalesInvoiceEntity
+@@ -22,9 +25,14 @@ class AlertReceivableIntegrationTest {
+     private var now = 100_000L
+ 
+     @Before
+-    fun setUp() {
++    fun setUp() = runBlocking {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+-        alerts = LocalAlertRepository(database)
++        val authorizer = SessionAuthorizer(database)
++        LocalSecurityRepository(database, authorizer = authorizer, clock = { now }).save(
++            null,
++            UserDraft("alert-recv-owner", "مالک مطالبات", "123456", UserRole.OWNER, "87654321"),
++        )
++        alerts = LocalAlertRepository(database, authorizer)
+     }
+ 
+     @After
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
+index 88b8255..e0c63c2 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
+@@ -5,6 +5,11 @@ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.core.QuantityMicros
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.security.SessionAuthorizer
++import ir.restaurant.management.domain.operations.UserDraft
++import ir.restaurant.management.domain.operations.UserRole
++import ir.restaurant.management.domain.common.BusinessError
++import ir.restaurant.management.domain.common.BusinessRuleViolation
+ import ir.restaurant.management.data.db.InventoryItemEntity
+ import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.runBlocking
+@@ -23,9 +28,14 @@ class AlertStateIntegrationTest {
+     private val today = 24_000L
+ 
+     @Before
+-    fun setUp() {
++    fun setUp() = runBlocking {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+-        repository = LocalAlertRepository(database)
++        val authorizer = SessionAuthorizer(database)
++        LocalSecurityRepository(database, authorizer = authorizer, clock = { now }).save(
++            null,
++            UserDraft("alert-owner", "مالک هشدار", "123456", UserRole.OWNER, "87654321"),
++        )
++        repository = LocalAlertRepository(database, authorizer)
+     }
+ 
+     @After
+@@ -85,6 +95,25 @@ class AlertStateIntegrationTest {
+         assertEquals(0L, scalar("SELECT COUNT(*) FROM app_alerts WHERE id=${reopened.id}"))
+     }
+ 
++    @Test
++    fun alertRepositoryDeniesCashierAtDataBoundaryAndAuditsDenial() = runBlocking {
++        val authorizer = SessionAuthorizer(database)
++        val security = LocalSecurityRepository(database, authorizer = authorizer, clock = { now })
++        val cashierId = security.save(null, UserDraft("alert-cashier", "صندوقدار هشدار", "654321", UserRole.CASHIER))
++        security.switchUser(cashierId, "654321")
++        val denied = LocalAlertRepository(database, authorizer)
++        try {
++            denied.alerts().first()
++            throw AssertionError("کاربر فاقد مجوز نباید Alert feed را از Data boundary بخواند")
++        } catch (error: BusinessRuleViolation) {
++            assertTrue(error.error is BusinessError.PermissionDenied)
++        }
++        assertEquals(
++            1L,
++            scalar("SELECT COUNT(*) FROM audit_logs WHERE action='ACCESS_DENIED' AND actorId=$cashierId AND reason='PERMISSION_DENIED:ACCOUNTING'"),
++        )
++    }
++
+     private fun scalar(sql: String): Long = database.openHelper.writableDatabase.query(sql).use { cursor ->
+         check(cursor.moveToFirst())
+         cursor.getLong(0)
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/FixedInventoryTestAuthorizer.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/FixedInventoryTestAuthorizer.kt
+new file mode 100644
+index 0000000..04b29db
+--- /dev/null
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/FixedInventoryTestAuthorizer.kt
+@@ -0,0 +1,19 @@
++package ir.restaurant.management.data.repository
++
++import ir.restaurant.management.domain.security.AuthorizationService
++import ir.restaurant.management.domain.security.AuthorizedActor
++import ir.restaurant.management.domain.security.Permission
++import ir.restaurant.management.domain.security.UserRole
++
++internal class FixedInventoryTestAuthorizer(
++    private val actorId: Long = 42L,
++    private val role: UserRole = UserRole.OWNER,
++) : AuthorizationService {
++    private val actor = AuthorizedActor(actorId, "inventory-test", role)
++    override suspend fun actorIdentity(): AuthorizedActor = actor
++    override suspend fun can(permission: Permission): Boolean = role.allows(permission)
++    override suspend fun require(permission: Permission): AuthorizedActor {
++        check(role.allows(permission)) { "test role missing $permission" }
++        return actor
++    }
++}
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryCountWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryCountWorkflowIntegrationTest.kt
+index c23036d..ce84f30 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryCountWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryCountWorkflowIntegrationTest.kt
+@@ -67,7 +67,7 @@ class InventoryCountWorkflowIntegrationTest {
+                 updatedAtEpochMillis = now,
+             ),
+         )
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 10_000_000,
+             valueRial = 2_000_000,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
+index 749e6a5..6e74948 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
+@@ -41,7 +41,7 @@ class InventoryLedgerIntegrationTest {
+     @Before
+     fun setUp() {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+-        engine = LocalInventoryCommandEngine(database, clock = { NOW })
++        engine = LocalInventoryCommandEngine(database, clock = { NOW }, authorizer = FixedInventoryTestAuthorizer())
+     }
+ 
+     @After
+@@ -501,6 +501,84 @@ class InventoryLedgerIntegrationTest {
+         assertEquals(2_000_000L, database.inventoryLotDao().byId(lotId)?.quantityMicros)
+     }
+ 
++    @Test
++    fun directInventoryCommandRejectsUnauthorizedSessionAndAuditsDenial() = runBlocking {
++        val sessionAuthorizer = SessionAuthorizer(database)
++        val security = LocalSecurityRepository(database, clock = { NOW }, authorizer = sessionAuthorizer)
++        security.save(null, UserDraft("ledger-owner-sec", "مالک امنیت", "123456", UserRole.OWNER, "87654321"))

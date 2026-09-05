@@ -1,0 +1,21 @@
+--- a/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt
+@@ -49,6 +49,7 @@
+         Index(value = ["referenceType", "referenceId"]),
+         Index("correlationId"),
+         Index("actorBranchIdSnapshot"),
++        Index(value = ["integritySequence"], unique = true),
+     ],
+ )
+ data class AuditLogEntity(
+--- a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseLedgerGuards.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseLedgerGuards.kt
+@@ -12,7 +12,7 @@
+           OR NEW.integritySequence <= 0 OR length(NEW.eventHash) != 64
+           OR (NEW.integritySequence = 1 AND NEW.previousEventHash != '')
+           OR (NEW.integritySequence > 1 AND length(NEW.previousEventHash) != 64)
+-          OR NEW.integritySequence != COALESCE((SELECT MAX(integritySequence)+1 FROM audit_logs),1)
++          OR NEW.integritySequence != COALESCE((SELECT integritySequence+1 FROM audit_logs ORDER BY integritySequence DESC LIMIT 1),1)
+           OR NEW.previousEventHash != COALESCE((SELECT eventHash FROM audit_logs ORDER BY integritySequence DESC LIMIT 1),'')
+           OR ((NEW.referenceType IS NULL) != (NEW.referenceId IS NULL))
+         BEGIN SELECT RAISE(ABORT, 'INVALID_AUDIT_EVENT'); END""",

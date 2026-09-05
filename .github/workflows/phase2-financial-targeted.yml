@@ -1,0 +1,65 @@
+name: Phase 2 Financial Targeted Verification
+
+on:
+  push:
+    branches: [remediation/financial-truth]
+    paths:
+      - 'phase2-financial.patch.gz.b64'
+      - '.github/scripts/reconstruct-phase2-financial.sh'
+      - '.github/workflows/phase2-financial-targeted.yml'
+      - 'docs/MASTER_REMEDIATION_MATRIX.md'
+  pull_request:
+    branches: [remediation/canonical-hardening]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase2-financial-targeted-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  financial-targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Reconstruct exact Phase 2 candidate
+        run: bash .github/scripts/reconstruct-phase2-financial.sh
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '8.13'
+      - name: Compile Phase 2 source and targeted instrumentation
+        working-directory: phase3-source
+        run: gradle --no-daemon :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+      - name: Targeted JVM financial contracts
+        working-directory: phase3-source
+        run: >-
+          gradle --no-daemon :app:testDebugUnitTest
+          --tests 'ir.restaurant.management.phase2.*'
+          --tests 'ir.restaurant.management.ui.Phase2DashboardModelsTest'
+      - name: Verify Room 55 and source hygiene
+        working-directory: phase3-source
+        run: |
+          set -euo pipefail
+          grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 55' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/55.json
+          test ! -e app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+          if find . -type f \( -name '*.apk' -o -name '*.aab' -o -name 'local.properties' \) | grep -q .; then
+            echo '::error::Forbidden generated/binary source content detected'
+            exit 1
+          fi
+      - name: Upload targeted JVM evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase2-financial-targeted-${{ github.sha }}
+          path: |
+            phase3-source/app/build/test-results/testDebugUnitTest/**
+            phase3-source/app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,18 @@
+name: Phase 8.1 Final Production Verification
+on:
+  push:
+    branches: [remediation/phase8-1-final-production-closure]
+  pull_request:
+    branches: [remediation/phase8-final-verification-20260823]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: phase8-1-final-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  phase8-1-final:
+    uses: ./.github/workflows/phase8-1-final-sharded-core.yml
+    with:
+      source_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      source_branch: ${{ github.event.pull_request.head.ref || github.ref_name }}

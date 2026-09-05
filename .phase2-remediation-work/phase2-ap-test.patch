@@ -1,0 +1,84 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
+index 7c07661..8c82702 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
+@@ -4,6 +4,7 @@ import android.content.Context
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.core.MoneyRial
++import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.core.QuantityMicros
+ import ir.restaurant.management.data.db.AppDatabase
+ import ir.restaurant.management.data.db.BranchEntity
+@@ -15,6 +16,8 @@ import ir.restaurant.management.domain.operations.UserRole
+ import ir.restaurant.management.domain.purchase.PurchaseDraft
+ import ir.restaurant.management.domain.purchase.PurchaseLineDraft
+ import ir.restaurant.management.domain.purchase.PurchasePaymentMethod
++import ir.restaurant.management.domain.purchase.PurchaseSettlementDraft
++import ir.restaurant.management.domain.purchase.SettlementPaymentMethod
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+ import org.junit.Assert.assertEquals
+@@ -82,6 +85,51 @@ class BranchPurchasePostingIntegrationTest {
+         assertEquals(second.invoiceNo, requireNotNull(database.purchaseDao().byId(second.purchaseId)).invoiceNo)
+     }
+ 
++    @Test
++    fun payablePurchase_cardSettlementUsesTreasuryAndApGlExactlyOnce() = runBlocking {
++        val supplierId = database.supplierDao().insert(
++            SupplierEntity(name = "تأمین‌کننده تسویه خزانه", createdAtEpochMillis = now, updatedAtEpochMillis = now),
++        )
++        val itemId = database.inventoryDao().insert(
++            InventoryItemEntity(
++                name = "کالای تسویه خزانه", category = "مواد اولیه", unit = "عدد", supplierId = supplierId,
++                createdAtEpochMillis = now, updatedAtEpochMillis = now,
++            ),
++        )
++        val purchase = repository.post(
++            PurchaseDraft(
++                invoiceNo = "BR-AP-CARD", supplierId = supplierId, purchaseEpochDay = 30_020L, dueEpochDay = 30_030L,
++                paymentMethod = PurchasePaymentMethod.PAYABLE, reminderEnabled = false, reminderEpochDay = null,
++                lines = listOf(PurchaseLineDraft(itemId, QuantityMicros.positive(1_000_000L), MoneyRial.of(10_000_000L))),
++                branchId = 2L,
++            ),
++        )
++        val commandId = GlobalId.new().value
++        val settlement = repository.settle(
++            PurchaseSettlementDraft(
++                purchaseId = purchase.purchaseId, settlementEpochDay = 30_021L, amount = MoneyRial.of(4_000_000L),
++                paymentMethod = SettlementPaymentMethod.CARD, referenceNo = "CARD-REF", notes = "تسویه کارتخوان", commandId = commandId,
++            ),
++        )
++        val replay = repository.settle(
++            PurchaseSettlementDraft(
++                purchaseId = purchase.purchaseId, settlementEpochDay = 30_021L, amount = MoneyRial.of(4_000_000L),
++                paymentMethod = SettlementPaymentMethod.CARD, referenceNo = "CARD-REF", notes = "تسویه کارتخوان", commandId = commandId,
++            ),
++        )
++        assertEquals(settlement.journalEntryId, replay.journalEntryId)
++        val journal = requireNotNull(database.accountingDao().entryById(settlement.journalEntryId))
++        assertEquals("PURCHASE_SETTLEMENT", journal.sourceType)
++        assertEquals("BRANCH", journal.accountingScope)
++        assertEquals(2L, journal.branchId)
++        val lines = database.accountingDao().linesByEntry(journal.id)
++        assertEquals(4_000_000L, lines.single { it.accountCode == "2101" }.debitRial)
++        assertEquals(4_000_000L, lines.single { it.accountCode == "1104" }.creditRial)
++        assertEquals(0, lines.count { it.accountCode == "1101" || it.accountCode == "1102" })
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM treasury_transactions WHERE commandId='$commandId'"))
++        assertEquals(4_000_000L, requireNotNull(database.purchaseDao().byId(purchase.purchaseId)).paidRial)
++    }
++
+     @Test
+     fun branchPurchaseUsesCanonicalBranchButDoesNotBecomeOperatingExpense() = runBlocking {
+         val supplierId = database.supplierDao().insert(
+@@ -120,4 +168,10 @@ class BranchPurchasePostingIntegrationTest {
+         assertEquals(12_000_000L, lines.single { it.accountCode == "1301" }.debitRial)
+         assertEquals(0L, database.accountingDao().branchProfitLoss(2L, 30_000L, 30_000L).operatingExpensesExcludingPayrollRial)
+     }
++
++    private fun scalar(sql: String): Long = database.openHelper.writableDatabase.query(sql).use { cursor ->
++        check(cursor.moveToFirst())
++        cursor.getLong(0)
++    }
++
+ }

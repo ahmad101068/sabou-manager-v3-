@@ -1,0 +1,1198 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt
+new file mode 100644
+index 0000000..99936c6
+--- /dev/null
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt
+@@ -0,0 +1,95 @@
++package ir.restaurant.management.data.db
++
++import androidx.room.testing.MigrationTestHelper
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.platform.app.InstrumentationRegistry
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Rule
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@RunWith(AndroidJUnit4::class)
++class Migration57To58Test {
++    @get:Rule
++    val helper = MigrationTestHelper(
++        InstrumentationRegistry.getInstrumentation(),
++        AppDatabase::class.java,
++    )
++
++    @Test
++    fun phase5MigrationBackfillsSubstitutionDateAndMakesDepreciationAuditableAndReversible() {
++        val substitutionDay = 20_100L
++        helper.createDatabase(DB_NAME, 57).use { db ->
++            db.execSQL(
++                "INSERT INTO inventory_items(id,name,category,unit,purchaseUnit,purchaseToStockNumerator,purchaseToStockDenominator,recipeUnit,recipeToStockNumerator,recipeToStockDenominator,stockMicros,inventoryValueRial,alertEnabled,alertThresholdMicros,isActive,createdAtEpochMillis,updatedAtEpochMillis) " +
++                    "VALUES(10,'ماده اصلی','مواد اولیه','گرم','گرم',1,1,'گرم',1,1,1000000,1000000,1,0,1,1,1)",
++            )
++            db.execSQL(
++                "INSERT INTO inventory_items(id,name,category,unit,purchaseUnit,purchaseToStockNumerator,purchaseToStockDenominator,recipeUnit,recipeToStockNumerator,recipeToStockDenominator,stockMicros,inventoryValueRial,alertEnabled,alertThresholdMicros,isActive,createdAtEpochMillis,updatedAtEpochMillis) " +
++                    "VALUES(11,'ماده جایگزین','مواد اولیه','گرم','گرم',1,1,'گرم',1,1,1000000,1000000,1,0,1,1,1)",
++            )
++            db.execSQL("INSERT INTO menu_items(id,name,category,salePriceRial,isActive,createdAtEpochMillis,updatedAtEpochMillis) VALUES(20,'غذای مهاجرت','غذا',1000000,1,1,1)")
++            db.execSQL("INSERT INTO recipe_versions(id,menuItemId,revisionNo,effectiveFromEpochDay,createdBy,createdAtEpochMillis,status) VALUES(30,20,1,20000,'legacy',1,'ACTIVE')")
++            db.execSQL(
++                "INSERT INTO recipe_substitutions(id,recipeVersionId,originalInventoryItemId,substituteInventoryItemId,ratioNumerator,ratioDenominator,reason,approvedByActorId,createdAtEpochMillis) " +
++                    "VALUES(40,30,10,11,2,1,'legacy substitution',1,${substitutionDay * MILLIS_PER_DAY})",
++            )
++            db.execSQL(
++                "INSERT INTO fixed_assets(id,assetCode,name,category,quantity,purchaseEpochDay,purchaseCostRial,salvageValueRial,usefulLifeMonths,accumulatedDepreciationRial,location,status,notes,createdAtEpochMillis,updatedAtEpochMillis,branch,responsiblePerson,impairmentRial,acquisitionSource) " +
++                    "VALUES(50,'LEG-50','دارایی قدیمی','تجهیزات',2,20000,12000000,1200000,12,900000,'محل قدیمی','ACTIVE','legacy',1,1,'شعبه قدیمی','مسئول قدیمی',0,'BANK')",
++            )
++            db.execSQL("INSERT INTO asset_depreciations(id,assetId,periodYear,periodMonth,amountRial,journalEntryId,createdAtEpochMillis) VALUES(60,50,1405,1,900000,999,1)")
++        }
++
++        helper.runMigrationsAndValidate(DB_NAME, 58, true, MIGRATION_57_58).use { db ->
++            db.query("SELECT effectiveFromEpochDay FROM recipe_substitutions WHERE id=40").use { cursor ->
++                assertTrue(cursor.moveToFirst())
++                assertEquals(substitutionDay, cursor.getLong(0))
++            }
++            db.query("SELECT quantity,postingEpochDay,reason,commandId,reversedAtEpochMillis,reversalEpochDay,reversalReason,reversalJournalEntryId FROM asset_depreciations WHERE id=60").use { cursor ->
++                assertTrue(cursor.moveToFirst())
++                assertEquals(1, cursor.getInt(0))
++                assertEquals(0L, cursor.getLong(1))
++                assertEquals("", cursor.getString(2))
++                assertTrue(cursor.isNull(3))
++                assertTrue(cursor.isNull(4))
++                assertTrue(cursor.isNull(5))
++                assertEquals("", cursor.getString(6))
++                assertTrue(cursor.isNull(7))
++            }
++            assertIndex(db, "asset_depreciations", "index_asset_depreciations_assetId_periodYear_periodMonth", expectedUnique = false)
++            assertIndex(db, "asset_depreciations", "index_asset_depreciations_commandId", expectedUnique = true)
++            assertIndex(db, "recipe_substitutions", "index_recipe_substitutions_effectiveFromEpochDay", expectedUnique = false)
++            db.query("PRAGMA foreign_key_check").use { cursor -> assertEquals(0, cursor.count) }
++        }
++    }
++
++    @Test
++    fun migrationRegistryContainsForwardOnly57To58() {
++        val registry = ALL_MIGRATIONS.toList()
++        assertTrue(registry.any { it.startVersion == 57 && it.endVersion == 58 })
++        assertFalse(registry.any { it.startVersion == 58 && it.endVersion == 57 })
++    }
++
++    private fun assertIndex(db: androidx.sqlite.db.SupportSQLiteDatabase, table: String, name: String, expectedUnique: Boolean) {
++        db.query("PRAGMA index_list('$table')").use { cursor ->
++            val nameIndex = cursor.getColumnIndex("name")
++            val uniqueIndex = cursor.getColumnIndex("unique")
++            var found = false
++            while (cursor.moveToNext()) {
++                if (cursor.getString(nameIndex) == name) {
++                    found = true
++                    assertEquals(expectedUnique, cursor.getInt(uniqueIndex) == 1)
++                }
++            }
++            assertTrue("missing index $name", found)
++        }
++    }
++
++    private companion object {
++        const val DB_NAME = "phase5-migration-57-58"
++        const val MILLIS_PER_DAY = 86_400_000L
++    }
++}
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt
+index 56a5302..073b4ea 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt
+@@ -3,6 +3,7 @@ package ir.restaurant.management.data.repository
+ import android.content.Context
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
++import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.data.db.AppDatabase
+ import ir.restaurant.management.data.db.BranchEntity
+ import ir.restaurant.management.data.security.SessionAuthorizer
+@@ -14,6 +15,7 @@ import ir.restaurant.management.domain.assets.AssetMaintenanceDraft
+ import ir.restaurant.management.domain.assets.AssetSaleDraft
+ import ir.restaurant.management.domain.assets.AssetTransferDraft
+ import ir.restaurant.management.domain.assets.DepreciationDraft
++import ir.restaurant.management.domain.assets.DepreciationReversalDraft
+ import ir.restaurant.management.domain.operations.UserDraft
+ import ir.restaurant.management.domain.operations.UserRole
+ import kotlinx.coroutines.flow.first
+@@ -124,6 +126,94 @@ class AssetLifecycleIntegrationTest {
+         assertTrue(repository.observeLifecycle(assetId).first().any { it.type == AssetLifecycleType.IMPAIRMENT })
+     }
+ 
++    @Test
++    fun depreciation_supportsQuantityReasonIdempotencyAndControlledReversal() = runBlocking {
++        val assetId = repository.save(null, draft("AST-DEP-5", quantity = 4))
++        val firstCommand = GlobalId.new().value
++        val firstId = repository.postDepreciation(
++            DepreciationDraft(
++                assetId = assetId,
++                periodYear = 1405,
++                periodMonth = 2,
++                postingEpochDay = 20_060,
++                quantity = 2,
++                reason = "استهلاک دو واحد فعال",
++                commandId = firstCommand,
++            ),
++        )
++        val replayId = repository.postDepreciation(
++            DepreciationDraft(assetId, 1405, 2, 20_060, 2, "استهلاک دو واحد فعال", firstCommand),
++        )
++        assertEquals(firstId, replayId)
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM asset_depreciations WHERE commandId='$firstCommand'"))
++
++        val secondId = repository.postDepreciation(
++            DepreciationDraft(assetId, 1405, 2, 20_060, 2, "تکمیل استهلاک دو واحد دیگر", GlobalId.new().value),
++        )
++        assertTrue(secondId > firstId)
++        assertEquals(4L, scalar("SELECT COALESCE(SUM(quantity),0) FROM asset_depreciations WHERE assetId=$assetId AND periodYear=1405 AND periodMonth=2 AND reversedAtEpochMillis IS NULL"))
++        val firstEntity = requireNotNull(database.assetDao().depreciationById(firstId))
++        assertEquals(2, firstEntity.quantity)
++        assertEquals("استهلاک دو واحد فعال", firstEntity.reason)
++        assertBalancedEntry(firstEntity.journalEntryId)
++        assertTrue(repository.observeLifecycle(assetId).first().count { it.type == AssetLifecycleType.DEPRECIATION } == 2)
++
++        val beforeReverse = requireNotNull(database.assetDao().assetById(assetId)).accumulatedDepreciationRial
++        val reversal = DepreciationReversalDraft(firstId, 20_061, "اصلاح ثبت اشتباه دو واحد")
++        val reversalEntry = repository.reverseDepreciation(reversal)
++        val replayReversalEntry = repository.reverseDepreciation(reversal)
++        assertEquals(reversalEntry, replayReversalEntry)
++        assertBalancedEntry(reversalEntry)
++        val afterReverse = requireNotNull(database.assetDao().assetById(assetId)).accumulatedDepreciationRial
++        assertEquals(beforeReverse - firstEntity.amountRial, afterReverse)
++        val reversedEntity = requireNotNull(database.assetDao().depreciationById(firstId))
++        assertTrue(reversedEntity.reversedAtEpochMillis != null)
++        assertEquals("اصلاح ثبت اشتباه دو واحد", reversedEntity.reversalReason)
++        assertTrue(repository.observeLifecycle(assetId).first().any { it.type == AssetLifecycleType.DEPRECIATION_REVERSAL })
++        val audits = database.auditLogDao().observeRecent(100).first()
++        assertTrue(audits.any { it.entityType == "ASSET" && it.entityId == assetId && it.action == "DEPRECIATE" })
++        assertTrue(audits.any { it.entityType == "ASSET" && it.entityId == assetId && it.action == "REVERSE_DEPRECIATION" })
++    }
++
++    @Test
++    fun impairmentRecalculatesFutureDepreciationWithoutRewritingHistoricalDepreciation() = runBlocking {
++        val assetId = repository.save(null, draft("AST-IMP-6"))
++        val firstId = repository.postDepreciation(
++            DepreciationDraft(assetId, 1405, 1, 20_010, 1, "استهلاک پیش از کاهش ارزش", GlobalId.new().value),
++        )
++        val firstAmount = requireNotNull(database.assetDao().depreciationById(firstId)).amountRial
++        repository.impair(AssetImpairmentDraft(assetId, 20_040, 1_100_000L, "کاهش ارزش پس از دوره اول"))
++        val secondId = repository.postDepreciation(
++            DepreciationDraft(assetId, 1405, 2, 20_071, 1, "استهلاک پس از کاهش ارزش", GlobalId.new().value),
++        )
++        val secondAmount = requireNotNull(database.assetDao().depreciationById(secondId)).amountRial
++        assertTrue(secondAmount > 0)
++        assertTrue("future depreciation should be re-amortized after impairment", secondAmount < firstAmount)
++        assertEquals(firstAmount, requireNotNull(database.assetDao().depreciationById(firstId)).amountRial)
++        assertEquals(12_000_000L, requireNotNull(database.assetDao().assetById(assetId)).purchaseCostRial)
++    }
++
++    @Test
++    fun genericEditCannotBypassAssetTransferHistory_andNewOwnerCapitalAcquisitionIsBlocked() = runBlocking {
++        val assetId = repository.save(null, draft("AST-GOV-6"))
++        var transferBypassBlocked = false
++        try {
++            repository.save(assetId, draft("AST-GOV-6").copy(location = "محل بدون گردش انتقال"))
++        } catch (_: IllegalArgumentException) {
++            transferBypassBlocked = true
++        }
++        assertTrue(transferBypassBlocked)
++        assertEquals("آشپزخانه اصلی", requireNotNull(database.assetDao().assetById(assetId)).location)
++
++        var ownerCapitalBlocked = false
++        try {
++            repository.save(null, draft("AST-GOV-7").copy(acquisitionSource = AssetAcquisitionSource.OWNER_CAPITAL))
++        } catch (_: IllegalArgumentException) {
++            ownerCapitalBlocked = true
++        }
++        assertTrue(ownerCapitalBlocked)
++    }
++
+     @Test
+     fun sale_afterDepreciationAndImpairment_preservesHistoricalCost_calculatesGain_andBalancesJournal() = runBlocking {
+         val assetId = repository.save(null, draft("AST-LIFE-4"))
+@@ -157,6 +247,17 @@ class AssetLifecycleIntegrationTest {
+         assertTrue(repository.observeLifecycle(assetId).first().any { it.type == AssetLifecycleType.SALE })
+     }
+ 
++    private suspend fun assertBalancedEntry(entryId: Long) {
++        val lines = database.accountingDao().linesByEntry(entryId)
++        assertTrue(lines.isNotEmpty())
++        assertEquals(lines.sumOf { it.debitRial }, lines.sumOf { it.creditRial })
++    }
++
++    private fun scalar(sql: String): Long = database.openHelper.writableDatabase.query(sql).use { cursor ->
++        check(cursor.moveToFirst())
++        cursor.getLong(0)
++    }
++
+     private suspend fun assertBalanced(sourceType: String, assetId: Long): Long {
+         val entry = database.accountingDao().entryBySource(sourceType, assetId)
+         assertNotNull("journal missing for $sourceType", entry)
+@@ -167,11 +268,11 @@ class AssetLifecycleIntegrationTest {
+         return id
+     }
+ 
+-    private fun draft(code: String) = AssetDraft(
++    private fun draft(code: String, quantity: Int = 1) = AssetDraft(
+         assetCode = code,
+         name = "فر صنعتی تست",
+         category = "تجهیزات آشپزخانه",
+-        quantity = 1,
++        quantity = quantity,
+         purchaseEpochDay = 20_000,
+         purchaseCostRial = 12_000_000L,
+         salvageValueRial = 1_200_000L,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/RecipeMaterialResolverIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/RecipeMaterialResolverIntegrationTest.kt
+new file mode 100644
+index 0000000..77e4629
+--- /dev/null
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/RecipeMaterialResolverIntegrationTest.kt
+@@ -0,0 +1,118 @@
++package ir.restaurant.management.data.repository
++
++import android.content.Context
++import androidx.test.core.app.ApplicationProvider
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.InventoryItemEntity
++import ir.restaurant.management.data.db.MenuItemEntity
++import ir.restaurant.management.data.db.RecipeComponentEntity
++import ir.restaurant.management.data.db.RecipeSubstitutionEntity
++import ir.restaurant.management.data.db.RecipeVersionEntity
++import ir.restaurant.management.data.db.RecipeVersionIngredientEntity
++import kotlinx.coroutines.runBlocking
++import org.junit.After
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertTrue
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@RunWith(AndroidJUnit4::class)
++class RecipeMaterialResolverIntegrationTest {
++    private lateinit var database: AppDatabase
++    private lateinit var resolver: RecipeMaterialResolver
++
++    @Before
++    fun setUp() {
++        val context = ApplicationProvider.getApplicationContext<Context>()
++        database = AppDatabase.createInMemory(context)
++        resolver = RecipeMaterialResolver(database)
++    }
++
++    @After
++    fun tearDown() = database.close()
++
++    @Test
++    fun expandsImmutableNestedRecipeAndAppliesSubstitutionOnlyFromEffectiveBusinessDay() = runBlocking {
++        val originalId = inventory("ماده A")
++        val parentDirectId = inventory("ماده B")
++        val substituteId = inventory("ماده C")
++        val childMenu = menu("زیررسپی")
++        val parentMenu = menu("رسپی مادر")
++        val childVersion = version(childMenu, 1)
++        val parentVersion = version(parentMenu, 1)
++
++        database.recipeDao().insertVersionIngredients(
++            listOf(RecipeVersionIngredientEntity(childVersion, originalId, 200_000L)),
++        )
++        database.recipeDao().insertVersionIngredients(
++            listOf(RecipeVersionIngredientEntity(parentVersion, parentDirectId, 100_000L)),
++        )
++        database.recipeLifecycleDao().insertComponents(
++            listOf(RecipeComponentEntity(recipeVersionId = parentVersion, subRecipeVersionId = childVersion, quantityMicrosPerUnit = 500_000L)),
++        )
++        database.recipeLifecycleDao().insertSubstitution(
++            RecipeSubstitutionEntity(
++                recipeVersionId = childVersion,
++                originalInventoryItemId = originalId,
++                substituteInventoryItemId = substituteId,
++                ratioNumerator = 2,
++                ratioDenominator = 1,
++                reason = "جایگزینی کنترل‌شده",
++                approvedByActorId = 1,
++                createdAtEpochMillis = 1,
++                effectiveFromEpochDay = 20_100L,
++            ),
++        )
++
++        val historical = resolver.resolve(parentVersion, businessEpochDay = 20_050L, outputQuantityMicros = 2_000_000L).associateBy { it.inventoryItemId }
++        assertEquals(200_000L, historical.getValue(parentDirectId).quantityMicros)
++        assertEquals(200_000L, historical.getValue(originalId).quantityMicros)
++        assertTrue(substituteId !in historical)
++
++        val current = resolver.resolve(parentVersion, businessEpochDay = 20_100L, outputQuantityMicros = 2_000_000L).associateBy { it.inventoryItemId }
++        assertEquals(200_000L, current.getValue(parentDirectId).quantityMicros)
++        assertEquals(400_000L, current.getValue(substituteId).quantityMicros)
++        assertTrue(originalId !in current)
++    }
++
++    @Test
++    fun runtimeCycleCannotSilentlyConsumeInventory() = runBlocking {
++        val materialId = inventory("ماده حلقه")
++        val firstMenu = menu("رسپی اول")
++        val secondMenu = menu("رسپی دوم")
++        val first = version(firstMenu, 1)
++        val second = version(secondMenu, 1)
++        database.recipeDao().insertVersionIngredients(listOf(RecipeVersionIngredientEntity(first, materialId, 100_000L)))
++        database.recipeLifecycleDao().insertComponents(
++            listOf(
++                RecipeComponentEntity(recipeVersionId = first, subRecipeVersionId = second, quantityMicrosPerUnit = 1_000_000L),
++                RecipeComponentEntity(recipeVersionId = second, subRecipeVersionId = first, quantityMicrosPerUnit = 1_000_000L),
++            ),
++        )
++
++        val failure = runCatching { resolver.resolve(first, 20_100L, 1_000_000L) }.exceptionOrNull()
++        assertTrue(failure is IllegalArgumentException)
++        assertTrue(failure?.message.orEmpty().contains("حلقوی"))
++    }
++
++    private suspend fun inventory(name: String): Long = database.inventoryDao().insert(
++        InventoryItemEntity(name = name, category = "مواد", unit = "گرم", createdAtEpochMillis = 1, updatedAtEpochMillis = 1),
++    )
++
++    private suspend fun menu(name: String): Long = database.recipeDao().insertMenuItem(
++        MenuItemEntity(name = name, createdAtEpochMillis = 1, updatedAtEpochMillis = 1),
++    )
++
++    private suspend fun version(menuItemId: Long, revision: Int): Long = database.recipeDao().insertVersion(
++        RecipeVersionEntity(
++            menuItemId = menuItemId,
++            revisionNo = revision,
++            effectiveFromEpochDay = 20_000L,
++            createdBy = "test",
++            createdAtEpochMillis = 1,
++            status = "ACTIVE",
++        ),
++    )
++}
+diff --git a/app/src/main/java/ir/restaurant/management/application/assets/AssetUseCases.kt b/app/src/main/java/ir/restaurant/management/application/assets/AssetUseCases.kt
+index a3d8911..d59bf30 100644
+--- a/app/src/main/java/ir/restaurant/management/application/assets/AssetUseCases.kt
++++ b/app/src/main/java/ir/restaurant/management/application/assets/AssetUseCases.kt
+@@ -9,6 +9,7 @@ class AssetUseCases(private val repository: AssetRepository) {
+     suspend fun recognizeImported(id: Long) = repository.recognizeImportedAsset(id)
+     suspend fun dispose(id: Long) = repository.dispose(id)
+     suspend fun depreciate(draft: DepreciationDraft) = repository.postDepreciation(draft)
++    suspend fun reverseDepreciation(draft: DepreciationReversalDraft) = repository.reverseDepreciation(draft)
+     suspend fun transfer(draft: AssetTransferDraft) = repository.transfer(draft)
+     suspend fun maintenance(draft: AssetMaintenanceDraft) = repository.recordMaintenance(draft)
+     suspend fun impair(draft: AssetImpairmentDraft) = repository.impair(draft)
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+index 32d4410..99caae8 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+@@ -8,7 +8,7 @@ import ir.restaurant.management.data.security.DatabaseKeyProvider
+ import java.io.File
+ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
+ 
+-internal const val APP_DATABASE_SCHEMA_VERSION = 57
++internal const val APP_DATABASE_SCHEMA_VERSION = 58
+ 
+ @Database(
+     entities = [
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AssetDao.kt b/app/src/main/java/ir/restaurant/management/data/db/AssetDao.kt
+index 53b1ff8..b5ac04f 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AssetDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AssetDao.kt
+@@ -24,20 +24,28 @@ interface AssetDao {
+     """)
+     fun observeAssets(): Flow<List<AssetAccountingRow>>
+     @Query("UPDATE fixed_assets SET status='DISPOSED', updatedAtEpochMillis=:now WHERE id=:id AND status='ACTIVE'") suspend fun disposeAsset(id: Long, now: Long): Int
+-    @Query("SELECT EXISTS(SELECT 1 FROM asset_depreciations WHERE assetId=:assetId AND periodYear=:year AND periodMonth=:month)") suspend fun depreciationExists(assetId: Long, year: Int, month: Int): Boolean
++    @Query("SELECT * FROM asset_depreciations WHERE commandId=:commandId LIMIT 1") suspend fun depreciationByCommandId(commandId: String): AssetDepreciationEntity?
++    @Query("SELECT * FROM asset_depreciations WHERE id=:id LIMIT 1") suspend fun depreciationById(id: Long): AssetDepreciationEntity?
++    @Query("SELECT COALESCE(SUM(quantity),0) FROM asset_depreciations WHERE assetId=:assetId AND periodYear=:year AND periodMonth=:month AND reversedAtEpochMillis IS NULL") suspend fun activeDepreciatedQuantity(assetId: Long, year: Int, month: Int): Int
++    @Query("SELECT COALESCE(SUM(amountRial),0) FROM asset_depreciations WHERE assetId=:assetId AND periodYear=:year AND periodMonth=:month AND reversedAtEpochMillis IS NULL") suspend fun activeDepreciatedAmount(assetId: Long, year: Int, month: Int): Long
+     @Insert suspend fun insertDepreciation(entity: AssetDepreciationEntity): Long
+     @Query("UPDATE fixed_assets SET accumulatedDepreciationRial=accumulatedDepreciationRial+:amount, updatedAtEpochMillis=:now WHERE id=:id AND status='ACTIVE' AND accumulatedDepreciationRial+:amount+impairmentRial <= purchaseCostRial-salvageValueRial") suspend fun addDepreciation(id: Long, amount: Long, now: Long): Int
++    @Query("UPDATE fixed_assets SET accumulatedDepreciationRial=accumulatedDepreciationRial-:amount, updatedAtEpochMillis=:now WHERE id=:id AND accumulatedDepreciationRial>=:amount") suspend fun subtractDepreciation(id: Long, amount: Long, now: Long): Int
++    @Query("UPDATE asset_depreciations SET reversedAtEpochMillis=:now,reversalEpochDay=:reversalEpochDay,reversalReason=:reason,reversalJournalEntryId=:journalId WHERE id=:id AND reversedAtEpochMillis IS NULL") suspend fun markDepreciationReversed(id: Long, now: Long, reversalEpochDay: Long, reason: String, journalId: Long): Int
+     @Query("UPDATE fixed_assets SET location=:location, branch=:branch, branchId=:branchId, responsiblePerson=:responsible, updatedAtEpochMillis=:now WHERE id=:id AND status='ACTIVE'") suspend fun transferAsset(id: Long, location: String, branch: String, branchId: Long?, responsible: String, now: Long): Int
+     @Query("UPDATE fixed_assets SET impairmentRial=impairmentRial+:amount, updatedAtEpochMillis=:now WHERE id=:id AND status='ACTIVE' AND accumulatedDepreciationRial+impairmentRial+:amount <= purchaseCostRial-salvageValueRial") suspend fun addImpairment(id: Long, amount: Long, now: Long): Int
+     @Query("UPDATE fixed_assets SET status='SOLD', salePriceRial=:salePriceRial, disposedEpochDay=:epochDay, updatedAtEpochMillis=:now WHERE id=:id AND status='ACTIVE'") suspend fun markSold(id: Long, salePriceRial: Long, epochDay: Long, now: Long): Int
+     @Query("""
+-      SELECT d.id, a.name AS assetName, d.periodYear, d.periodMonth, d.amountRial
++      SELECT d.id,d.assetId,a.name AS assetName,d.periodYear,d.periodMonth,d.amountRial,d.quantity,d.postingEpochDay,d.reason,d.reversedAtEpochMillis
+       FROM asset_depreciations d INNER JOIN fixed_assets a ON a.id=d.assetId
+       ORDER BY d.periodYear DESC, d.periodMonth DESC, d.id DESC
+     """) fun observeDepreciations(): Flow<List<AssetDepreciationRow>>
+ }
+ 
+-data class AssetDepreciationRow(val id:Long,val assetName:String,val periodYear:Int,val periodMonth:Int,val amountRial:Long)
++data class AssetDepreciationRow(
++    val id:Long,val assetId:Long,val assetName:String,val periodYear:Int,val periodMonth:Int,val amountRial:Long,
++    val quantity:Int,val postingEpochDay:Long,val reason:String,val reversedAtEpochMillis:Long?,
++)
+ 
+ data class AssetAccountingRow(
+     val id: Long,
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AssetEntities.kt b/app/src/main/java/ir/restaurant/management/data/db/AssetEntities.kt
+index 85c2519..9180f2a 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AssetEntities.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AssetEntities.kt
+@@ -37,7 +37,12 @@ data class FixedAssetEntity(
+ @Entity(
+     tableName = "asset_depreciations",
+     foreignKeys=[ForeignKey(entity=FixedAssetEntity::class,parentColumns=["id"],childColumns=["assetId"],onDelete=ForeignKey.RESTRICT)],
+-    indices=[Index(value=["assetId","periodYear","periodMonth"], unique=true), Index("journalEntryId")],
++    indices=[
++        Index(value=["assetId","periodYear","periodMonth"]),
++        Index("journalEntryId"),
++        Index("reversalJournalEntryId"),
++        Index(value=["commandId"], unique=true),
++    ],
+ )
+ data class AssetDepreciationEntity(
+     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+@@ -47,4 +52,12 @@ data class AssetDepreciationEntity(
+     val amountRial: Long,
+     val journalEntryId: Long,
+     val createdAtEpochMillis: Long,
++    @ColumnInfo(defaultValue = "1") val quantity: Int = 1,
++    @ColumnInfo(defaultValue = "0") val postingEpochDay: Long = 0,
++    @ColumnInfo(defaultValue = "''") val reason: String = "",
++    val commandId: String? = null,
++    val reversedAtEpochMillis: Long? = null,
++    val reversalEpochDay: Long? = null,
++    @ColumnInfo(defaultValue = "''") val reversalReason: String = "",
++    val reversalJournalEntryId: Long? = null,
+ )
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
+index 366038d..84a2f66 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
+@@ -69,9 +69,12 @@ interface RecipeLifecycleDao {
+     @Query("SELECT * FROM recipe_components WHERE recipeVersionId=:recipeVersionId ORDER BY id")
+     suspend fun components(recipeVersionId: Long): List<RecipeComponentEntity>
+ 
+-    @Query("SELECT * FROM recipe_substitutions WHERE recipeVersionId=:recipeVersionId ORDER BY id")
++    @Query("SELECT * FROM recipe_substitutions WHERE recipeVersionId=:recipeVersionId ORDER BY effectiveFromEpochDay,id")
+     suspend fun substitutions(recipeVersionId: Long): List<RecipeSubstitutionEntity>
+ 
++    @Query("SELECT * FROM recipe_substitutions WHERE recipeVersionId=:recipeVersionId AND effectiveFromEpochDay<=:businessEpochDay ORDER BY effectiveFromEpochDay,id")
++    suspend fun effectiveSubstitutions(recipeVersionId: Long, businessEpochDay: Long): List<RecipeSubstitutionEntity>
++
+     @Query("SELECT subRecipeVersionId FROM recipe_components WHERE recipeVersionId=:recipeVersionId")
+     suspend fun childRecipeVersions(recipeVersionId: Long): List<Long>
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreEntities.kt b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreEntities.kt
+index ad500a5..73aa401 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreEntities.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreEntities.kt
+@@ -110,7 +110,7 @@ data class RecipeComponentEntity(
+         ForeignKey(entity = InventoryItemEntity::class, parentColumns = ["id"], childColumns = ["originalInventoryItemId"], onDelete = ForeignKey.RESTRICT),
+         ForeignKey(entity = InventoryItemEntity::class, parentColumns = ["id"], childColumns = ["substituteInventoryItemId"], onDelete = ForeignKey.RESTRICT),
+     ],
+-    indices = [Index("recipeVersionId"), Index("originalInventoryItemId"), Index("substituteInventoryItemId")],
++    indices = [Index("recipeVersionId"), Index("originalInventoryItemId"), Index("substituteInventoryItemId"), Index("effectiveFromEpochDay")],
+ )
+ data class RecipeSubstitutionEntity(
+     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+@@ -122,6 +122,7 @@ data class RecipeSubstitutionEntity(
+     val reason: String,
+     val approvedByActorId: Long,
+     val createdAtEpochMillis: Long,
++    @androidx.room.ColumnInfo(defaultValue = "0") val effectiveFromEpochDay: Long = 0,
+ )
+ 
+ @Entity(
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/RecipeDao.kt b/app/src/main/java/ir/restaurant/management/data/db/RecipeDao.kt
+index 773cd21..0572ab4 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/RecipeDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/RecipeDao.kt
+@@ -26,7 +26,7 @@ interface RecipeDao {
+     @Insert(onConflict = OnConflictStrategy.ABORT)
+     suspend fun insertVersionIngredients(ingredients: List<RecipeVersionIngredientEntity>)
+ 
+-    @Query("SELECT COALESCE(MAX(revisionNo), 0) + 1 FROM recipe_versions WHERE menuItemId = :menuItemId")
++    @Query("SELECT COUNT(*) + 1 FROM recipe_versions WHERE menuItemId = :menuItemId")
+     suspend fun nextRevisionNo(menuItemId: Long): Int
+ 
+     @Query(
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
+index 4364a4a..49c271a 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
+@@ -60,4 +60,5 @@ internal val ALL_MIGRATIONS: Array<Migration> = arrayOf(
+     MIGRATION_54_55,
+     MIGRATION_55_56,
+     MIGRATION_56_57,
++    MIGRATION_57_58,
+ )
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/Phase5RecipeAssetMigration.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase5RecipeAssetMigration.kt
+new file mode 100644
+index 0000000..fad1455
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase5RecipeAssetMigration.kt
+@@ -0,0 +1,26 @@
++package ir.restaurant.management.data.db
++
++import androidx.room.migration.Migration
++import androidx.sqlite.db.SupportSQLiteDatabase
++
++/** Phase 5 — historical recipe substitutions and auditable, reversible depreciation detail. */
++internal val MIGRATION_57_58 = object : Migration(57, 58) {
++    override fun migrate(db: SupportSQLiteDatabase) {
++        db.execSQL("ALTER TABLE recipe_substitutions ADD COLUMN effectiveFromEpochDay INTEGER NOT NULL DEFAULT 0")
++        db.execSQL("UPDATE recipe_substitutions SET effectiveFromEpochDay=CAST(createdAtEpochMillis/86400000 AS INTEGER) WHERE effectiveFromEpochDay=0")
++        db.execSQL("CREATE INDEX IF NOT EXISTS index_recipe_substitutions_effectiveFromEpochDay ON recipe_substitutions(effectiveFromEpochDay)")
++
++        db.execSQL("ALTER TABLE asset_depreciations ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1")
++        db.execSQL("ALTER TABLE asset_depreciations ADD COLUMN postingEpochDay INTEGER NOT NULL DEFAULT 0")
++        db.execSQL("ALTER TABLE asset_depreciations ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
++        db.execSQL("ALTER TABLE asset_depreciations ADD COLUMN commandId TEXT")
++        db.execSQL("ALTER TABLE asset_depreciations ADD COLUMN reversedAtEpochMillis INTEGER")
++        db.execSQL("ALTER TABLE asset_depreciations ADD COLUMN reversalEpochDay INTEGER")
++        db.execSQL("ALTER TABLE asset_depreciations ADD COLUMN reversalReason TEXT NOT NULL DEFAULT ''")
++        db.execSQL("ALTER TABLE asset_depreciations ADD COLUMN reversalJournalEntryId INTEGER")
++        db.execSQL("DROP INDEX IF EXISTS index_asset_depreciations_assetId_periodYear_periodMonth")
++        db.execSQL("CREATE INDEX IF NOT EXISTS index_asset_depreciations_assetId_periodYear_periodMonth ON asset_depreciations(assetId,periodYear,periodMonth)")
++        db.execSQL("CREATE INDEX IF NOT EXISTS index_asset_depreciations_reversalJournalEntryId ON asset_depreciations(reversalJournalEntryId)")
++        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_asset_depreciations_commandId ON asset_depreciations(commandId)")
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt
+index 4512d18..4f804f0 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt
+@@ -28,11 +28,14 @@ import ir.restaurant.management.domain.assets.AssetRecord
+ import ir.restaurant.management.domain.assets.AssetRepository
+ import ir.restaurant.management.domain.assets.DepreciationDraft
+ import ir.restaurant.management.domain.assets.DepreciationRecord
++import ir.restaurant.management.domain.assets.DepreciationReversalDraft
+ import ir.restaurant.management.domain.accounting.SemanticAccountRole
+ import ir.restaurant.management.domain.accounting.AccountingPostingContext
+ import ir.restaurant.management.domain.accounting.AccountingScope
+ import ir.restaurant.management.domain.accounting.SemanticJournalDraft
+ import ir.restaurant.management.domain.accounting.SemanticJournalLine
++import ir.restaurant.management.domain.accounting.BalancedJournalDraft
++import ir.restaurant.management.domain.accounting.JournalLineDraft
+ import ir.restaurant.management.domain.operations.SyncChangeType
+ import ir.restaurant.management.domain.treasury.TreasuryAccountId
+ import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
+@@ -42,6 +45,9 @@ import ir.restaurant.management.domain.treasury.TreasuryDirection
+ import ir.restaurant.management.domain.treasury.TreasuryService
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.map
++import java.math.BigInteger
++import java.time.LocalDate
++import java.time.temporal.ChronoUnit
+ 
+ class LocalAssetRepository(
+     private val database: AppDatabase,
+@@ -71,7 +77,7 @@ class LocalAssetRepository(
+         ) }
+     }
+     override val depreciations: Flow<List<DepreciationRecord>> = dao.observeDepreciations().map { rows ->
+-        rows.map { DepreciationRecord(it.id, it.assetName, it.periodYear, it.periodMonth, it.amountRial) }
++        rows.map { DepreciationRecord(it.id,it.assetId,it.assetName,it.periodYear,it.periodMonth,it.amountRial,it.quantity,it.postingEpochDay,it.reason,it.reversedAtEpochMillis != null) }
+     }
+ 
+     override suspend fun save(id: Long?, draft: AssetDraft): Long {
+@@ -89,6 +95,9 @@ class LocalAssetRepository(
+                 database.supplierDao().activeById(supplierId) ?: error("تأمین‌کننده فعال دارایی پیدا نشد.")
+             }
+             if (id == null) {
++                require(valid.acquisitionSource != AssetAcquisitionSource.OWNER_CAPITAL) {
++                    "آورده مالک فقط برای تطبیق دارایی قدیمی مجاز است؛ تحصیل جدید باید از خزانه یا حساب پرداختنی عبور کند."
++                }
+                 val assetId = dao.insertAsset(
+                     FixedAssetEntity(
+                         assetCode = valid.assetCode, name = valid.name, category = valid.category, quantity = valid.quantity,
+@@ -158,7 +167,10 @@ class LocalAssetRepository(
+                 ) {
+                     "کد، تعداد، تاریخ و مبالغ مبنای دارایی پس از ثبت سند تحصیل قابل تغییر نیست؛ اصلاح مالی باید با سند اصلاحی انجام شود."
+                 }
+-                check(dao.updateAsset(current.copy(assetCode = valid.assetCode, name = valid.name, category = valid.category, quantity = valid.quantity, purchaseEpochDay = valid.purchaseEpochDay, purchaseCostRial = valid.purchaseCostRial, salvageValueRial = valid.salvageValueRial, usefulLifeMonths = valid.usefulLifeMonths, location = valid.location, notes = valid.notes, branch = branch?.name.orEmpty(), branchId = branch?.id, responsiblePerson = valid.responsiblePerson, updatedAtEpochMillis = now)) == 1)
++                require(current.location == valid.location && current.branchId == branch?.id && current.responsiblePerson == valid.responsiblePerson) {
++                    "شعبه، محل و مسئول دارایی فقط از گردش انتقال دارایی قابل تغییر است تا تاریخچه از بین نرود."
++                }
++                check(dao.updateAsset(current.copy(assetCode = valid.assetCode, name = valid.name, category = valid.category, quantity = valid.quantity, purchaseEpochDay = valid.purchaseEpochDay, purchaseCostRial = valid.purchaseCostRial, salvageValueRial = valid.salvageValueRial, usefulLifeMonths = valid.usefulLifeMonths, notes = valid.notes, updatedAtEpochMillis = now)) == 1)
+                 audit.appendAuthorized(
+                     authorizer = authorizer,
+                     action = "UPDATE",
+@@ -281,60 +293,133 @@ class LocalAssetRepository(
+     }
+ 
+     override suspend fun postDepreciation(draft: DepreciationDraft): Long {
+-        val actor = authorizer.require(Permission.ASSETS)
++        val actor = authorizer.require(Permission.ASSET_LIFECYCLE)
+         val valid = draft.validated()
++        GlobalId.parse(valid.commandId)
+         return database.withTransaction {
++            dao.depreciationByCommandId(valid.commandId)?.let { replay ->
++                require(
++                    replay.assetId == valid.assetId && replay.periodYear == valid.periodYear && replay.periodMonth == valid.periodMonth &&
++                        replay.postingEpochDay == valid.postingEpochDay && replay.quantity == valid.quantity && replay.reason == valid.reason,
++                ) { "تعارض idempotency در ثبت استهلاک." }
++                return@withTransaction replay.id
++            }
+             val asset = dao.assetById(valid.assetId) ?: error("دارایی پیدا نشد.")
+             require(asset.status == "ACTIVE") { "دارایی فعال نیست." }
++            require(asset.isDateWithinLifecycle(valid.postingEpochDay)) { "تاریخ استهلاک باید از تاریخ تحصیل تا امروز باشد." }
+             require(accounting.entryBySource("ASSET_ACQUISITION", asset.id) != null) {
+                 "برای این دارایی سند تحصیل ثبت نشده است؛ قبل از استهلاک، مانده افتتاحیه را تطبیق دهید."
+             }
+-            require(!dao.depreciationExists(asset.id, valid.periodYear, valid.periodMonth)) { "استهلاک این دوره قبلاً ثبت شده است." }
++            val alreadyQuantity = dao.activeDepreciatedQuantity(asset.id, valid.periodYear, valid.periodMonth)
++            val alreadyPeriodAmount = dao.activeDepreciatedAmount(asset.id, valid.periodYear, valid.periodMonth)
++            require(alreadyQuantity + valid.quantity <= asset.quantity) { "تعداد استهلاک این دوره از تعداد دارایی بیشتر است." }
+             val depreciable = asset.purchaseCostRial - asset.salvageValueRial
+-            val monthly = depreciable / asset.usefulLifeMonths
+-            val remaining = depreciable - asset.accumulatedDepreciationRial - asset.impairmentRial
+-            val amount = minOf(monthly, remaining)
+-            require(amount > 0) { "دارایی کاملاً مستهلک شده است." }
++            val remainingNow = depreciable - asset.accumulatedDepreciationRial - asset.impairmentRial
++            require(remainingNow > 0) { "دارایی کاملاً مستهلک یا کاهش‌ارزش‌یافته است." }
++            val remainingAtPeriodStart = Math.addExact(remainingNow, alreadyPeriodAmount)
++            val elapsedMonths = ChronoUnit.MONTHS.between(
++                LocalDate.ofEpochDay(asset.purchaseEpochDay).withDayOfMonth(1),
++                LocalDate.ofEpochDay(valid.postingEpochDay).withDayOfMonth(1),
++            ).toInt().coerceAtLeast(0)
++            val remainingLifeMonths = (asset.usefulLifeMonths - elapsedMonths).coerceAtLeast(1)
++            val periodTarget = minOf(remainingAtPeriodStart / remainingLifeMonths, remainingAtPeriodStart)
++            require(periodTarget > 0) { "مبلغ استهلاک محاسبه‌شده صفر است." }
++            val completesPeriodQuantity = alreadyQuantity + valid.quantity == asset.quantity
++            val rawAmount = if (completesPeriodQuantity) periodTarget - alreadyPeriodAmount
++                else mulDivExact(periodTarget, valid.quantity.toLong(), asset.quantity.toLong())
++            val amount = minOf(rawAmount, remainingNow)
++            require(amount > 0) { "مبلغ استهلاک برای تعداد انتخاب‌شده صفر است." }
+             val now = clock()
+             val entryId = accountingPosting.post(
+                 draft = SemanticJournalDraft(
+-                    entryNo = "د-${asset.id}-${valid.periodYear}-${valid.periodMonth}", entryEpochDay = valid.postingEpochDay,
+-                    description = "استهلاک ${asset.name} ${valid.periodYear}/${valid.periodMonth}",
++                    entryNo = "د-${asset.id}-${valid.periodYear}-${valid.periodMonth}-${valid.commandId.take(8)}",
++                    entryEpochDay = valid.postingEpochDay,
++                    description = "استهلاک ${asset.name}؛ تعداد ${valid.quantity}؛ ${valid.reason}",
+                     sourceType = "ASSET_DEPRECIATION", sourceId = asset.id,
+                     accountingScope = asset.accountingScope(), branchId = asset.branchId,
+                     lines = listOf(
+-                        SemanticJournalLine(SemanticAccountRole.DEPRECIATION_EXPENSE, debit = MoneyRial.of(amount), memo = "هزینه استهلاک"),
+-                        SemanticJournalLine(SemanticAccountRole.ACCUMULATED_DEPRECIATION, credit = MoneyRial.of(amount), memo = "استهلاک انباشته"),
++                        SemanticJournalLine(SemanticAccountRole.DEPRECIATION_EXPENSE, debit = MoneyRial.of(amount), memo = valid.reason),
++                        SemanticJournalLine(SemanticAccountRole.ACCUMULATED_DEPRECIATION, credit = MoneyRial.of(amount), memo = valid.reason),
+                     ),
+                 ),
+                 context = AccountingPostingContext.local(
+-                    sourceType = "ASSET_DEPRECIATION",
+-                    sourceId = asset.id,
+-                    suffix = "${valid.periodYear}:${valid.periodMonth}",
+-                    actorId = actor.id,
+-                    correlationId = "asset_depreciation:${asset.id}:${valid.periodYear}:${valid.periodMonth}",
++                    sourceType = "ASSET_DEPRECIATION", sourceId = asset.id, suffix = valid.commandId, actorId = actor.id,
++                    correlationId = "asset_depreciation:${asset.id}:${valid.commandId}",
+                 ),
+             )
+             check(dao.addDepreciation(asset.id, amount, now) == 1) { "ثبت استهلاک از ارزش مجاز بیشتر است." }
+-            val depreciationId = dao.insertDepreciation(AssetDepreciationEntity(assetId = asset.id, periodYear = valid.periodYear, periodMonth = valid.periodMonth, amountRial = amount, journalEntryId = entryId, createdAtEpochMillis = now))
++            val depreciationId = dao.insertDepreciation(
++                AssetDepreciationEntity(
++                    assetId = asset.id, periodYear = valid.periodYear, periodMonth = valid.periodMonth, amountRial = amount,
++                    journalEntryId = entryId, createdAtEpochMillis = now, quantity = valid.quantity, postingEpochDay = valid.postingEpochDay,
++                    reason = valid.reason, commandId = valid.commandId,
++                ),
++            )
+             check(depreciationId > 0) { "ثبت سابقه استهلاک انجام نشد." }
+-            syncRecorder?.record(
+-                "ASSET_DEPRECIATION",
+-                depreciationId,
+-                SyncChangeType.CREATE.name,
+-                now,
+-                mapOf(
+-                    "amountRial" to amount.toString(),
+-                    "assetId" to asset.id.toString(),
+-                    "journalEntryId" to entryId.toString(),
+-                    "periodMonth" to valid.periodMonth.toString(),
+-                    "periodYear" to valid.periodYear.toString(),
++            val lifecycleId = database.assetLifecycleDao().insertEvent(
++                AssetLifecycleEventEntity(
++                    assetId = asset.id, eventType = AssetLifecycleType.DEPRECIATION.name, businessEpochDay = valid.postingEpochDay,
++                    amountRial = amount, note = "qty=${valid.quantity};${valid.reason}", journalEntryId = entryId, actorId = actor.id, createdAtEpochMillis = now,
+                 ),
+             )
++            audit.appendAuthorized(
++                authorizer, "DEPRECIATE", "ASSET", asset.id, "استهلاک ${asset.assetCode}", now, valid.postingEpochDay, valid.reason,
++                beforeSnapshot = "accDep=${asset.accumulatedDepreciationRial};impairment=${asset.impairmentRial}",
++                afterSnapshot = "depreciationId=$depreciationId;qty=${valid.quantity};amount=$amount;event=$lifecycleId;journal=$entryId",
++                correlationId = "asset:${asset.id}:depreciation:$depreciationId",
++            )
++            syncRecorder?.record(
++                "ASSET_DEPRECIATION", depreciationId, SyncChangeType.CREATE.name, now,
++                mapOf("assetId" to asset.id.toString(), "amountRial" to amount.toString(), "quantity" to valid.quantity.toString(), "reason" to valid.reason, "journalEntryId" to entryId.toString()),
++            )
+             depreciationId
+         }
+     }
+ 
++    override suspend fun reverseDepreciation(draft: DepreciationReversalDraft): Long {
++        val actor = authorizer.require(Permission.ASSET_LIFECYCLE)
++        val valid = draft.validated()
++        return database.withTransaction {
++            val depreciation = dao.depreciationById(valid.depreciationId) ?: error("سابقه استهلاک پیدا نشد.")
++            if (depreciation.reversedAtEpochMillis != null) {
++                require(depreciation.reversalEpochDay == valid.reversalEpochDay && depreciation.reversalReason == valid.reason) { "تعارض idempotency در برگشت استهلاک." }
++                return@withTransaction requireNotNull(depreciation.reversalJournalEntryId)
++            }
++            require(valid.reversalEpochDay >= depreciation.postingEpochDay) { "تاریخ برگشت نمی‌تواند قبل از تاریخ استهلاک باشد." }
++            require(valid.reversalEpochDay <= currentLocalEpochDay()) { "تاریخ برگشت نمی‌تواند در آینده باشد." }
++            val asset = dao.assetById(depreciation.assetId) ?: error("دارایی پیدا نشد.")
++            val original = accounting.entryById(depreciation.journalEntryId) ?: error("سند استهلاک پیدا نشد.")
++            require(original.status == "POSTED" && original.sourceType == "ASSET_DEPRECIATION") { "سند مبدأ استهلاک معتبر نیست." }
++            val lines = accounting.linesByEntry(original.id)
++            require(lines.size >= 2) { "آرتیکل‌های سند استهلاک کامل نیستند." }
++            val now = clock()
++            val posted = accountingPosting.postBalanced(
++                draft = BalancedJournalDraft(
++                    entryEpochDay = valid.reversalEpochDay, description = "برگشت استهلاک ${asset.name}: ${valid.reason}",
++                    sourceType = "ASSET_DEPRECIATION_REVERSAL", sourceId = depreciation.id,
++                    accountingScope = AccountingScope.fromStoredValue(original.accountingScope), branchId = original.branchId,
++                    lines = lines.map { line -> JournalLineDraft(accountCode = line.accountCode, debit = MoneyRial.of(line.creditRial), credit = MoneyRial.of(line.debitRial), memo = valid.reason) },
++                ),
++                context = AccountingPostingContext.local(
++                    sourceType = "ASSET_DEPRECIATION_REVERSAL", sourceId = depreciation.id, suffix = "reverse:${depreciation.id}",
++                    actorId = actor.id, correlationId = "asset_depreciation_reversal:${depreciation.id}", reversalOfEntryId = original.id,
++                ),
++                entryNoFactory = { id -> "با-$id" },
++            )
++            check(dao.subtractDepreciation(asset.id, depreciation.amountRial, now) == 1) { "برگشت مانده استهلاک انجام نشد." }
++            check(dao.markDepreciationReversed(depreciation.id, now, valid.reversalEpochDay, valid.reason, posted.entryId) == 1) { "سابقه استهلاک قبلاً برگشت شده است." }
++            val eventId = database.assetLifecycleDao().insertEvent(
++                AssetLifecycleEventEntity(assetId = asset.id, eventType = AssetLifecycleType.DEPRECIATION_REVERSAL.name, businessEpochDay = valid.reversalEpochDay, amountRial = depreciation.amountRial, note = valid.reason, journalEntryId = posted.entryId, actorId = actor.id, createdAtEpochMillis = now),
++            )
++            audit.appendAuthorized(
++                authorizer, "REVERSE_DEPRECIATION", "ASSET", asset.id, "برگشت استهلاک ${asset.assetCode}", now, valid.reversalEpochDay, valid.reason,
++                beforeSnapshot = "depreciationId=${depreciation.id};amount=${depreciation.amountRial}", afterSnapshot = "reversalJournal=${posted.entryId};event=$eventId",
++                correlationId = "asset:${asset.id}:depreciation-reversal:${depreciation.id}",
++            )
++            posted.entryId
++        }
++    }
++
+     override suspend fun transfer(draft: AssetTransferDraft): Long {
+         val actor = authorizer.require(Permission.ASSET_LIFECYCLE)
+         val reason = draft.reason.trim()
+@@ -461,6 +546,7 @@ class LocalAssetRepository(
+         return database.withTransaction {
+             val asset = dao.assetById(draft.assetId) ?: error("دارایی پیدا نشد.")
+             require(asset.status == "ACTIVE") { "دارایی فعال نیست." }
++            require(asset.isDateWithinLifecycle(draft.businessEpochDay)) { "تاریخ کاهش ارزش باید از تاریخ تحصیل تا امروز باشد." }
+             val bookBefore = asset.purchaseCostRial - asset.accumulatedDepreciationRial - asset.impairmentRial
+             require(draft.amountRial <= bookBefore - asset.salvageValueRial) { "کاهش ارزش نمی‌تواند ارزش دفتری را کمتر از ارزش اسقاط کند." }
+             val now = clock()
+@@ -606,6 +692,14 @@ class LocalAssetRepository(
+         AssetAcquisitionSource.PAYABLE, AssetAcquisitionSource.OWNER_CAPITAL -> error("asset_source_is_not_liquidity")
+     }
+ 
++    private fun FixedAssetEntity.isDateWithinLifecycle(day: Long): Boolean =
++        day >= purchaseEpochDay && day <= currentLocalEpochDay() && (disposedEpochDay == null || day <= disposedEpochDay)
++
++    private fun mulDivExact(a: Long, b: Long, divisor: Long): Long {
++        require(a >= 0 && b >= 0 && divisor > 0)
++        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++    }
++
+     private fun FixedAssetEntity.accountingScope(): AccountingScope =
+         if (branchId != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+index d9f99b0..d286b87 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+@@ -451,14 +451,16 @@ class LocalDailySalesRepository(
+         val lineSeeds = draft.lines.mapIndexed { lineIndex, line ->
+             val menu = database.recipeDao().activeMenuItem(line.menuItemId) ?: error("آیتم منوی انتخاب‌شده فعال نیست.")
+             val recipeVersion = database.recipeDao().effectiveVersion(menu.id, draft.businessEpochDay) ?: error("برای «${menu.name}» در تاریخ فروش، نسخه مؤثر رسپی وجود ندارد.")
+-            val ingredients = database.recipeDao().versionIngredients(recipeVersion.id)
+-            require(ingredients.isNotEmpty()) { "برای «${menu.name}» رسپی کامل ثبت نشده است." }
+-            ingredients.forEach { ingredient ->
+-                val item = database.inventoryDao().activeById(ingredient.inventoryItemId)
+-                    ?: error("یکی از مواد اولیه «${menu.name}» فعال نیست.")
+-                val needed = mulDiv(ingredient.quantityMicrosPerUnit, line.quantityMicros, 1_000_000L)
+-                require(needed > 0) { "مصرف محاسبه‌شده برای ${item.name} نامعتبر است." }
+-                consumptionNeeds += ConsumptionNeed(item, lineIndex, needed)
++            val resolvedMaterials = RecipeMaterialResolver(database).resolve(
++                recipeVersionId = recipeVersion.id,
++                businessEpochDay = draft.businessEpochDay,
++                outputQuantityMicros = line.quantityMicros,
++            )
++            resolvedMaterials.forEach { material ->
++                val item = database.inventoryDao().activeById(material.inventoryItemId)
++                    ?: error("یکی از مواد اولیه یا جایگزین «${menu.name}» فعال نیست.")
++                require(material.quantityMicros > 0) { "مصرف محاسبه‌شده برای ${item.name} نامعتبر است." }
++                consumptionNeeds += ConsumptionNeed(item, lineIndex, material.quantityMicros)
+             }
+             PreparedLineSeed(
+                 menuId = menu.id,
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalRecipeRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalRecipeRepository.kt
+index 5a82470..6dd7099 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalRecipeRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalRecipeRepository.kt
+@@ -248,6 +248,7 @@ class LocalRecipeRepository(
+                     reason = reason,
+                     approvedByActorId = actor.id,
+                     createdAtEpochMillis = now,
++                    effectiveFromEpochDay = epochDay(),
+                 ),
+             )
+             auditWriter.appendAuthorized(authorizer, "APPROVE_SUBSTITUTION", "RECIPE_VERSION", version.id, "تأیید جایگزینی ماده ${draft.originalInventoryItemId} با ${draft.substituteInventoryItemId}", now, epochDay(), reason, afterSnapshot = "substitutionId=$id;ratio=${draft.ratioNumerator}/${draft.ratioDenominator}", correlationId = "recipe:${version.menuItemId}:substitution:$id")
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/RecipeMaterialResolver.kt b/app/src/main/java/ir/restaurant/management/data/repository/RecipeMaterialResolver.kt
+new file mode 100644
+index 0000000..e7dadf0
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/data/repository/RecipeMaterialResolver.kt
+@@ -0,0 +1,67 @@
++package ir.restaurant.management.data.repository
++
++import ir.restaurant.management.data.db.AppDatabase
++import java.math.BigInteger
++
++internal data class ResolvedRecipeMaterial(
++    val inventoryItemId: Long,
++    val quantityMicros: Long,
++)
++
++/**
++ * Expands one immutable recipe version into physical inventory requirements for a business date.
++ * Child recipe VERSION ids are followed verbatim so later recipe edits cannot rewrite history.
++ * Approved substitutions are effective only on/after their approval business day.
++ */
++internal class RecipeMaterialResolver(private val database: AppDatabase) {
++    suspend fun resolve(
++        recipeVersionId: Long,
++        businessEpochDay: Long,
++        outputQuantityMicros: Long,
++    ): List<ResolvedRecipeMaterial> {
++        require(recipeVersionId > 0 && businessEpochDay > 0 && outputQuantityMicros > 0)
++        val totals = linkedMapOf<Long, Long>()
++        expand(recipeVersionId, businessEpochDay, outputQuantityMicros, linkedSetOf(), totals)
++        require(totals.isNotEmpty()) { "رسپی نهایی هیچ مصرف موجودی ندارد." }
++        return totals.entries.sortedBy { it.key }.map { ResolvedRecipeMaterial(it.key, it.value) }
++    }
++
++    private suspend fun expand(
++        versionId: Long,
++        businessEpochDay: Long,
++        multiplierMicros: Long,
++        path: MutableSet<Long>,
++        totals: MutableMap<Long, Long>,
++    ) {
++        require(path.add(versionId)) { "وابستگی حلقوی هنگام اجرای زیررسپی شناسایی شد." }
++        database.recipeLifecycleDao().versionById(versionId) ?: error("نسخه رسپی پیدا نشد: $versionId")
++        val substitutions = database.recipeLifecycleDao()
++            .effectiveSubstitutions(versionId, businessEpochDay)
++            .groupBy { it.originalInventoryItemId }
++            .mapValues { (_, rows) -> rows.maxWith(compareBy({ it.effectiveFromEpochDay }, { it.id })) }
++
++        database.recipeDao().versionIngredients(versionId).forEach { ingredient ->
++            val baseQuantity = mulDiv(ingredient.quantityMicrosPerUnit, multiplierMicros, MICROS)
++            require(baseQuantity > 0) { "مقدار ماده رسپی پس از توسعه نامعتبر است." }
++            val substitution = substitutions[ingredient.inventoryItemId]
++            val itemId = substitution?.substituteInventoryItemId ?: ingredient.inventoryItemId
++            val quantity = substitution?.let { mulDiv(baseQuantity, it.ratioNumerator, it.ratioDenominator) } ?: baseQuantity
++            require(quantity > 0) { "مقدار ماده جایگزین پس از تبدیل نامعتبر است." }
++            totals[itemId] = Math.addExact(totals[itemId] ?: 0L, quantity)
++        }
++
++        database.recipeLifecycleDao().components(versionId).forEach { component ->
++            val childMultiplier = mulDiv(multiplierMicros, component.quantityMicrosPerUnit, MICROS)
++            require(childMultiplier > 0) { "مقدار زیررسپی پس از توسعه نامعتبر است." }
++            expand(component.subRecipeVersionId, businessEpochDay, childMultiplier, path, totals)
++        }
++        path.remove(versionId)
++    }
++
++    private fun mulDiv(a: Long, b: Long, divisor: Long): Long {
++        require(a >= 0 && b >= 0 && divisor > 0)
++        return BigInteger.valueOf(a).multiply(BigInteger.valueOf(b)).divide(BigInteger.valueOf(divisor)).longValueExact()
++    }
++
++    private companion object { const val MICROS = 1_000_000L }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/domain/assets/AssetModels.kt b/app/src/main/java/ir/restaurant/management/domain/assets/AssetModels.kt
+index 4bf27d6..f40daf3 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/assets/AssetModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/assets/AssetModels.kt
+@@ -1,5 +1,6 @@
+ package ir.restaurant.management.domain.assets
+ 
++import ir.restaurant.management.core.GlobalId
+ import kotlinx.coroutines.flow.Flow
+ 
+ enum class AssetAcquisitionSource(val title: String) {
+@@ -9,7 +10,7 @@ enum class AssetAcquisitionSource(val title: String) {
+     OWNER_CAPITAL("آورده مالک"),
+ }
+ 
+-enum class AssetLifecycleType { PURCHASE, TRANSFER, MAINTENANCE, IMPAIRMENT, SALE, DISPOSAL }
++enum class AssetLifecycleType { PURCHASE, TRANSFER, MAINTENANCE, DEPRECIATION, DEPRECIATION_REVERSAL, IMPAIRMENT, SALE, DISPOSAL }
+ 
+ data class AssetDraft(
+     val assetCode: String,
+@@ -74,9 +75,48 @@ data class AssetRecord(
+     val bookValueRial: Long get() = purchaseCostRial - accumulatedDepreciationRial - impairmentRial
+ }
+ 
+-data class DepreciationRecord(val id: Long, val assetName: String, val periodYear: Int, val periodMonth: Int, val amountRial: Long)
+-data class DepreciationDraft(val assetId: Long, val periodYear: Int, val periodMonth: Int, val postingEpochDay: Long) {
+-    fun validated() = also { require(assetId > 0); require(periodMonth in 1..12); require(periodYear > 1300); require(postingEpochDay > 0) }
++data class DepreciationRecord(
++    val id: Long,
++    val assetId: Long,
++    val assetName: String,
++    val periodYear: Int,
++    val periodMonth: Int,
++    val amountRial: Long,
++    val quantity: Int,
++    val postingEpochDay: Long,
++    val reason: String,
++    val isReversed: Boolean,
++)
++
++data class DepreciationDraft(
++    val assetId: Long,
++    val periodYear: Int,
++    val periodMonth: Int,
++    val postingEpochDay: Long,
++    val quantity: Int = 1,
++    val reason: String = "ثبت استهلاک دوره",
++    val commandId: String = GlobalId.new().value,
++) {
++    fun validated() = copy(reason = reason.trim(), commandId = commandId.trim()).also {
++        require(it.assetId > 0)
++        require(it.periodMonth in 1..12)
++        require(it.periodYear > 1300)
++        require(it.postingEpochDay > 0)
++        require(it.quantity > 0) { "تعداد واحدهای مورد استهلاک باید مثبت باشد." }
++        require(it.reason.length in 3..300) { "دلیل / شرح استهلاک باید بین ۳ تا ۳۰۰ نویسه باشد." }
++        require(it.commandId.isNotBlank()) { "شناسه یکتای عملیات استهلاک الزامی است." }
++    }
++}
++
++data class DepreciationReversalDraft(
++    val depreciationId: Long,
++    val reversalEpochDay: Long,
++    val reason: String,
++) {
++    fun validated() = copy(reason = reason.trim()).also {
++        require(it.depreciationId > 0 && it.reversalEpochDay > 0)
++        require(it.reason.length in 3..300) { "دلیل برگشت استهلاک باید بین ۳ تا ۳۰۰ نویسه باشد." }
++    }
+ }
+ 
+ data class AssetTransferDraft(
+@@ -123,6 +163,7 @@ interface AssetRepository {
+     suspend fun recognizeImportedAsset(id: Long): Long
+     suspend fun dispose(id: Long)
+     suspend fun postDepreciation(draft: DepreciationDraft): Long
++    suspend fun reverseDepreciation(draft: DepreciationReversalDraft): Long
+     suspend fun transfer(draft: AssetTransferDraft): Long
+     suspend fun recordMaintenance(draft: AssetMaintenanceDraft): Long
+     suspend fun impair(draft: AssetImpairmentDraft): Long
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AssetScreens.kt b/app/src/main/java/ir/restaurant/management/ui/AssetScreens.kt
+index c1c4045..198af3c 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AssetScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AssetScreens.kt
+@@ -2,6 +2,7 @@
+ 
+ package ir.restaurant.management.ui
+ 
++import ir.restaurant.management.core.GlobalId
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Box
+ import androidx.compose.foundation.layout.Column
+@@ -49,6 +50,7 @@ import ir.restaurant.management.domain.operations.SupplierRecord
+ import ir.restaurant.management.domain.assets.AssetAcquisitionSource
+ import ir.restaurant.management.domain.assets.AssetRecord
+ import ir.restaurant.management.domain.assets.DepreciationDraft
++import ir.restaurant.management.domain.assets.DepreciationReversalDraft
+ import ir.restaurant.management.domain.assets.AssetTransferDraft
+ import ir.restaurant.management.domain.assets.AssetMaintenanceDraft
+ import ir.restaurant.management.domain.assets.AssetImpairmentDraft
+@@ -63,6 +65,7 @@ fun AssetScreen(
+     onRecognize: (Long) -> Unit,
+     onDispose: (Long) -> Unit,
+     onDepreciate: (DepreciationDraft) -> Unit,
++    onReverseDepreciation: (DepreciationReversalDraft) -> Unit,
+     onTransfer: (AssetTransferDraft) -> Unit,
+     onMaintenance: (AssetMaintenanceDraft) -> Unit,
+     onImpair: (AssetImpairmentDraft) -> Unit,
+@@ -79,6 +82,7 @@ fun AssetScreen(
+     var maintenanceAsset by remember { mutableStateOf<AssetRecord?>(null) }
+     var impairmentAsset by remember { mutableStateOf<AssetRecord?>(null) }
+     var saleAsset by remember { mutableStateOf<AssetRecord?>(null) }
++    var reversingDepreciationId by remember { mutableStateOf<Long?>(null) }
+     val activeAssets = state.assets.filter { it.isActive }
+     val depreciableAssets = activeAssets.filter { it.isAccountingRecognized }
+     val summary = assetDashboardSummary(state)
+@@ -209,7 +213,16 @@ fun AssetScreen(
+                                 Text(depreciation.assetName, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                 Text("دوره ${depreciation.periodYear}/${depreciation.periodMonth}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                             }
+-                            Text(ErpDisplayFormatters.money(depreciation.amountRial), fontWeight = FontWeight.ExtraBold)
++                            Column(horizontalAlignment = Alignment.End) {
++                                Text(ErpDisplayFormatters.money(depreciation.amountRial), fontWeight = FontWeight.ExtraBold)
++                                Text("تعداد ${depreciation.quantity}", style = MaterialTheme.typography.bodySmall)
++                                Text(depreciation.reason.ifBlank { "بدون شرح legacy" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
++                                if (!depreciation.isReversed) {
++                                    TextButton(onClick = { reversingDepreciationId = depreciation.id }) { Text("برگشت کنترل‌شده") }
++                                } else {
++                                    Text("برگشت شده", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
++                                }
++                            }
+                         }
+                     }
+                 }
+@@ -231,6 +244,16 @@ fun AssetScreen(
+         onDepreciate(draft)
+         dep = false
+     }
++    reversingDepreciationId?.let { depreciationId ->
++        DepreciationReversalDialog(
++            depreciationId = depreciationId,
++            onDismiss = { reversingDepreciationId = null },
++            onSave = { draft ->
++                reversingDepreciationId = null
++                onReverseDepreciation(draft)
++            },
++        )
++    }
+     transferringAsset?.let { asset ->
+         AssetTransferDialog(asset, branches, { transferringAsset = null }) { draft -> transferringAsset = null; onTransfer(draft) }
+     }
+@@ -344,7 +367,7 @@ private fun AssetDialog(existing: AssetRecord?, branches: List<BranchRecord>, su
+                     Box(Modifier.fillMaxWidth()) {
+                         OutlinedButton(onClick = { acquisitionExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text(acquisitionSource.title) }
+                         androidx.compose.material3.DropdownMenu(acquisitionExpanded, { acquisitionExpanded = false }) {
+-                            AssetAcquisitionSource.entries.forEach { source ->
++                            AssetAcquisitionSource.entries.filter { it != AssetAcquisitionSource.OWNER_CAPITAL }.forEach { source ->
+                                 androidx.compose.material3.DropdownMenuItem(
+                                     text = { Text(source.title) },
+                                     onClick = { acquisitionSource = source; acquisitionExpanded = false },
+@@ -421,8 +444,12 @@ private fun DepDialog(state: AssetUiState, onDismiss: () -> Unit, onSave: (Depre
+     var selected by remember { mutableStateOf(active.firstOrNull()?.id ?: 0L) }
+     var expanded by remember { mutableStateOf(false) }
+     var postingDay by remember { mutableLongStateOf(currentEpochDay()) }
++    var quantity by remember(selected) { mutableStateOf("1") }
++    var reason by remember(selected) { mutableStateOf("") }
++    val commandId = remember(selected, postingDay) { GlobalId.new().value }
+     val persianDate = epochDayToPersian(postingDay)
+-    val valid = selected > 0L
++    val selectedAsset = active.firstOrNull { it.id == selected }
++    val valid = selected > 0L && (quantity.toIntOrNull() ?: 0) in 1..(selectedAsset?.quantity ?: 0) && reason.trim().length in 3..300
+ 
+     AlertDialog(
+         onDismissRequest = onDismiss,
+@@ -444,13 +471,16 @@ private fun DepDialog(state: AssetUiState, onDismiss: () -> Unit, onSave: (Depre
+                     }
+                 }
+                 PersianDateField("دوره و تاریخ ثبت استهلاک", postingDay, { postingDay = it })
+-                Text("با ثبت این عملیات، سند حسابداری استهلاک نیز صادر می‌شود.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
++                OutlinedTextField(quantity, { quantity = it.filter(Char::isDigit).take(6) }, label = { Text("تعداد واحد") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
++                selectedAsset?.let { Text("حداکثر تعداد این دارایی: ${it.quantity}", style = MaterialTheme.typography.bodySmall) }
++                OutlinedTextField(reason, { reason = it.take(300) }, label = { Text("دلیل / شرح استهلاک") }, modifier = Modifier.fillMaxWidth())
++                Text("ثبت استهلاک، Audit و سند حسابداری در یک تراکنش انجام می‌شود.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+             }
+         },
+         confirmButton = {
+             Button(
+                 enabled = valid,
+-                onClick = { onSave(DepreciationDraft(selected, persianDate.year, persianDate.month, postingDay)) },
++                onClick = { onSave(DepreciationDraft(selected, persianDate.year, persianDate.month, postingDay, quantity.toInt(), reason.trim(), commandId)) },
+                 modifier = Modifier.testTag("asset_depreciation_submit"),
+             ) { Text("ثبت و صدور سند") }
+         },
+@@ -458,6 +488,48 @@ private fun DepDialog(state: AssetUiState, onDismiss: () -> Unit, onSave: (Depre
+     )
+ }
+ 
++@Composable
++private fun DepreciationReversalDialog(
++    depreciationId: Long,
++    onDismiss: () -> Unit,
++    onSave: (DepreciationReversalDraft) -> Unit,
++) {
++    var reason by remember(depreciationId) { mutableStateOf("") }
++    val normalized = reason.trim()
++    AlertDialog(
++        onDismissRequest = onDismiss,
++        title = { Text("برگشت کنترل‌شده استهلاک") },
++        text = {
++            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
++                Text("برگشت، سند حسابداری معکوس و سابقه ممیزی ثبت می‌کند؛ دلیل واقعی عملیات را وارد کنید.")
++                OutlinedTextField(
++                    value = reason,
++                    onValueChange = { if (it.length <= 300) reason = it },
++                    label = { Text("دلیل / شرح برگشت") },
++                    modifier = Modifier.fillMaxWidth().testTag("asset_depreciation_reversal_reason"),
++                    minLines = 2,
++                )
++            }
++        },
++        confirmButton = {
++            Button(
++                enabled = normalized.length in 3..300,
++                onClick = {
++                    onSave(
++                        DepreciationReversalDraft(
++                            depreciationId = depreciationId,
++                            reversalEpochDay = currentEpochDay(),
++                            reason = normalized,
++                        ),
++                    )
++                },
++                modifier = Modifier.testTag("asset_depreciation_reversal_confirm"),
++            ) { Text("ثبت برگشت") }
++        },
++        dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } },
++    )
++}
++
+ @Composable
+ private fun AssetTransferDialog(asset: AssetRecord, branches: List<BranchRecord>, onDismiss: () -> Unit, onSave: (AssetTransferDraft) -> Unit) {
+     var location by remember(asset.id) { mutableStateOf(asset.location) }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AssetViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/AssetViewModel.kt
+index 381b1df..c679675 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AssetViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AssetViewModel.kt
+@@ -8,6 +8,7 @@ import ir.restaurant.management.domain.assets.AssetRecord
+ import ir.restaurant.management.application.assets.AssetUseCases
+ import ir.restaurant.management.domain.assets.DepreciationDraft
+ import ir.restaurant.management.domain.assets.DepreciationRecord
++import ir.restaurant.management.domain.assets.DepreciationReversalDraft
+ import ir.restaurant.management.domain.assets.AssetTransferDraft
+ import ir.restaurant.management.domain.assets.AssetMaintenanceDraft
+ import ir.restaurant.management.domain.assets.AssetImpairmentDraft
+@@ -54,10 +55,14 @@ class AssetViewModel(
+         useCases.dispose(id)
+     }
+ 
+-    fun depreciate(draft: DepreciationDraft) = launch("استهلاک ثبت و سند حسابداری صادر شد.") {
++    fun depreciate(draft: DepreciationDraft) = launch("استهلاک ثبت، Audit و سند حسابداری صادر شد.") {
+         useCases.depreciate(draft)
+     }
+ 
++    fun reverseDepreciation(draft: DepreciationReversalDraft) = launch("برگشت استهلاک و سند معکوس ثبت شد.") {
++        useCases.reverseDepreciation(draft)
++    }
++
+     fun transfer(draft: AssetTransferDraft) = launch("انتقال دارایی با تاریخچه و Audit ثبت شد.") {
+         useCases.transfer(draft)
+     }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/WorkforceRoutes.kt b/app/src/main/java/ir/restaurant/management/ui/WorkforceRoutes.kt
+index 0c38f4c..13e1cf1 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/WorkforceRoutes.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/WorkforceRoutes.kt
+@@ -47,6 +47,7 @@ internal fun WorkforceRoutes(
+             onRecognize = assets::recognize,
+             onDispose = assets::dispose,
+             onDepreciate = assets::depreciate,
++            onReverseDepreciation = assets::reverseDepreciation,
+             onTransfer = assets::transfer,
+             onMaintenance = assets::maintenance,
+             onImpair = assets::impair,

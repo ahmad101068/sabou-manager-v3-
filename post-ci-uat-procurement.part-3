@@ -1,0 +1,115 @@
+             procurement.requisitions.take(5).forEach { request ->
+-                Card {
+-                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+-                        Text("${request.requestNo} · ${request.department}", fontWeight = FontWeight.Bold)
++                val hasApprovePermission = currentUser?.role?.allows(Permission.PURCHASE_APPROVE) == true
++                val secondStage = request.status == RequisitionStatus.PENDING_SECOND_APPROVAL
++                val canApprove = hasApprovePermission && (!secondStage || currentUser?.role == UserRole.OWNER)
++                Card(modifier = Modifier.fillMaxWidth().testTag("procurement_request_${request.id}")) {
++                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
++                        Text("${request.requestNo} · ${request.department}", fontWeight = FontWeight.Black)
++                        Text("درخواست‌کننده: ${request.requestedBy} · موعد: ${epochDayToPersian(request.requiredEpochDay).display()}", style = MaterialTheme.typography.bodySmall)
+                         Text("${request.lineCount} قلم · برآورد ${formatMoney(request.estimatedTotalRial)} · ${requisitionTitle(request.status)}")
+-                        Text("تأیید ${request.completedApprovalLevel} از ${request.requiredApprovalLevel}${request.committedBudgetRial.takeIf { it > 0 }?.let { value -> " · تعهد بودجه ${formatMoney(value)}" }.orEmpty()}", style = MaterialTheme.typography.bodySmall)
++                        Text("مرحله تأیید ${request.completedApprovalLevel} از ${request.requiredApprovalLevel}${request.committedBudgetRial.takeIf { it > 0 }?.let { value -> " · تعهد بودجه ${formatMoney(value)}" }.orEmpty()}", style = MaterialTheme.typography.bodySmall)
++                        request.note.takeIf { it.isNotBlank() }?.let { Text("یادداشت: $it", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
+                         if (request.supplierGroupCount > 0) Text("${request.supplierGroupCount} تأمین‌کننده تخصیص‌یافته${if (request.unassignedLineCount > 0) " · ${request.unassignedLineCount} قلم بدون تخصیص" else ""}", color = MaterialTheme.colorScheme.primary)
+-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+-                            if (request.status in setOf(RequisitionStatus.SUBMITTED, RequisitionStatus.PENDING_SECOND_APPROVAL)) {
+-                                Button(onClick = { onReview(request.id, true) }, enabled = !state.busy) { Text(if (request.status == RequisitionStatus.SUBMITTED) "تأیید مرحله اول" else "تأیید نهایی مالک") }
+-                                TextButton(onClick = { onReview(request.id, false) }, enabled = !state.busy) { Text("رد") }
+-                            }
+-                            if (request.status == RequisitionStatus.APPROVED) {
+-                                if (request.supplierGroupCount > 0) {
+-                                    Button(onClick = { splitOrderTarget = request }, enabled = !state.busy) { Text("ساخت سفارش‌های تفکیک‌شده") }
+-                                } else {
+-                                    OutlinedButton(onClick = { orderTarget = request }) { Text("ساخت سفارش") }
+-                                }
++                        if (request.status in setOf(RequisitionStatus.SUBMITTED, RequisitionStatus.PENDING_SECOND_APPROVAL)) {
++                            Button(
++                                onClick = { onReview(request.id, true, "") {} },
++                                enabled = !state.busy && canApprove,
++                                modifier = Modifier.fillMaxWidth().testTag("procurement_approve_${request.id}"),
++                            ) { Text(if (request.status == RequisitionStatus.SUBMITTED) "تأیید مرحله اول" else "تأیید نهایی مالک") }
++                            OutlinedButton(
++                                onClick = { rejectionTarget = request; rejectionReason = ""; rejectionError = null },
++                                enabled = !state.busy && hasApprovePermission,
++                                modifier = Modifier.fillMaxWidth().testTag("procurement_reject_${request.id}"),
++                            ) { Text("رد درخواست") }
++                            if (!hasApprovePermission) Text("برای بررسی این درخواست دسترسی تأیید خرید لازم است.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
++                            else if (secondStage && currentUser?.role != UserRole.OWNER) Text("مرحله نهایی فقط توسط مالک قابل تأیید است.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
++                        }
++                        if (request.status == RequisitionStatus.APPROVED) {
++                            if (request.supplierGroupCount > 0) {
++                                Button(onClick = { splitOrderTarget = request }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) { Text("ساخت سفارش‌های تفکیک‌شده") }
++                            } else {
++                                OutlinedButton(onClick = { orderTarget = request }, modifier = Modifier.fillMaxWidth()) { Text("ساخت سفارش") }
+                             }
+                         }
+                     }
+@@ -243,6 +279,45 @@ internal fun ProcurementControlPanel(
+         }
+     }
+ 
++    rejectionTarget?.let { target ->
++        AlertDialog(
++            modifier = Modifier.testTag("procurement_rejection_dialog"),
++            onDismissRequest = { if (!state.busy) rejectionTarget = null },
++            title = { Text("رد درخواست خرید") },
++            text = {
++                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                    Text("${target.requestNo} · علت رد را وارد کنید.")
++                    OutlinedTextField(
++                        value = rejectionReason,
++                        onValueChange = { rejectionReason = it.take(300); rejectionError = null },
++                        label = { Text("علت رد") },
++                        modifier = Modifier.fillMaxWidth().testTag("procurement_rejection_reason"),
++                    )
++                    rejectionError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
++                }
++            },
++            confirmButton = {
++                Button(
++                    onClick = {
++                        val reason = rejectionReason.trim()
++                        if (reason.length < 3) {
++                            rejectionError = "علت رد باید حداقل ۳ نویسه باشد."
++                        } else {
++                            onReview(target.id, false, reason) {
++                                rejectionTarget = null
++                                rejectionReason = ""
++                                rejectionError = null
++                            }
++                        }
++                    },
++                    enabled = !state.busy,
++                    modifier = Modifier.testTag("procurement_rejection_confirm"),
++                ) { Text(if (state.busy) "در حال ثبت…" else "تأیید رد") }
++            },
++            dismissButton = { TextButton(onClick = { rejectionTarget = null }, enabled = !state.busy) { Text("انصراف") } },
++        )
++    }
++
+     if (receiptPicker) {
+         val eligible = procurement.orders.filter { it.status in setOf(PurchaseOrderStatus.OPEN, PurchaseOrderStatus.PARTIALLY_RECEIVED) }
+         ProcurementOrderPickerDialog(
+@@ -319,6 +394,20 @@ internal fun ProcurementControlPanel(
+     } }
+ }
+ 
++@Composable
++private fun ProcurementWorkflowStepper(compact: Boolean) {
++    val steps = listOf("۱. درخواست", "۲. سفارش", "۳. دریافت", "۴. تطبیق سه‌طرفه")
++    if (compact) {
++        Column(Modifier.fillMaxWidth().testTag("procurement_workflow_stepper"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
++            steps.forEach { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
++        }
++    } else {
++        Row(Modifier.fillMaxWidth().testTag("procurement_workflow_stepper"), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
++            steps.forEach { Surface(Modifier.weight(1f), shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surface) { Text(it, Modifier.padding(6.dp), style = MaterialTheme.typography.labelSmall) } }
++        }
++    }
++}
++
+ @Composable
+ private fun ProcurementOrderPickerDialog(

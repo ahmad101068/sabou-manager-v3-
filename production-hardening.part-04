@@ -1,0 +1,152 @@
++        updatedAtEpochMillis = updatedAtEpochMillis,
++        status = status,
++    )
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+index 91312e4..8ab4797 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+@@ -63,7 +63,7 @@ class LocalDailySalesRepository(
+     private val sensitiveActionGate: SensitiveActionGate = SensitiveActionGate(),
+ ) : DailySalesRepository {
+     private val accountingPosting = LocalAccountingPostingEngine(database, clock = clock)
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock)
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock, authorizer = authorizer)
+     private val auditWriter = LocalAuditEventWriter(database)
+     private val branchResolver = CanonicalBranchResolver(database)
+     override val dayClosures: Flow<List<SalesDayClosureRecord>> = combine(
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+index 8784f99..5f819f8 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+@@ -30,6 +30,9 @@ import ir.restaurant.management.domain.inventory.LotAllocationCandidate
+ import ir.restaurant.management.domain.inventory.LotAllocationPurpose
+ import ir.restaurant.management.domain.inventory.LotAllocationRequest
+ import ir.restaurant.management.domain.inventory.WeightedAverageInventoryValuationService
++import ir.restaurant.management.domain.security.AuthorizationService
++import ir.restaurant.management.domain.security.Permission
++import ir.restaurant.management.data.security.AccessDeniedException
+ 
+ /**
+  * Authoritative command boundary for inventory quantity/value mutations.
+@@ -42,6 +45,7 @@ import ir.restaurant.management.domain.inventory.WeightedAverageInventoryValuati
+ class LocalInventoryCommandEngine(
+     private val database: AppDatabase,
+     private val clock: () -> Long = System::currentTimeMillis,
++    private val authorizer: AuthorizationService,
+ ) : InventoryCommandService {
+     enum class LotIssuePolicy { NONE, FEFO_ALL, FEFO_ALLOCATED_ONLY }
+     private val lotMovements = InventoryLotMovementService(database)
+@@ -85,6 +89,7 @@ class LocalInventoryCommandEngine(
+     )
+ 
+     override suspend fun reverse(command: ReverseInventoryCommand): InventoryLedgerResult {
++        requireActorMatch(command.context, InventoryReferenceType.LEGACY_UNKNOWN, Permission.INVENTORY)
+         val original = database.stockMovementDao().byId(command.originalMovementId)
+             ?: throw BusinessError.EntityNotFound("STOCK_MOVEMENT", command.originalMovementId).asViolation()
+         return restoreIssuedMovement(
+@@ -108,7 +113,9 @@ class LocalInventoryCommandEngine(
+         notes: String? = null,
+         lot: InventoryReceiptLot? = null,
+         enforceLotPolicy: Boolean = false,
+-    ): InventoryLedgerResult = inventoryTransaction(movementEpochDay) {
++    ): InventoryLedgerResult = authorizedInventoryTransaction(
++        movementEpochDay, context, referenceType, permissionsFor(referenceType, movementType),
++    ) {
+         requireCommandIdentity(movementType, referenceType, referenceId)
+         businessRequire(quantityMicros > 0) {
+             BusinessError.InvalidInput("quantityMicros", "مقدار ورود موجودی باید مثبت باشد.")
+@@ -193,7 +200,9 @@ class LocalInventoryCommandEngine(
+         notes: String? = null,
+         lotPolicy: LotIssuePolicy = LotIssuePolicy.FEFO_ALLOCATED_ONLY,
+         requestedLotId: Long? = null,
+-    ): InventoryLedgerResult = inventoryTransaction(movementEpochDay) {
++    ): InventoryLedgerResult = authorizedInventoryTransaction(
++        movementEpochDay, context, referenceType, permissionsFor(referenceType, movementType),
++    ) {
+         requireCommandIdentity(movementType, referenceType, referenceId)
+         businessRequire(quantityMicros > 0) {
+             BusinessError.InvalidInput("quantityMicros", "مقدار خروج موجودی باید مثبت باشد.")
+@@ -285,7 +294,9 @@ class LocalInventoryCommandEngine(
+         movementEpochDay: Long,
+         context: InventoryCommandContext,
+         notes: String? = null,
+-    ): InventoryLedgerResult = inventoryTransaction(movementEpochDay) {
++    ): InventoryLedgerResult = authorizedInventoryTransaction(
++        movementEpochDay, context, InventoryReferenceType.INVENTORY_COUNT, Permission.INVENTORY_COUNT_POST,
++    ) {
+         businessRequire(countedQuantityMicros >= 0) {
+             BusinessError.InvalidInput("countedQuantityMicros", "موجودی شمارش‌شده نمی‌تواند منفی باشد.")
+         }
+@@ -368,7 +379,9 @@ class LocalInventoryCommandEngine(
+         transferId: Long,
+         businessEpochDay: Long,
+         context: InventoryCommandContext,
+-    ) = inventoryTransaction(businessEpochDay) {
++    ) = authorizedInventoryTransaction(
++        businessEpochDay, context, InventoryReferenceType.STOCK_TRANSFER, setOf(Permission.INVENTORY_TRANSFER_ISSUE),
++    ) {
+         val transferDao = database.inventoryTransferDao()
+         val transfer = transferDao.transfer(transferId)
+             ?: throw BusinessError.EntityNotFound("INVENTORY_TRANSFER", transferId).asViolation()
+@@ -478,7 +491,9 @@ class LocalInventoryCommandEngine(
+         receivedQuantityByLineId: Map<Long, Long>,
+         businessEpochDay: Long,
+         context: InventoryCommandContext,
+-    ) = inventoryTransaction(businessEpochDay) {
++    ) = authorizedInventoryTransaction(
++        businessEpochDay, context, InventoryReferenceType.STOCK_TRANSFER, setOf(Permission.INVENTORY_TRANSFER_RECEIVE),
++    ) {
+         val transferDao = database.inventoryTransferDao()
+         val transfer = transferDao.transfer(transferId)
+             ?: throw BusinessError.EntityNotFound("INVENTORY_TRANSFER", transferId).asViolation()
+@@ -581,7 +596,12 @@ class LocalInventoryCommandEngine(
+         reversalEpochDay: Long,
+         context: InventoryCommandContext,
+         notes: String? = null,
+-    ): InventoryLedgerResult = inventoryTransaction(reversalEpochDay) {
++    ): InventoryLedgerResult = authorizedInventoryTransaction(
++        reversalEpochDay,
++        context,
++        InventoryReferenceType.fromStoredValue(movement.referenceType),
++        setOf(permissionForReversal(movement)),
++    ) {
+         businessRequire(movement.quantityDeltaMicros < 0 && movement.valueDeltaRial <= 0) {
+             BusinessError.InvalidBusinessState("STOCK_MOVEMENT", movement.movementType)
+         }
+@@ -669,7 +689,7 @@ class LocalInventoryCommandEngine(
+      * Restores only the lot-allocation projection for a partial commercial return. The caller must
+      * create the corresponding positive stock movement via [receive] in the same Room transaction.
+      */
+-    suspend fun restoreTrackedLotQuantity(
++    private suspend fun restoreTrackedLotQuantity(
+         originalMovementId: Long,
+         quantityMicros: Long,
+     ) {
+@@ -720,6 +740,139 @@ class LocalInventoryCommandEngine(
+         check(remaining == 0L) { "بازگردانی لات فروش کامل نشد." }
+     }
+ 
++    private suspend fun <T> authorizedInventoryTransaction(
++        movementEpochDay: Long,
++        context: InventoryCommandContext,
++        referenceType: InventoryReferenceType,
++        permissions: Set<Permission>,
++        block: suspend () -> T,
++    ): T {
++        authorizeCommand(context, referenceType, permissions)
++        return inventoryTransaction(movementEpochDay, block)
++    }
++
++    private suspend fun authorizeCommand(
++        context: InventoryCommandContext,
++        referenceType: InventoryReferenceType,
++        permissions: Set<Permission>,
++    ) {
++        require(permissions.isNotEmpty()) { "inventory_command_permission_missing" }
++        permissions.forEach { authorizer.require(it) }
++        requireActorMatch(context, referenceType, permissions.first())
++    }
++
++    private suspend fun requireActorMatch(
++        context: InventoryCommandContext,

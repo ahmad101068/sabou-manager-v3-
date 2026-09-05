@@ -1,0 +1,193 @@
+name: Phase 8 Final Verification
+
+on:
+  push:
+    branches: [remediation/phase8-final-verification-20260823]
+  pull_request:
+    branches: [remediation/phase7-dashboard-reports-ui-20260823]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase8-final-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase8-final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      PHASE7_BASELINE_SHA: e7dcf11a7b56a6f738313f2a7dfd41fa4159ea80
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+      MATRIX_CLASSES: ir.restaurant.management.data.db.FullMigration1ToCurrentTest,ir.restaurant.management.ui.EnterpriseCoreComposeE2ETest,ir.restaurant.management.data.repository.Phase2CorrectionIntegrationTest,ir.restaurant.management.data.repository.DailySalesReversalIntegrationTest,ir.restaurant.management.data.repository.BranchPurchasePostingIntegrationTest,ir.restaurant.management.data.repository.BranchPayrollPostingIntegrationTest,ir.restaurant.management.data.repository.AssetLifecycleIntegrationTest,ir.restaurant.management.data.repository.ManagementControlTransactionIntegrationTest,ir.restaurant.management.data.repository.RecipeVersionIntegrationTest,ir.restaurant.management.data.repository.RecipeLifecycleIntegrationTest,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.repository.TreasuryV2IntegrationTest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Verify exact source SHA
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+      - name: Reconstruct Phase-8 candidate
+        run: bash .github/scripts/reconstruct-phase8-candidate.sh phase8-source
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+        with:
+          gradle-version: '8.13'
+      - name: Compile final source
+        working-directory: phase8-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+      - name: Verify Room 59 and full migration chain registration
+        working-directory: phase8-source
+        run: |
+          set -euo pipefail
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/1.json
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/59.json
+          python3 scripts/verify-room-schema.py
+          grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 59' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          grep -Fq 'ALL_MIGRATIONS' app/src/androidTest/java/ir/restaurant/management/data/db/FullMigration1ToCurrentTest.kt
+          if grep -R -n 'fallbackToDestructiveMigration' app/src/main/java; then exit 1; fi
+      - name: Full JVM regression suite
+        working-directory: phase8-source
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest
+      - name: Performance contract
+        working-directory: phase8-source
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest --tests 'ir.restaurant.management.ui.Part3BPerformanceContractTest'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: API23 critical full-flow matrix
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 23
+          arch: x86_64
+          target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: >-
+            cd "$GITHUB_WORKSPACE/phase8-source" &&
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            "-Pandroid.testInstrumentationRunnerArguments.class=${MATRIX_CLASSES}"
+      - name: Preserve API23 results
+        run: |
+          mkdir -p phase8-results/api23
+          cp -R phase8-source/app/build/outputs/androidTest-results/connected/. phase8-results/api23/
+      - name: Verify API23 result integrity
+        run: python3 .github/scripts/verify-phase8-matrix-results.py phase8-results/api23 API23
+      - name: API35 critical full-flow matrix
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: >-
+            cd "$GITHUB_WORKSPACE/phase8-source" &&
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            "-Pandroid.testInstrumentationRunnerArguments.class=${MATRIX_CLASSES}"
+      - name: Preserve API35 results
+        run: |
+          mkdir -p phase8-results/api35
+          cp -R phase8-source/app/build/outputs/androidTest-results/connected/. phase8-results/api35/
+      - name: Verify API35 result integrity
+        run: python3 .github/scripts/verify-phase8-matrix-results.py phase8-results/api35 API35
+      - name: Build Phase-8 final handoff
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_SHA:0:7}"
+          zip_name="restaurant-management-final-source-${short_sha}.zip"
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          root=Path(os.environ['GITHUB_WORKSPACE'])/'phase8-source'
+          out=Path(os.environ['GITHUB_WORKSPACE'])/f"restaurant-management-final-source-{os.environ['SOURCE_SHA'][:7]}.zip"
+          excluded={'.git','.gradle','build'}
+          with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as z:
+              for p in sorted(root.rglob('*')):
+                  if not p.is_file(): continue
+                  rel=p.relative_to(root)
+                  if any(x in excluded for x in rel.parts): continue
+                  if p.name=='local.properties' or p.suffix.lower() in {'.apk','.aab','.jks','.keystore'}: continue
+                  z.write(p,rel.as_posix())
+          PY
+          unzip -t "$zip_name" >/dev/null
+          src_hash="$(sha256sum "$zip_name" | awk '{print $1}')"
+          src_count="$(unzip -Z1 "$zip_name" | wc -l)"
+          schema59_hash="$(sha256sum phase8-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/59.json | awk '{print $1}')"
+          api23_count="$(python3 .github/scripts/count-phase8-tests.py phase8-results/api23)"
+          api35_count="$(python3 .github/scripts/count-phase8-tests.py phase8-results/api35)"
+          cat > PHASE-8-REPORT.md <<EOF2
+          # PHASE-8-REPORT
+          - Phase-7 formal handoff SHA: ${PHASE7_BASELINE_SHA}
+          - Phase-8 final verified SHA: ${SOURCE_SHA}
+          - Branch: ${SOURCE_BRANCH}
+          - Compile + AndroidTest compile: PASS
+          - Full JVM regression suite: PASS
+          - Performance contract: PASS
+          - Room schema: 59, unchanged
+          - Full Room 1 -> 59 migration: PASS on API23 and API35 matrix
+          - API23 critical full-flow matrix: PASS (${api23_count} tests)
+          - API35 critical full-flow matrix: PASS (${api35_count} tests)
+          - Purchase -> GL: PASS
+          - Sale -> COGS -> GL: PASS
+          - Attendance -> Payroll -> GL: PASS
+          - Asset -> Depreciation -> GL: PASS
+          - Reversal controls: PASS
+          - Period close transaction/audit: PASS
+          - Historical recipe selection and COGS snapshot integrity: PASS
+          - Permission/Treasury regressions: PASS
+          - Destructive migration fallback: NONE
+          - Room 59 schema SHA-256: ${schema59_hash}
+          - Final source ZIP: ${zip_name}
+          - Final source ZIP SHA-256: ${src_hash}
+          - Final source file count: ${src_count}
+          - Known remaining Phase-8 blockers: NONE
+          EOF2
+          cat > PHASE-8-EVIDENCE.txt <<EOF2
+          PHASE7_HANDOFF_SHA=${PHASE7_BASELINE_SHA}
+          VERIFIED_SOURCE_SHA=${SOURCE_SHA}
+          HEAD_SHA=${SOURCE_SHA}
+          BRANCH=${SOURCE_BRANCH}
+          ROOM_VERSION=59
+          DB_SCHEMA_CHANGED=NO
+          FULL_JVM=PASS
+          PERFORMANCE_CONTRACT=PASS
+          FULL_MIGRATION_1_TO_59_API23=PASS
+          FULL_MIGRATION_1_TO_59_API35=PASS
+          API23_MATRIX=PASS
+          API35_MATRIX=PASS
+          API23_TEST_COUNT=${api23_count}
+          API35_TEST_COUNT=${api35_count}
+          PURCHASE_TO_GL=PASS
+          SALE_TO_COGS_TO_GL=PASS
+          ATTENDANCE_TO_PAYROLL_TO_GL=PASS
+          ASSET_TO_DEPRECIATION_TO_GL=PASS
+          REVERSAL=PASS
+          PERIOD_CLOSE=PASS
+          HISTORICAL_RECIPE_COGS=PASS
+          DESTRUCTIVE_MIGRATION_FALLBACK=NONE
+          SOURCE_FILE=${zip_name}
+          SOURCE_SHA256=${src_hash}
+          SOURCE_FILE_COUNT=${src_count}
+          FORMAL_PHASE8_STATUS=DONE_VERIFIED
+          EOF2
+      - name: Upload Phase-8 final handoff
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: phase8-final-${{ env.SOURCE_SHA }}
+          path: |
+            PHASE-8-REPORT.md
+            PHASE-8-EVIDENCE.txt
+            restaurant-management-final-source-*.zip
+            phase8-results/
+            phase8-source/app/build/reports/tests/testDebugUnitTest/
+            phase8-source/app/build/test-results/testDebugUnitTest/
