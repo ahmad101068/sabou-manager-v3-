@@ -1,0 +1,90 @@
+name: Release v1 canonical verification
+
+on:
+  push:
+    branches:
+      - release/v1.0.0
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-v1-canonical-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Static release invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app/build.gradle.kts
+          test -f settings.gradle.kts
+          grep -Fq 'versionName = "1.0.0"' app/build.gradle.kts
+          grep -Fq 'versionCode = 209' app/build.gradle.kts
+          grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          ! grep -R -n 'fallbackToDestructiveMigration' app/src/main/java
+          ! grep -R -nE '@Ignore|@Disabled' app/src
+          ! find . -type f \( -name '*.jks' -o -name '*.keystore' -o -name 'local.properties' \) -print -quit | grep -q .
+      - name: JVM tests, lint and release build
+        shell: bash
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
+      - name: Record artifact digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-evidence
+          find app/build/outputs/apk -type f -name '*.apk' -print0 | sort -z | xargs -0 sha256sum | tee release-evidence/apk-sha256.txt
+          printf 'SOURCE_SHA=%s\n' "$GITHUB_SHA" > release-evidence/source.txt
+          printf 'VERSION_NAME=1.0.0\nVERSION_CODE=209\nROOM_SCHEMA=60\n' >> release-evidence/source.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sabou-v1-canonical-build-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/
+            release-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  instrumentation:
+    needs: build-test-lint
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [23, 35]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            chmod +x ./gradlew
+            ./gradlew --no-daemon --stacktrace :app:connectedDebugAndroidTest
