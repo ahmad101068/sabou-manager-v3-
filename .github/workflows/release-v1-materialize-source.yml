@@ -1,0 +1,85 @@
+name: Release v1 canonical source materialization
+
+on:
+  push:
+    branches:
+      - release/v1.0.0
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v1-canonical-source
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact release branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Stop when canonical source already exists
+        id: guard
+        shell: bash
+        run: |
+          if [[ -f app/build.gradle.kts && -f settings.gradle.kts && -f app/src/main/AndroidManifest.xml ]]; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "Canonical source already materialized; no write required."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reconstruct verified Phase 8.1 source
+        if: steps.guard.outputs.already != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/reconstruct-phase8-1-candidate.sh canonical-source
+          test -f canonical-source/app/build.gradle.kts
+          test -f canonical-source/settings.gradle.kts
+          test -f canonical-source/app/src/main/AndroidManifest.xml
+          if grep -R -n 'fallbackToDestructiveMigration' canonical-source/app/src/main/java; then
+            echo '::error::destructive migration fallback found'
+            exit 1
+          fi
+
+      - name: Materialize source at repository root
+        if: steps.guard.outputs.already != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rsync -a --delete-excluded \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude 'canonical-source/' \
+            canonical-source/ ./
+          rm -rf canonical-source
+
+      - name: Verify materialized source
+        if: steps.guard.outputs.already != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app/build.gradle.kts
+          test -f settings.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          grep -Fq 'versionName = "1.0.0"' app/build.gradle.kts
+          grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          if grep -R -n 'fallbackToDestructiveMigration' app/src/main/java; then
+            exit 1
+          fi
+
+      - name: Commit canonical source tree
+        if: steps.guard.outputs.already != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'release: materialize canonical v1.0.0 source tree'
+          git push origin HEAD:release/v1.0.0
