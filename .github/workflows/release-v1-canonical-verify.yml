@@ -37,11 +37,20 @@ jobs:
           ! grep -R -n 'fallbackToDestructiveMigration' app/src/main/java
           ! grep -R -nE '@Ignore|@Disabled' app/src
           ! find . -type f \( -name '*.jks' -o -name '*.keystore' -o -name 'local.properties' \) -print -quit | grep -q .
-      - name: JVM tests, lint and release build
+      - name: JVM unit tests
         shell: bash
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
+          ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest
+      - name: Android lint
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace :app:lintDebug
+      - name: Debug build
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
+      - name: Release build
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace :app:assembleRelease
       - name: Record artifact digests
         shell: bash
         run: |
