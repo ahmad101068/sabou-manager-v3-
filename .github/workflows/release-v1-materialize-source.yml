@@ -52,12 +52,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rsync -a --delete-excluded \
-            --exclude '.git/' \
-            --exclude '.github/' \
-            --exclude 'canonical-source/' \
-            canonical-source/ ./
-          rm -rf canonical-source
+          tar --exclude='.github' -C canonical-source -cf /tmp/sabou-v1-source.tar .
+          tar -xf /tmp/sabou-v1-source.tar -C .
+          rm -rf canonical-source /tmp/sabou-v1-source.tar
 
       - name: Verify materialized source
         if: steps.guard.outputs.already != 'true'
