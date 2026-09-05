@@ -1,0 +1,550 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration56To57Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration56To57Test.kt
+index b09ca33..867b587 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration56To57Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration56To57Test.kt
+@@ -48,6 +48,11 @@ class Migration56To57Test {
+                 while (cursor.moveToNext()) required.remove(cursor.getString(nameIndex))
+                 assertTrue(required.isEmpty())
+             }
++            db.query("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='trg_attendance_corrections_controlled_update'").use { cursor ->
++                assertTrue(cursor.moveToFirst())
++                val triggerSql = cursor.getString(0)
++                assertTrue(triggerSql.contains("'APPROVED','REJECTED'"))
++            }
+             db.query("PRAGMA foreign_key_check").use { cursor -> assertEquals(0, cursor.count) }
+         }
+     }
+diff --git a/app/src/main/java/ir/restaurant/management/application/personnel/PersonnelUseCases.kt b/app/src/main/java/ir/restaurant/management/application/personnel/PersonnelUseCases.kt
+index 4416723..5cd1520 100644
+--- a/app/src/main/java/ir/restaurant/management/application/personnel/PersonnelUseCases.kt
++++ b/app/src/main/java/ir/restaurant/management/application/personnel/PersonnelUseCases.kt
+@@ -9,6 +9,7 @@ class PersonnelUseCases(private val repository: PersonnelRepository) {
+     val attendance get() = repository.attendance
+     val leaves get() = repository.leaves
+     val pendingLeaves get() = repository.pendingLeaves
++    val pendingCorrections get() = repository.pendingAttendanceCorrections
+     val payrollPolicies get() = repository.payrollPolicies
+     val shiftTemplates get() = repository.shiftTemplates
+     val workSchedules get() = repository.workSchedules
+@@ -42,9 +43,13 @@ class AttendanceUseCases(private val repository: PersonnelRepository) {
+     val attendance get() = repository.attendance
+     val leaves get() = repository.leaves
+     val pendingLeaves get() = repository.pendingLeaves
++    val pendingCorrections get() = repository.pendingAttendanceCorrections
+     suspend fun save(id: Long?, draft: AttendanceDraft) = repository.saveAttendance(id, draft)
++    suspend fun punch(draft: AttendancePunchDraft) = repository.recordAttendancePunch(draft)
++    fun events(employeeId: Long, limit: Int = 50) = repository.attendanceEvents(employeeId, limit)
+     suspend fun dailySummary(employeeId: Long, day: Long) = repository.attendanceSummaryV2(employeeId, day)
+     suspend fun approveCorrection(id: Long) = repository.approveAttendanceCorrection(id)
++    suspend fun rejectCorrection(id: Long, reason: String) = repository.rejectAttendanceCorrection(id, reason)
+     suspend fun reviewOvertime(command: OvertimeReviewCommand) = repository.reviewOvertime(command)
+     suspend fun summary(employeeId: Long, from: Long, to: Long) = repository.attendanceSummary(employeeId, from, to)
+     suspend fun requestLeave(draft: LeaveDraft, requestedBy: String) = repository.requestLeave(draft, requestedBy)
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/HrPayrollDao.kt b/app/src/main/java/ir/restaurant/management/data/db/HrPayrollDao.kt
+index d6c604c..fe2871f 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/HrPayrollDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/HrPayrollDao.kt
+@@ -262,6 +262,12 @@ interface HrPayrollDao {
+     @Query("SELECT * FROM attendance_events WHERE employeeId=:employeeId ORDER BY businessEpochDay DESC,timestampEpochMillis DESC,id DESC LIMIT :limit OFFSET :offset")
+     suspend fun attendanceEventPage(employeeId: Long, limit: Int, offset: Int): List<AttendanceEventEntity>
+ 
++    @Query("SELECT * FROM attendance_events WHERE employeeId=:employeeId AND eventType IN ('CLOCK_IN','CLOCK_OUT') ORDER BY timestampEpochMillis DESC,id DESC LIMIT 1")
++    suspend fun latestAttendanceClockEvent(employeeId: Long): AttendanceEventEntity?
++
++    @Query("SELECT * FROM attendance_events WHERE employeeId=:employeeId ORDER BY timestampEpochMillis DESC,id DESC LIMIT :limit")
++    fun observeAttendanceEvents(employeeId: Long, limit: Int): Flow<List<AttendanceEventEntity>>
++
+     @Query("SELECT * FROM attendance_corrections WHERE idempotencyKey=:idempotencyKey LIMIT 1")
+     suspend fun attendanceCorrectionByKey(idempotencyKey: String): AttendanceCorrectionEntity?
+ 
+@@ -271,6 +277,12 @@ interface HrPayrollDao {
+     @Query("UPDATE attendance_corrections SET status='APPROVED',approvedByActorId=:actorId,approvedAtEpochMillis=:approvedAt WHERE id=:id AND status='SUBMITTED'")
+     suspend fun approveAttendanceCorrection(id: Long, actorId: Long, approvedAt: Long): Int
+ 
++    @Query("UPDATE attendance_corrections SET status='REJECTED',approvedByActorId=:actorId,approvedAtEpochMillis=:reviewedAt WHERE id=:id AND status='SUBMITTED'")
++    suspend fun rejectAttendanceCorrection(id: Long, actorId: Long, reviewedAt: Long): Int
++
++    @Query("SELECT * FROM attendance_corrections WHERE status='SUBMITTED' ORDER BY requestedAtEpochMillis DESC,id DESC")
++    fun observePendingAttendanceCorrections(): Flow<List<AttendanceCorrectionEntity>>
++
+     @Query("SELECT * FROM attendance_corrections WHERE employeeId=:employeeId ORDER BY businessEpochDay DESC,requestedAtEpochMillis DESC LIMIT :limit OFFSET :offset")
+     suspend fun attendanceCorrectionPage(employeeId: Long, limit: Int, offset: Int): List<AttendanceCorrectionEntity>
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/HrPayrollGuards.kt b/app/src/main/java/ir/restaurant/management/data/db/HrPayrollGuards.kt
+index 4eefc08..37d80d9 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/HrPayrollGuards.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/HrPayrollGuards.kt
+@@ -136,13 +136,16 @@ internal fun installHrPayrollGuards(db: SupportSQLiteDatabase) {
+         BEFORE DELETE ON attendance_events
+         BEGIN SELECT RAISE(ABORT,'ATTENDANCE_EVENT_IMMUTABLE'); END""",
+     )
++    db.execSQL("DROP TRIGGER IF EXISTS trg_attendance_corrections_controlled_update")
+     db.execSQL(
+-        """CREATE TRIGGER IF NOT EXISTS trg_attendance_corrections_controlled_update
++        """CREATE TRIGGER trg_attendance_corrections_controlled_update
+         BEFORE UPDATE ON attendance_corrections
+-        WHEN OLD.status!='SUBMITTED' OR NEW.status!='APPROVED'
++        WHEN OLD.status!='SUBMITTED' OR NEW.status NOT IN ('APPROVED','REJECTED')
++          OR NEW.approvedByActorId IS NULL OR NEW.approvedAtEpochMillis IS NULL
+           OR NEW.employeeId!=OLD.employeeId OR NEW.businessEpochDay!=OLD.businessEpochDay
+           OR NEW.beforeSnapshot!=OLD.beforeSnapshot OR NEW.afterSnapshot!=OLD.afterSnapshot
+           OR NEW.reason!=OLD.reason OR NEW.requestedByActorId!=OLD.requestedByActorId
++          OR NEW.requestedAtEpochMillis!=OLD.requestedAtEpochMillis
+           OR NEW.correlationId!=OLD.correlationId
+         BEGIN SELECT RAISE(ABORT,'ATTENDANCE_CORRECTION_IMMUTABLE'); END""",
+     )
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/Phase4HrPayrollMigration.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase4HrPayrollMigration.kt
+index a547d5f..2de459b 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/migration/Phase4HrPayrollMigration.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase4HrPayrollMigration.kt
+@@ -16,5 +16,7 @@ internal val MIGRATION_56_57 = object : Migration(56, 57) {
+         db.execSQL("ALTER TABLE payroll_snapshots ADD COLUMN holidayMinutes INTEGER NOT NULL DEFAULT 0")
+         db.execSQL("ALTER TABLE payroll_snapshots ADD COLUMN nightMultiplierBasisPoints INTEGER NOT NULL DEFAULT 10000")
+         db.execSQL("ALTER TABLE payroll_snapshots ADD COLUMN holidayMultiplierBasisPoints INTEGER NOT NULL DEFAULT 10000")
++
++        installHrPayrollGuards(db)
+     }
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt
+index c8fd7aa..71d9c1c 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt
+@@ -58,6 +58,7 @@ import ir.restaurant.management.domain.personnel.LeaveLedgerEntry
+ import ir.restaurant.management.domain.personnel.LeaveLedgerEntryType
+ import ir.restaurant.management.domain.personnel.PendingLeaveUsage
+ import ir.restaurant.management.domain.personnel.AttendanceDraft
++import ir.restaurant.management.domain.personnel.AttendancePunchDraft
+ import ir.restaurant.management.domain.personnel.AttendanceRecord
+ import ir.restaurant.management.domain.personnel.AttendanceSummary
+ import ir.restaurant.management.domain.personnel.AttendanceCalculator
+@@ -135,6 +136,7 @@ class LocalPersonnelRepository(
+     override val shiftTemplates: Flow<List<ShiftTemplateRecord>> = schedulingService.shiftTemplates
+     override val workSchedules: Flow<List<WorkScheduleRecord>> = schedulingService.workSchedules
+     override val pendingOvertimeApprovals: Flow<List<OvertimeApprovalRecord>> = hr.observePendingOvertimeApprovals().map { rows -> rows.map { it.toRecord() } }
++    override val pendingAttendanceCorrections = attendanceService.pendingCorrections()
+ 
+     override val employees: Flow<List<EmployeeRecord>> = combine(
+         personnel.observeEmployees(),
+@@ -630,6 +632,8 @@ class LocalPersonnelRepository(
+     }
+ 
+     override suspend fun saveAttendance(id: Long?, draft: AttendanceDraft): Long = attendanceService.save(id, draft)
++    override suspend fun recordAttendancePunch(draft: AttendancePunchDraft): Long = attendanceService.recordPunch(draft)
++    override fun attendanceEvents(employeeId: Long, limit: Int) = attendanceService.events(employeeId, limit)
+     override suspend fun reviewOvertime(command: OvertimeReviewCommand) = attendanceService.reviewOvertime(command)
+ 
+     override suspend fun attendanceSummaryV2(employeeId: Long, businessEpochDay: Long): DailyAttendanceSummaryV2 =
+@@ -638,6 +642,9 @@ class LocalPersonnelRepository(
+     override suspend fun approveAttendanceCorrection(correctionId: Long) =
+         attendanceService.approveCorrection(correctionId)
+ 
++    override suspend fun rejectAttendanceCorrection(correctionId: Long, reason: String) =
++        attendanceService.rejectCorrection(correctionId, reason)
++
+     override suspend fun attendanceSummary(employeeId: Long, startEpochDay: Long, endEpochDay: Long): AttendanceSummary =
+         attendanceService.summary(employeeId, startEpochDay, endEpochDay)
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt b/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
+index b5d86a4..610944f 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
+@@ -20,6 +20,9 @@ import ir.restaurant.management.domain.personnel.AttendanceEvent
+ import ir.restaurant.management.domain.personnel.AttendanceEventAggregator
+ import ir.restaurant.management.domain.personnel.AttendanceEventType
+ import ir.restaurant.management.domain.personnel.AttendancePayrollAdjustment
++import ir.restaurant.management.domain.personnel.AttendancePunchDraft
++import ir.restaurant.management.domain.personnel.AttendancePunchSequencePolicy
++import ir.restaurant.management.domain.personnel.AttendanceCorrectionRecord
+ import ir.restaurant.management.domain.personnel.AttendancePayrollCalculator
+ import ir.restaurant.management.domain.personnel.AttendancePayrollPolicy
+ import ir.restaurant.management.domain.personnel.AttendanceSource
+@@ -31,6 +34,12 @@ import ir.restaurant.management.domain.personnel.EmploymentStatus
+ import ir.restaurant.management.domain.personnel.OvertimeReviewCommand
+ import ir.restaurant.management.domain.security.Permission
+ import ir.restaurant.management.domain.security.SegregationOfDuties
++import java.time.Instant
++import java.time.ZoneId
++import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.emitAll
++import kotlinx.coroutines.flow.flow
++import kotlinx.coroutines.flow.map
+ 
+ /**
+  * Owns attendance command/query rules so PersonnelRepository does not coordinate employee master,
+@@ -152,6 +161,104 @@ internal class PersonnelAttendanceService(
+         }
+     }
+ 
++    suspend fun recordPunch(draft: AttendancePunchDraft): Long {
++        val actor = authorizer.require(Permission.ATTENDANCE_EDIT)
++        val valid = draft.validated()
++        return database.withTransaction {
++            val employee = personnel.employeeById(valid.employeeId) ?: error("پرسنل پیدا نشد.")
++            val employeeStatus = EmploymentStatus.fromStoredValue(employee.status)
++            require(employeeStatus in setOf(EmploymentStatus.ACTIVE, EmploymentStatus.ON_LEAVE)) {
++                "برای این وضعیت استخدام نمی‌توان پانچ ثبت کرد."
++            }
++            val idempotencyKey = "attendance_punch:${valid.commandId}"
++            hr.attendanceEventByIdempotencyKey(idempotencyKey)?.let { replay ->
++                require(replay.employeeId == valid.employeeId && replay.eventType == valid.eventType.storedValue) {
++                    "attendance_punch_idempotency_payload_mismatch"
++                }
++                return@withTransaction replay.id
++            }
++
++            val now = clock()
++            val local = attendanceLocalPoint(now)
++            val latest = hr.latestAttendanceClockEvent(valid.employeeId)?.toAttendanceDomain()
++            val decision = AttendancePunchSequencePolicy.decide(
++                employeeId = valid.employeeId,
++                requestedType = valid.eventType,
++                localEpochDay = local.epochDay,
++                timestampEpochMillis = now,
++                latestClockEvent = latest,
++            )
++            val businessDay = decision.businessEpochDay
++            require(employee.hireEpochDay == null || businessDay >= employee.hireEpochDay) { "تاریخ پانچ قبل از شروع همکاری است." }
++            require(employee.terminationEpochDay == null || businessDay <= employee.terminationEpochDay) { "تاریخ پانچ بعد از خاتمه همکاری است." }
++            require(!personnel.attendanceDayLocked(valid.employeeId, businessDay)) {
++                "دوره حقوق این روز نهایی شده و پانچ جدید مجاز نیست؛ از مسیر اصلاح/Revision استفاده کنید."
++            }
++            require(!personnel.hasApprovedLeave(valid.employeeId, businessDay)) {
++                "برای این روز مرخصی تأییدشده وجود دارد؛ ابتدا تعارض مرخصی را از مسیر کنترل‌شده رفع کنید."
++            }
++
++            val correlation = CorrelationId.forCommand("attendance_punch", GlobalId.parse(valid.commandId)).value
++            val eventId = hr.insertAttendanceEvent(
++                AttendanceEventEntity(
++                    globalId = valid.commandId,
++                    idempotencyKey = idempotencyKey,
++                    employeeId = valid.employeeId,
++                    eventType = valid.eventType.storedValue,
++                    businessEpochDay = businessDay,
++                    timestampEpochMillis = now,
++                    minuteOfDay = local.minuteOfDay,
++                    source = valid.source.storedValue,
++                    deviceId = null,
++                    locationId = employee.locationId,
++                    branchId = employee.branchId,
++                    createdByActorId = actor.id,
++                    reason = valid.reason.takeIf { it.isNotBlank() },
++                    correlationId = correlation,
++                ),
++            )
++            val dayEvents = hr.attendanceEventsForDay(valid.employeeId, businessDay).map { it.toAttendanceDomain() }
++            val planned = scheduling.resolveOrMaterializePlannedShift(valid.employeeId, businessDay)
++            val session = AttendanceSessionCalculator.summarize(
++                employeeId = valid.employeeId,
++                businessEpochDay = businessDay,
++                events = dayEvents,
++                scheduledBreakMinutes = planned?.breakMinutes ?: 0,
++            )
++            val allowedOpenSession = valid.eventType == AttendanceEventType.CLOCK_IN &&
++                session.anomalies.all { it.type == ir.restaurant.management.domain.personnel.AttendanceAnomalyType.MISSING_CLOCK_OUT }
++            require(session.anomalies.isEmpty() || allowedOpenSession) {
++                "پانچ باعث ناهنجاری حضور شد: ${session.anomalies.joinToString { it.type.name }}"
++            }
++            auditWriter.appendAuthorized(
++                authorizer,
++                if (valid.eventType == AttendanceEventType.CLOCK_IN) "PUNCH_IN" else "PUNCH_OUT",
++                "ATTENDANCE_EVENT",
++                eventId,
++                if (valid.eventType == AttendanceEventType.CLOCK_IN) "ثبت ورود واقعی" else "ثبت خروج واقعی",
++                now,
++                businessDay,
++                valid.reason.ifBlank { valid.eventType.storedValue },
++                null,
++                "employeeId=${valid.employeeId};type=${valid.eventType.storedValue};timestamp=$now;branchId=${employee.branchId};locationId=${employee.locationId}",
++                correlation,
++            )
++            eventId
++        }
++    }
++
++    fun events(employeeId: Long, limit: Int): Flow<List<AttendanceEvent>> = flow {
++        authorizer.require(Permission.PERSONNEL_VIEW)
++        require(employeeId > 0 && limit in 1..200) { "attendance_event_query_invalid" }
++        personnel.employeeById(employeeId) ?: error("پرسنل پیدا نشد.")
++        emitAll(hr.observeAttendanceEvents(employeeId, limit).map { rows -> rows.map { it.toAttendanceDomain() } })
++    }
++
++    fun pendingCorrections(): Flow<List<AttendanceCorrectionRecord>> = flow {
++        authorizer.require(Permission.PERSONNEL_VIEW)
++        emitAll(hr.observePendingAttendanceCorrections().map { rows -> rows.map { it.toAttendanceCorrectionRecord() } })
++    }
++
+     suspend fun dailySummary(employeeId: Long, businessEpochDay: Long): DailyAttendanceSummaryV2 {
+         authorizer.require(Permission.PERSONNEL_VIEW)
+         val employee = personnel.employeeById(employeeId) ?: error("پرسنل پیدا نشد.")
+@@ -265,6 +372,27 @@ internal class PersonnelAttendanceService(
+         }
+     }
+ 
++    suspend fun rejectCorrection(correctionId: Long, reason: String) {
++        val actor = authorizer.require(Permission.ATTENDANCE_CORRECTION_APPROVE)
++        val normalizedReason = reason.trim()
++        require(normalizedReason.length in 3..500) { "دلیل رد اصلاح حضور الزامی است." }
++        database.withTransaction {
++            val correction = hr.attendanceCorrection(correctionId) ?: error("درخواست اصلاح حضور پیدا نشد.")
++            if (correction.status == "REJECTED") return@withTransaction
++            require(correction.status == "SUBMITTED") { "درخواست اصلاح در انتظار بررسی نیست." }
++            SegregationOfDuties.requireDifferentActors(
++                "ATTENDANCE_CORRECTION_REJECTION", correction.requestedByActorId, actor.id,
++            )
++            val now = clock()
++            check(hr.rejectAttendanceCorrection(correction.id, actor.id, now) == 1) { "رد اصلاح حضور انجام نشد." }
++            auditWriter.appendAuthorized(
++                authorizer, "CORRECTION_REJECT", "ATTENDANCE", null, "رد اصلاح حضور و غیاب",
++                now, correction.businessEpochDay, normalizedReason, correction.beforeSnapshot,
++                correction.afterSnapshot, correction.correlationId, "ATTENDANCE_CORRECTION", correction.id,
++            )
++        }
++    }
++
+     suspend fun reviewOvertime(command: OvertimeReviewCommand) {
+         val actor = authorizer.require(Permission.OVERTIME_APPROVE)
+         database.withTransaction {
+@@ -488,6 +616,29 @@ internal class PersonnelAttendanceService(
+     }
+ }
+ 
++private data class AttendanceLocalPoint(val epochDay: Long, val minuteOfDay: Int)
++
++private fun attendanceLocalPoint(epochMillis: Long, zoneId: ZoneId = ZoneId.systemDefault()): AttendanceLocalPoint {
++    val local = Instant.ofEpochMilli(epochMillis).atZone(zoneId)
++    return AttendanceLocalPoint(
++        epochDay = local.toLocalDate().toEpochDay(),
++        minuteOfDay = local.hour * 60 + local.minute,
++    )
++}
++
++private fun AttendanceCorrectionEntity.toAttendanceCorrectionRecord() = AttendanceCorrectionRecord(
++    id = id,
++    employeeId = employeeId,
++    businessEpochDay = businessEpochDay,
++    reason = reason,
++    status = status,
++    requestedByActorId = requestedByActorId,
++    reviewedByActorId = approvedByActorId,
++    requestedAtEpochMillis = requestedAtEpochMillis,
++    reviewedAtEpochMillis = approvedAtEpochMillis,
++    correlationId = correlationId,
++)
++
+ private fun AttendanceEventEntity.toAttendanceDomain() = AttendanceEvent(
+     id = id,
+     employeeId = employeeId,
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/AttendancePunchSequencePolicy.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/AttendancePunchSequencePolicy.kt
+new file mode 100644
+index 0000000..359c4c4
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/AttendancePunchSequencePolicy.kt
+@@ -0,0 +1,40 @@
++package ir.restaurant.management.domain.personnel
++
++/**
++ * Validates the next immutable clock event. CLOCK_OUT remains anchored to the business day of the
++ * open CLOCK_IN, so overnight shifts do not split one work session across two payroll days.
++ */
++data class AttendancePunchDecision(val businessEpochDay: Long)
++
++object AttendancePunchSequencePolicy {
++    private const val MAX_OPEN_SESSION_MILLIS = 24L * 60L * 60L * 1000L
++
++    fun decide(
++        employeeId: Long,
++        requestedType: AttendanceEventType,
++        localEpochDay: Long,
++        timestampEpochMillis: Long,
++        latestClockEvent: AttendanceEvent?,
++    ): AttendancePunchDecision {
++        require(employeeId > 0 && localEpochDay > 0 && timestampEpochMillis > 0)
++        require(requestedType in setOf(AttendanceEventType.CLOCK_IN, AttendanceEventType.CLOCK_OUT))
++        latestClockEvent?.let { require(it.employeeId == employeeId) { "attendance_punch_employee_mismatch" } }
++        return when (requestedType) {
++            AttendanceEventType.CLOCK_IN -> {
++                require(latestClockEvent?.eventType != AttendanceEventType.CLOCK_IN) { "attendance_duplicate_clock_in" }
++                AttendancePunchDecision(localEpochDay)
++            }
++            AttendanceEventType.CLOCK_OUT -> {
++                val open = requireNotNull(latestClockEvent?.takeIf { it.eventType == AttendanceEventType.CLOCK_IN }) {
++                    "attendance_clock_out_without_open_clock_in"
++                }
++                require(timestampEpochMillis > open.timestampEpochMillis) { "attendance_clock_out_not_after_clock_in" }
++                require(timestampEpochMillis - open.timestampEpochMillis <= MAX_OPEN_SESSION_MILLIS) {
++                    "attendance_open_session_too_old_use_correction"
++                }
++                AttendancePunchDecision(open.businessEpochDay)
++            }
++            else -> error("attendance_punch_type_not_exhaustive")
++        }
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollModels.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollModels.kt
+index bc9ad83..034b604 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollModels.kt
+@@ -77,6 +77,19 @@ data class AttendanceEvent(
+     val branchId: Long? = null,
+ )
+ 
++data class AttendanceCorrectionRecord(
++    val id: Long,
++    val employeeId: Long,
++    val businessEpochDay: Long,
++    val reason: String,
++    val status: String,
++    val requestedByActorId: Long,
++    val reviewedByActorId: Long?,
++    val requestedAtEpochMillis: Long,
++    val reviewedAtEpochMillis: Long?,
++    val correlationId: String,
++)
++
+ data class AttendanceAnomaly(
+     val type: AttendanceAnomalyType,
+     val employeeId: Long,
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelModels.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelModels.kt
+index 1d878a7..bae6491 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelModels.kt
+@@ -239,6 +239,22 @@ data class AttendanceDraft(
+     }
+ }
+ 
++data class AttendancePunchDraft(
++    val employeeId: Long,
++    val eventType: AttendanceEventType,
++    val source: AttendanceSource = AttendanceSource.MANUAL,
++    val reason: String = "",
++    val commandId: String = GlobalId.new().value,
++) {
++    fun validated(): AttendancePunchDraft {
++        require(employeeId > 0) { "پرسنل انتخاب نشده است." }
++        require(eventType in setOf(AttendanceEventType.CLOCK_IN, AttendanceEventType.CLOCK_OUT)) { "نوع پانچ معتبر نیست." }
++        require(source !in setOf(AttendanceSource.LEGACY, AttendanceSource.LEGACY_UNKNOWN)) { "منبع پانچ معتبر نیست." }
++        require(reason.trim().length <= 500) { "توضیح پانچ بیش از حد طولانی است." }
++        return copy(reason = reason.trim(), commandId = GlobalId.parse(commandId).value)
++    }
++}
++
+ data class AttendanceSummary(
+     val employeeId: Long,
+     val startEpochDay: Long,
+@@ -490,6 +506,7 @@ interface PersonnelRepository {
+     val shiftTemplates: Flow<List<ShiftTemplateRecord>>
+     val workSchedules: Flow<List<WorkScheduleRecord>>
+     val pendingOvertimeApprovals: Flow<List<OvertimeApprovalRecord>>
++    val pendingAttendanceCorrections: Flow<List<AttendanceCorrectionRecord>>
+     suspend fun saveEmployee(id: Long?, draft: EmployeeDraft): Long
+     suspend fun transitionEmploymentStatus(id: Long, to: EmploymentStatus, terminationEpochDay: Long? = null)
+     suspend fun privateProfile(employeeId: Long): EmployeePrivateProfile?
+@@ -511,8 +528,11 @@ interface PersonnelRepository {
+     suspend fun effectiveContract(employeeId: Long, businessEpochDay: Long): EmploymentContractVersion
+     suspend fun payrollReadiness(employeeId: Long, businessEpochDay: Long): PayrollReadinessResult
+     suspend fun saveAttendance(id: Long?, draft: AttendanceDraft): Long
++    suspend fun recordAttendancePunch(draft: AttendancePunchDraft): Long
++    fun attendanceEvents(employeeId: Long, limit: Int = 50): Flow<List<AttendanceEvent>>
+     suspend fun attendanceSummaryV2(employeeId: Long, businessEpochDay: Long): DailyAttendanceSummaryV2
+     suspend fun approveAttendanceCorrection(correctionId: Long)
++    suspend fun rejectAttendanceCorrection(correctionId: Long, reason: String)
+     suspend fun reviewOvertime(command: OvertimeReviewCommand)
+     suspend fun attendanceSummary(employeeId: Long, startEpochDay: Long, endEpochDay: Long): AttendanceSummary
+     suspend fun requestLeave(draft: LeaveDraft, requestedBy: String = "SYSTEM"): Long
+diff --git a/app/src/test/java/ir/restaurant/management/domain/personnel/AttendancePunchSequencePolicyTest.kt b/app/src/test/java/ir/restaurant/management/domain/personnel/AttendancePunchSequencePolicyTest.kt
+new file mode 100644
+index 0000000..a999981
+--- /dev/null
++++ b/app/src/test/java/ir/restaurant/management/domain/personnel/AttendancePunchSequencePolicyTest.kt
+@@ -0,0 +1,91 @@
++package ir.restaurant.management.domain.personnel
++
++import ir.restaurant.management.core.CorrelationId
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFailsWith
++
++class AttendancePunchSequencePolicyTest {
++    private val day = 20_000L
++    private val start = day * 86_400_000L
++
++    @Test
++    fun clockInStartsCurrentBusinessDayWhenNoSessionIsOpen() {
++        val decision = AttendancePunchSequencePolicy.decide(
++            employeeId = 7,
++            requestedType = AttendanceEventType.CLOCK_IN,
++            localEpochDay = day,
++            timestampEpochMillis = start + 8 * 60 * 60_000L,
++            latestClockEvent = null,
++        )
++        assertEquals(day, decision.businessEpochDay)
++    }
++
++    @Test
++    fun duplicateClockInIsRejected() {
++        assertFailsWith<IllegalArgumentException> {
++            AttendancePunchSequencePolicy.decide(
++                employeeId = 7,
++                requestedType = AttendanceEventType.CLOCK_IN,
++                localEpochDay = day,
++                timestampEpochMillis = start + 9 * 60 * 60_000L,
++                latestClockEvent = event(AttendanceEventType.CLOCK_IN, start + 8 * 60 * 60_000L, day),
++            )
++        }
++    }
++
++    @Test
++    fun clockOutWithoutOpenClockInIsRejected() {
++        assertFailsWith<IllegalArgumentException> {
++            AttendancePunchSequencePolicy.decide(
++                employeeId = 7,
++                requestedType = AttendanceEventType.CLOCK_OUT,
++                localEpochDay = day,
++                timestampEpochMillis = start + 10 * 60 * 60_000L,
++                latestClockEvent = null,
++            )
++        }
++    }
++
++    @Test
++    fun overnightClockOutStaysOnOpenClockInBusinessDay() {
++        val inTime = start + 22 * 60 * 60_000L
++        val outTime = start + 86_400_000L + 6 * 60 * 60_000L
++        val decision = AttendancePunchSequencePolicy.decide(
++            employeeId = 7,
++            requestedType = AttendanceEventType.CLOCK_OUT,
++            localEpochDay = day + 1,
++            timestampEpochMillis = outTime,
++            latestClockEvent = event(AttendanceEventType.CLOCK_IN, inTime, day),
++        )
++        assertEquals(day, decision.businessEpochDay)
++    }
++
++    @Test
++    fun staleOpenSessionMustUseCorrectionFlow() {
++        assertFailsWith<IllegalArgumentException> {
++            AttendancePunchSequencePolicy.decide(
++                employeeId = 7,
++                requestedType = AttendanceEventType.CLOCK_OUT,
++                localEpochDay = day + 2,
++                timestampEpochMillis = start + 25 * 60 * 60_000L,
++                latestClockEvent = event(AttendanceEventType.CLOCK_IN, start, day),
++            )
++        }
++    }
++
++    private fun event(type: AttendanceEventType, timestamp: Long, businessDay: Long) = AttendanceEvent(
++        id = 1,
++        employeeId = 7,
++        eventType = type,
++        businessEpochDay = businessDay,
++        timestampEpochMillis = timestamp,
++        minuteOfDay = 0,
++        source = AttendanceSource.DEVICE,
++        deviceId = "test",
++        locationId = 1,
++        createdByActorId = 1,
++        reason = null,
++        correlationId = CorrelationId.parse("test:attendance:punch"),
++    )
++}

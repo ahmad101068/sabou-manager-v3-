@@ -675,3 +675,52 @@ P2=FINANCIAL TRUTH; P3=BRANCH+INVENTORY+PROCUREMENT; P4=PERSONNEL+ATTENDANCE+PAY
 ## Acceptance
 AUDIT_PAGES_REVIEWED=106; OWNER_UAT_REVIEWED=15; TOTAL_FINDINGS_REVIEWED=505; VALID_P0_COUNT=36; P0_ALREADY_FIXED=2; P0_DOWNGRADED=7; P0_OUT_OF_SCOPE=0; BUSINESS_LOGIC_CHANGED=NO; ROOM_VERSION=55; SCHEMA_CHANGED=NO; MIGRATION_ADDED=NO; POS_REINTRODUCED=NO; INDEPENDENT_CRM_REINTRODUCED=NO.
 NEXT_PHASE=PHASE 2 — FINANCIAL TRUTH
+
+## Phase 2 — Financial Single Source of Truth remediation
+PHASE2_BASE_SHA=d2480a24726639d287d72ac368cb2523561a2d80
+PHASE2_BRANCH=remediation/financial-truth
+ROOM_VERSION=55
+SCHEMA_CHANGED=NO
+MIGRATION_ADDED=NO
+ACCOUNTING_CORE_REWRITE=NO
+POS_REINTRODUCED=NO
+INDEPENDENT_CRM_REINTRODUCED=NO
+
+### Phase 2 root-cause status
+RC-01|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|ROOT_CAUSE=parallel/direct liquidity posting plus ambiguous treasury settlement mapping|FILES=TreasuryModels.kt,DefaultTreasuryAccountCatalog.kt,LocalTreasuryServiceV2.kt,LocalDailySalesRepository.kt,LocalPurchaseRepository.kt,LocalAssetRepository.kt,PayrollPaymentPostingService.kt|TEST=FinancialTruthContractTest,TreasuryV2IntegrationTest,Phase2CorrectionIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=-
+RC-02|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|ROOT_CAUSE=collection master/ledger/treasury/accounting paths were not one atomic idempotent command|FILES=LocalReceivableService.kt,BusinessOperationsDao.kt,ReceivableModels.kt|TEST=CrmReceivablesIntegrationTest,Phase2CorrectionIntegrationTest,ReceivableCollectionPolicyTest|DB_CHANGE=NO|DEFERRED_REASON=-
+RC-03|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=PARTIAL_PHASE2|ROOT_CAUSE=supplier settlement liquidity boundary could bypass treasury while enterprise-wide payable master is incomplete|FILES=LocalPurchaseRepository.kt,LocalProcurementRepository.kt,ProcurementInvoiceMatchingService.kt,PurchaseModels.kt|TEST=BranchPurchasePostingIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=full procurement/AP lifecycle remains Phase3; Phase2 canonicalizes only financial settlement boundary
+RC-12|STATUS_BEFORE=CONFIRMED_HISTORY_GAP|STATUS_AFTER=RESOLVED_PHASE2|ROOT_CAUSE=customer merge rewrote posted financial references|FILES=LocalCustomerAccountService.kt,CrmModels.kt,CanonicalReceivableReadModel.kt|TEST=CrmReceivablesIntegrationTest.merge_preservesPostedFinancialHistory_andExposesLogicalCombinedLedger|DB_CHANGE=NO|DEFERRED_REASON=-
+RC-19|STATUS_BEFORE=PARTIALLY_FIXED|STATUS_AFTER=RESOLVED_PHASE2_FOR_FINANCIAL_SCOPE|ROOT_CAUSE=dashboard financial reads still depended on legacy sales/customer branch truth|FILES=DashboardAnalyticsDao.kt,DashboardRepository.kt,CanonicalReceivableReadModel.kt|TEST=DashboardBranchFilteringIntegrationTest,DashboardBranchRenameCompatibilityIntegrationTest,Phase2DashboardModelsTest|DB_CHANGE=NO|DEFERRED_REASON=general reporting/UI redesign remains Phase7
+
+### Phase 2 finding resolution ledger
+05-01|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-treasury-patch|FILES=DefaultTreasuryAccountCatalog.kt,AccountingPosting.kt|ROOT_CAUSE=channel-based settlement-role collapse|TEST=TreasuryV2IntegrationTest.bankToCardTransfer_postsDistinctMappedGlAccounts;cashToPettyCashTransfer_postsDistinctMappedGlAccounts|DB_CHANGE=NO|DEFERRED_REASON=-
+05-03|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-liquidity-boundaries-patch|FILES=LocalPurchaseRepository.kt,LocalAssetRepository.kt,PayrollPaymentPostingService.kt|ROOT_CAUSE=business modules could directly post liquidity GL|TEST=BranchPurchasePostingIntegrationTest;EnterprisePermissionIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=-
+05-04|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-treasury-patch|FILES=TreasuryModels.kt,LocalTreasuryServiceV2.kt|ROOT_CAUSE=financial nature inferred from free-text source type|TEST=FinancialTruthContractTest;TreasuryV2IntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=UAT-08 visual/RTL remains Phase7
+05-05|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-treasury-patch|FILES=TreasuryModels.kt|ROOT_CAUSE=unknown receipt/payment defaulted to income/expense|TEST=FinancialTruthContractTest.unknownGenericReceiptFailsClosed;unknownGenericPaymentFailsClosed|DB_CHANGE=NO|DEFERRED_REASON=-
+07-02|STATUS_BEFORE=PARTIALLY_FIXED|STATUS_AFTER=RESOLVED_PHASE2_FOR_FINANCIAL_SCOPE|FIX_COMMIT=phase2-financial-reads-patch|FILES=DashboardAnalyticsDao.kt,LocalDailySalesRepository.kt|ROOT_CAUSE=legacy sales read remained in current financial dashboard path|TEST=DashboardBranchFilteringIntegrationTest;DashboardBranchRenameCompatibilityIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=legacy source retained only for historical compatibility
+07-05|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=PARTIAL_PHASE2|FIX_COMMIT=phase2-receivables-patch|FILES=LocalDailySalesRepository.kt|ROOT_CAUSE=current location inventory valuation remains basis for issue cost|TEST=Phase2CorrectionIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=full historical as-of inventory/recipe costing deferred to Phase5
+07-06|STATUS_BEFORE=CONFIRMED_HISTORY_GAP|STATUS_AFTER=PARTIAL_PHASE2|FIX_COMMIT=phase2-receivables-patch|FILES=LocalDailySalesRepository.kt|ROOT_CAUSE=backdated preparation can still depend on current inventory state|TEST=Phase2CorrectionIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=DEFERRED_TO_PHASE5 historical valuation architecture
+07-07|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-receivables-patch|FILES=LocalDailySalesRepository.kt|ROOT_CAUSE=post could recompute and mutate confirmed financial cost/recipe snapshot|TEST=Phase2CorrectionIntegrationTest;reconstruction static guard daily_sales_confirmed_cost_snapshot_changed|DB_CHANGE=NO|DEFERRED_REASON=-
+07-09|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=DEFERRED_PHASE5|FIX_COMMIT=-|FILES=-|ROOT_CAUSE=nested/substitution recipe execution not fully canonical|TEST=-|DB_CHANGE=NO|DEFERRED_REASON=explicit Phase5 recipe scope
+07-10|STATUS_BEFORE=DUPLICATE_OF_RC01|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-receivables-patch|FILES=LocalDailySalesRepository.kt|ROOT_CAUSE=daily sales liquidity posted outside treasury|TEST=Phase2CorrectionIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=-
+09-01|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-receivables-patch|FILES=LocalReceivableService.kt,BusinessOperationsDao.kt|ROOT_CAUSE=collection lacked persisted command replay boundary|TEST=CrmReceivablesIntegrationTest;Phase2CorrectionIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=existing unique receivable_collections.globalId reused
+09-03|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-receivables-patch|FILES=LocalReceivableService.kt,ReceivableModels.kt|ROOT_CAUSE=generic customer receipt was not bound to receivable allocation|TEST=Phase2CorrectionIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=-
+09-16|STATUS_BEFORE=CONFIRMED_HISTORY_GAP|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-financial-reads-patch|FILES=LocalCustomerAccountService.kt,CanonicalReceivableReadModel.kt|ROOT_CAUSE=merge mutated posted financial references|TEST=CrmReceivablesIntegrationTest.merge_preservesPostedFinancialHistory_andExposesLogicalCombinedLedger|DB_CHANGE=NO|DEFERRED_REASON=-
+09-24|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2|FIX_COMMIT=phase2-receivables-patch|FILES=LocalReceivableService.kt|ROOT_CAUSE=AR adjustment direction was treated as economic income/expense nature|TEST=CrmReceivablesIntegrationTest.adjustment_debitAndCredit_createRealLedgerAccountingAndAudit|DB_CHANGE=NO|DEFERRED_REASON=-
+11-01|STATUS_BEFORE=CONFIRMED_INTEGRITY_GAP|STATUS_AFTER=RESOLVED_PHASE2_FOR_FINANCIAL_SCOPE|FIX_COMMIT=phase2-financial-reads-patch|FILES=DashboardAnalyticsDao.kt,DashboardRepository.kt|ROOT_CAUSE=dashboard current sales read used legacy sales_invoices|TEST=DashboardBranchFilteringIntegrationTest;DashboardBranchRenameCompatibilityIntegrationTest|DB_CHANGE=NO|DEFERRED_REASON=UAT-10 exact valid-row rejection remains targeted Phase7 unless reproduced
+
+### Owner UAT Phase 2 status
+UAT-08|STATUS_BEFORE=ACTIVE|STATUS_AFTER=DOMAIN_FIXED_UI_DEFERRED_TO_PHASE7|DOMAIN=typed TreasuryBusinessIntent + account-specific settlement + fail-closed unknown intent|UI=RTL/clipping/Persian formatting deferred
+UAT-10|STATUS_BEFORE=NOT_PROVEN|STATUS_AFTER=DEFERRED_TO_PHASE7_TARGETED_UAT|EVIDENCE=Phase2 backend changes do not prove the reported valid-row rejection root cause; no guessed fix applied
+
+### Phase 2 verification contract
+TARGETED_WORKFLOW=.github/workflows/phase2-canonical-targeted.yml
+TARGETED_SCOPE=compileDebugKotlin+compileDebugAndroidTestKotlin; phase2 JVM contracts; Treasury/AR/DailySales/AP/branch targeted API35 integration only
+FULL_API23=NOT_RUN_BY_POLICY
+FULL_API35=NOT_RUN_BY_POLICY
+FULL_16KB=NOT_RUN_BY_POLICY
+FULL_E2E=NOT_RUN_BY_POLICY
+FULL_PERFORMANCE=NOT_RUN_BY_POLICY
+GIT_DIFF_CHECK=PASS_LOCAL
+COMPILE_LOCAL=BLOCKED_BY_SANDBOX_DNS; authoritative compile is targeted GitHub Actions on final HEAD

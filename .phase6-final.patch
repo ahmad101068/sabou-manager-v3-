@@ -1,0 +1,1455 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt
+new file mode 100644
+index 0000000..020f14f
+--- /dev/null
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration58To59Test.kt
+@@ -0,0 +1,70 @@
++package ir.restaurant.management.data.db
++
++import androidx.room.testing.MigrationTestHelper
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.platform.app.InstrumentationRegistry
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Rule
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@RunWith(AndroidJUnit4::class)
++class Migration58To59Test {
++    @get:Rule
++    val helper = MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), AppDatabase::class.java)
++
++    @Test
++    fun migrationPreservesRowsAndAddsDurableSecurityAlertAndMakerCheckerFields() {
++        helper.createDatabase(DB_NAME, 58).use { db ->
++            db.execSQL("INSERT INTO audit_logs(id,action,entityType,entityId,description,actor,createdAtEpochMillis,globalId,reason,correlationId) VALUES(901,'UPDATE','TEST',1,'legacy','legacy',1,'ph6:audit','legacy reason','ph6:audit:1')")
++            db.execSQL("INSERT INTO app_alerts(id,sourceType,sourceId,title,message,severity,dueEpochDay,isRead,isDismissed,createdAtEpochMillis,updatedAtEpochMillis,status) VALUES(902,'LOW_STOCK',77,'legacy','legacy','MEDIUM',NULL,0,0,1,1,'NEW')")
++        }
++
++        helper.runMigrationsAndValidate(DB_NAME, 59, true, MIGRATION_58_59).use { db ->
++            db.query("SELECT actorRoleSnapshot,actorBranchIdSnapshot FROM audit_logs WHERE id=901").use { c ->
++                assertTrue(c.moveToFirst())
++                assertEquals("UNKNOWN", c.getString(0))
++                assertTrue(c.isNull(1))
++            }
++            db.query("SELECT branchId,locationId,snoozedUntilEpochMillis FROM app_alerts WHERE id=902").use { c ->
++                assertTrue(c.moveToFirst())
++                assertEquals(0L, c.getLong(0))
++                assertEquals(0L, c.getLong(1))
++                assertTrue(c.isNull(2))
++            }
++            assertColumn(db, "management_tasks", "completedByUserId")
++            assertColumn(db, "checklist_runs", "completedByUserId")
++            assertIndex(db, "audit_logs", "index_audit_logs_actorBranchIdSnapshot", false)
++            assertIndex(db, "app_alerts", "index_app_alerts_sourceType_sourceId_locationId", true)
++            assertIndex(db, "app_alerts", "index_app_alerts_snoozedUntilEpochMillis", false)
++            db.query("PRAGMA foreign_key_check").use { assertEquals(0, it.count) }
++        }
++    }
++
++    @Test fun registryContainsForwardOnly58To59() {
++        val registry = ALL_MIGRATIONS.toList()
++        assertTrue(registry.any { it.startVersion == 58 && it.endVersion == 59 })
++        assertFalse(registry.any { it.startVersion == 59 && it.endVersion == 58 })
++    }
++
++    private fun assertColumn(db: androidx.sqlite.db.SupportSQLiteDatabase, table: String, name: String) {
++        db.query("PRAGMA table_info('$table')").use { c ->
++            val idx = c.getColumnIndex("name")
++            var found = false
++            while (c.moveToNext()) if (c.getString(idx) == name) found = true
++            assertTrue("missing column $table.$name", found)
++        }
++    }
++
++    private fun assertIndex(db: androidx.sqlite.db.SupportSQLiteDatabase, table: String, name: String, unique: Boolean) {
++        db.query("PRAGMA index_list('$table')").use { c ->
++            val ni=c.getColumnIndex("name"); val ui=c.getColumnIndex("unique"); var found=false
++            while(c.moveToNext()) if(c.getString(ni)==name){ found=true; assertEquals(unique,c.getInt(ui)==1) }
++            assertTrue("missing index $name",found)
++        }
++    }
++
++    private companion object { const val DB_NAME = "phase6-migration-58-59" }
++}
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
+index e0c63c2..cfee7a4 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
+@@ -11,6 +11,7 @@ import ir.restaurant.management.domain.operations.UserRole
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.BusinessRuleViolation
+ import ir.restaurant.management.data.db.InventoryItemEntity
++import ir.restaurant.management.data.db.InventoryBalanceEntity
+ import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+@@ -56,8 +57,17 @@ class AlertStateIntegrationTest {
+             ),
+         )
+ 
++        val locationId = requireNotNull(database.managementControlDao().defaultLocationId())
++        database.inventoryBalanceDao().initialize(
++            InventoryBalanceEntity(
++                itemId = itemId, locationId = locationId,
++                onHandMicros = 5 * QuantityMicros.SCALE, inventoryValueRial = 50_000,
++                updatedAtEpochMillis = ++now,
++            ),
++        )
++
+         repository.refresh(today)
+-        val first = repository.alerts().first().single { it.sourceType == "LOW_STOCK" && it.sourceId == itemId }
++        val first = repository.alerts().first().single { it.sourceType == "LOW_STOCK" && it.sourceId == itemId && it.locationId == locationId }
+         assertEquals("NEW", first.status)
+         assertEquals(1L, scalar("SELECT COUNT(*) FROM app_alerts WHERE sourceType='LOW_STOCK' AND sourceId=$itemId"))
+ 
+@@ -74,23 +84,29 @@ class AlertStateIntegrationTest {
+         assertEquals("ACTIONED", stringScalar("SELECT status FROM app_alerts WHERE id=${first.id}"))
+ 
+         database.openHelper.writableDatabase.execSQL(
+-            "UPDATE inventory_items SET stockMicros=${20 * QuantityMicros.SCALE}, updatedAtEpochMillis=${++now} WHERE id=$itemId",
++            "UPDATE inventory_balances SET onHandMicros=${20 * QuantityMicros.SCALE}, updatedAtEpochMillis=${++now} WHERE itemId=$itemId AND locationId=$locationId",
+         )
+         repository.refresh(today)
+         assertEquals("RESOLVED", stringScalar("SELECT status FROM app_alerts WHERE id=${first.id}"))
+         assertTrue(repository.alerts().first().none { it.id == first.id })
+ 
+         database.openHelper.writableDatabase.execSQL(
+-            "UPDATE inventory_items SET stockMicros=${5 * QuantityMicros.SCALE}, updatedAtEpochMillis=${++now} WHERE id=$itemId",
++            "UPDATE inventory_balances SET onHandMicros=${5 * QuantityMicros.SCALE}, updatedAtEpochMillis=${++now} WHERE itemId=$itemId AND locationId=$locationId",
+         )
+         repository.refresh(today)
+         val reopened = repository.alerts().first().single { it.sourceType == "LOW_STOCK" && it.sourceId == itemId }
+         assertEquals(first.id, reopened.id)
+         assertEquals("NEW", reopened.status)
+ 
++        repository.snooze(reopened.id, now + 86_400_000L)
++        assertTrue(repository.alerts().first().none { it.id == reopened.id })
++        database.openHelper.writableDatabase.execSQL("UPDATE app_alerts SET snoozedUntilEpochMillis=NULL WHERE id=${reopened.id}")
+         repository.dismiss(reopened.id)
+         assertEquals("DISMISSED", stringScalar("SELECT status FROM app_alerts WHERE id=${reopened.id}"))
+         assertTrue(repository.alerts().first().none { it.id == reopened.id })
++        repository.refresh(today)
++        assertEquals("DISMISSED", stringScalar("SELECT status FROM app_alerts WHERE id=${reopened.id}"))
++        assertTrue(repository.alerts().first().none { it.id == reopened.id })
+         repository.clearDismissed()
+         assertEquals(0L, scalar("SELECT COUNT(*) FROM app_alerts WHERE id=${reopened.id}"))
+     }
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt
+new file mode 100644
+index 0000000..406c197
+--- /dev/null
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase6SecurityManagementIntegrationTest.kt
+@@ -0,0 +1,83 @@
++package ir.restaurant.management.data.repository
++
++import android.content.Context
++import androidx.test.core.app.ApplicationProvider
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.security.SessionAuthorizer
++import ir.restaurant.management.domain.control.ManagementTaskDraft
++import ir.restaurant.management.domain.control.ManagementTaskPriority
++import ir.restaurant.management.domain.operations.UserDraft
++import ir.restaurant.management.domain.operations.UserRole
++import kotlinx.coroutines.runBlocking
++import org.junit.After
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@RunWith(AndroidJUnit4::class)
++class Phase6SecurityManagementIntegrationTest {
++    private lateinit var db: AppDatabase
++    private lateinit var authorizer: SessionAuthorizer
++    private lateinit var security: LocalSecurityRepository
++    private var now = 8_000_000L
++    private var mono = 1_000L
++    private var ownerId = 0L
++    private var assigneeId = 0L
++    private var otherManagerId = 0L
++
++    @Before fun setup() = runBlocking {
++        db = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
++        authorizer = SessionAuthorizer(db, monotonicClockMillis = { mono }, idleTimeoutMillis = 1_000L)
++        security = LocalSecurityRepository(db, authorizer = authorizer, clock = { ++now })
++        ownerId = security.save(null, UserDraft("ph6-owner", "مالک فاز شش", "123456", UserRole.OWNER, "87654321"))
++        assigneeId = security.save(null, UserDraft("ph6-assignee", "مدیر مجری", "234567", UserRole.MANAGER, "87654322"))
++        otherManagerId = security.save(null, UserDraft("ph6-other", "مدیر دیگر", "345678", UserRole.MANAGER, "87654323"))
++        db.openHelper.writableDatabase.execSQL("INSERT OR REPLACE INTO user_scope_profiles(userId,primaryBranchId,updatedAtEpochMillis) VALUES($assigneeId,1,$now),($otherManagerId,1,$now)")
++        db.openHelper.writableDatabase.execSQL("INSERT OR REPLACE INTO user_branch_scopes(userId,branchId,grantedAtEpochMillis) VALUES($assigneeId,1,$now),($otherManagerId,1,$now)")
++    }
++
++    @After fun teardown() = db.close()
++
++    @Test fun assignedTaskRequiresAssigneeAndMakerCheckerAndAuditSnapshotsActorScope() = runBlocking {
++        security.switchUser(ownerId, "123456")
++        val service = LocalManagementWorkflowService(db, authorizer, clock = { ++now })
++        val taskId = service.createTask(ManagementTaskDraft(1,"کنترل بستن صندوق","کنترل مستقل",ManagementTaskPriority.HIGH,assignedUserId=assigneeId,requiresApproval=true))
++
++        security.switchUser(otherManagerId, "345678")
++        val unauthorized = runCatching { service.startTask(taskId) }
++        assertTrue(unauthorized.isFailure)
++        assertEquals("TODO", db.businessOperationsDao().task(taskId)?.status)
++
++        security.switchUser(assigneeId, "234567")
++        service.startTask(taskId)
++        service.completeTask(taskId)
++        assertEquals("WAITING_APPROVAL", db.businessOperationsDao().task(taskId)?.status)
++        assertEquals(assigneeId, db.businessOperationsDao().task(taskId)?.completedByUserId)
++        assertTrue(runCatching { service.approveTask(taskId) }.isFailure)
++        assertEquals("WAITING_APPROVAL", db.businessOperationsDao().task(taskId)?.status)
++
++        val audit = db.openHelper.writableDatabase.query("SELECT actorRoleSnapshot,actorBranchIdSnapshot FROM audit_logs WHERE entityType='MANAGEMENT_TASK' AND actorId=$assigneeId ORDER BY id DESC LIMIT 1")
++        audit.use {
++            assertTrue(it.moveToFirst())
++            assertEquals("MANAGER", it.getString(0))
++            assertEquals(1L, it.getLong(1))
++        }
++
++        security.switchUser(ownerId, "123456")
++        service.approveTask(taskId)
++        assertEquals("COMPLETED", db.businessOperationsDao().task(taskId)?.status)
++        assertEquals(ownerId, db.businessOperationsDao().task(taskId)?.approvedByUserId)
++    }
++
++    @Test fun idleTimeoutInvalidatesSessionAndCanDoesNotBypassIt() = runBlocking {
++        security.switchUser(ownerId, "123456")
++        assertTrue(authorizer.can(ir.restaurant.management.domain.security.Permission.ACCOUNTING))
++        mono += 1_001L
++        assertFalse(authorizer.can(ir.restaurant.management.domain.security.Permission.ACCOUNTING))
++        assertEquals(null, db.securityDao().currentUser())
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt b/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt
+index 6c27fdf..4df19c3 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AlertDao.kt
+@@ -9,43 +9,72 @@ interface AlertDao {
+     @Query("SELECT * FROM app_alerts WHERE status NOT IN ('RESOLVED','DISMISSED') ORDER BY CASE severity WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END, COALESCE(dueEpochDay, 9223372036854775807), updatedAtEpochMillis DESC")
+     fun observeVisible(): Flow<List<AppAlertEntity>>
+ 
++    @Query("SELECT * FROM app_alerts WHERE id=:id LIMIT 1")
++    suspend fun byId(id: Long): AppAlertEntity?
++
+     @Query("""
+         UPDATE app_alerts SET
+             title=:title,
+             message=:message,
+             severity=:severity,
+             dueEpochDay=:dueEpochDay,
+-            isDismissed=0,
+-            status=CASE WHEN status IN ('RESOLVED','DISMISSED') THEN 'NEW' ELSE status END,
++            branchId=:branchId,
++            status=CASE WHEN status='RESOLVED' THEN 'NEW' ELSE status END,
++            isDismissed=CASE WHEN status='RESOLVED' THEN 0 ELSE isDismissed END,
+             updatedAtEpochMillis=:now
+-        WHERE sourceType=:sourceType AND sourceId=:sourceId
++        WHERE sourceType=:sourceType AND sourceId=:sourceId AND locationId=:locationId
+     """)
+-    suspend fun updateGenerated(sourceType: String, sourceId: Long, title: String, message: String, severity: String, dueEpochDay: Long?, now: Long): Int
++    suspend fun updateGenerated(
++        sourceType: String,
++        sourceId: Long,
++        title: String,
++        message: String,
++        severity: String,
++        dueEpochDay: Long?,
++        branchId: Long,
++        locationId: Long,
++        now: Long,
++    ): Int
+ 
+     @Query("""
+-        INSERT OR IGNORE INTO app_alerts(sourceType,sourceId,title,message,severity,dueEpochDay,isRead,isDismissed,createdAtEpochMillis,updatedAtEpochMillis,status)
+-        VALUES(:sourceType,:sourceId,:title,:message,:severity,:dueEpochDay,0,0,:now,:now,'NEW')
++        INSERT OR IGNORE INTO app_alerts(
++            sourceType,sourceId,title,message,severity,dueEpochDay,isRead,isDismissed,
++            createdAtEpochMillis,updatedAtEpochMillis,status,branchId,locationId,snoozedUntilEpochMillis
++        ) VALUES(:sourceType,:sourceId,:title,:message,:severity,:dueEpochDay,0,0,:now,:now,'NEW',:branchId,:locationId,NULL)
+     """)
+-    suspend fun insertGeneratedIfAbsent(sourceType: String, sourceId: Long, title: String, message: String, severity: String, dueEpochDay: Long?, now: Long)
+-
+-    @Query("SELECT sourceType, sourceId FROM app_alerts WHERE status NOT IN ('RESOLVED','DISMISSED')")
++    suspend fun insertGeneratedIfAbsent(
++        sourceType: String,
++        sourceId: Long,
++        title: String,
++        message: String,
++        severity: String,
++        dueEpochDay: Long?,
++        branchId: Long,
++        locationId: Long,
++        now: Long,
++    )
++
++    @Query("SELECT sourceType, sourceId, locationId FROM app_alerts WHERE status!='RESOLVED'")
+     suspend fun generatedKeys(): List<AlertKeyRow>
+ 
+-    @Query("UPDATE app_alerts SET status='RESOLVED', isDismissed=0, updatedAtEpochMillis=:now WHERE sourceType=:sourceType AND sourceId=:sourceId AND status NOT IN ('RESOLVED','DISMISSED')")
+-    suspend fun resolveGenerated(sourceType: String, sourceId: Long, now: Long): Int
++    @Query("UPDATE app_alerts SET status='RESOLVED', isDismissed=0, snoozedUntilEpochMillis=NULL, updatedAtEpochMillis=:now WHERE sourceType=:sourceType AND sourceId=:sourceId AND locationId=:locationId AND status!='RESOLVED'")
++    suspend fun resolveGenerated(sourceType: String, sourceId: Long, locationId: Long, now: Long): Int
+ 
+     @Query("UPDATE app_alerts SET isRead=1, status=CASE WHEN status='NEW' THEN 'READ' ELSE status END, updatedAtEpochMillis=:now WHERE id=:id")
+     suspend fun markRead(id: Long, now: Long): Int
+ 
+-    @Query("UPDATE app_alerts SET status='ACTIONED', isRead=1, updatedAtEpochMillis=:now WHERE id=:id AND status NOT IN ('RESOLVED','DISMISSED')")
++    @Query("UPDATE app_alerts SET status='ACTIONED', isRead=1, snoozedUntilEpochMillis=NULL, updatedAtEpochMillis=:now WHERE id=:id AND status NOT IN ('RESOLVED','DISMISSED')")
+     suspend fun markActioned(id: Long, now: Long): Int
+ 
+-    @Query("UPDATE app_alerts SET status='RESOLVED', isRead=1, updatedAtEpochMillis=:now WHERE id=:id AND status!='DISMISSED'")
++    @Query("UPDATE app_alerts SET status='RESOLVED', isRead=1, snoozedUntilEpochMillis=NULL, updatedAtEpochMillis=:now WHERE id=:id AND status!='DISMISSED'")
+     suspend fun resolve(id: Long, now: Long): Int
+ 
+-    @Query("UPDATE app_alerts SET isDismissed=1, isRead=1, status='DISMISSED', updatedAtEpochMillis=:now WHERE id=:id")
++    @Query("UPDATE app_alerts SET isDismissed=1, isRead=1, status='DISMISSED', snoozedUntilEpochMillis=NULL, updatedAtEpochMillis=:now WHERE id=:id AND status!='RESOLVED'")
+     suspend fun dismiss(id: Long, now: Long): Int
+ 
++    @Query("UPDATE app_alerts SET snoozedUntilEpochMillis=:untilEpochMillis, isRead=1, status=CASE WHEN status='NEW' THEN 'READ' ELSE status END, updatedAtEpochMillis=:now WHERE id=:id AND status NOT IN ('RESOLVED','DISMISSED')")
++    suspend fun snooze(id: Long, untilEpochMillis: Long, now: Long): Int
++
+     @Query("DELETE FROM app_alerts WHERE status='DISMISSED'")
+     suspend fun clearDismissed(): Int
+ 
+@@ -54,7 +83,9 @@ interface AlertDao {
+                'بدهی سررسیدشده تأمین‌کننده' AS title,
+                ('فاکتور ' || p.invoiceNo || ' · ' || sp.name || ' · مانده ' || (p.totalRial-p.paidRial) || ' ریال') AS message,
+                'HIGH' AS severity,
+-               p.dueEpochDay AS dueEpochDay
++               p.dueEpochDay AS dueEpochDay,
++               COALESCE(p.branchId,0) AS branchId,
++               COALESCE(p.locationId,0) AS locationId
+         FROM purchases p
+         INNER JOIN suppliers sp ON sp.id=p.supplierId
+         WHERE p.paymentStatus IN ('UNPAID','PARTIAL') AND p.dueEpochDay<=:todayEpochDay
+@@ -65,12 +96,17 @@ interface AlertDao {
+     @Query("""
+         SELECT i.id AS sourceId,
+                'هشدار کمبود موجودی' AS title,
+-               (i.name || ': موجودی به حد هشدار رسیده است') AS message,
++               (i.name || ' · ' || l.name || ': موجودی قابل استفاده به حد هشدار رسیده است') AS message,
+                'MEDIUM' AS severity,
+-               NULL AS dueEpochDay
+-        FROM inventory_items i
+-        WHERE i.isActive=1 AND i.alertEnabled=1 AND i.stockMicros<=i.alertThresholdMicros
+-        ORDER BY i.stockMicros,i.name
++               NULL AS dueEpochDay,
++               COALESCE(l.branchId,0) AS branchId,
++               b.locationId AS locationId
++        FROM inventory_balances b
++        INNER JOIN inventory_items i ON i.id=b.itemId
++        INNER JOIN storage_locations l ON l.id=b.locationId
++        WHERE i.isActive=1 AND i.alertEnabled=1 AND l.isActive=1
++          AND (b.onHandMicros-b.reservedMicros-b.damagedMicros-b.quarantinedMicros)<=i.alertThresholdMicros
++        ORDER BY (b.onHandMicros-b.reservedMicros-b.damagedMicros-b.quarantinedMicros),i.name,l.name
+     """)
+     suspend fun lowStock(): List<GeneratedAlertRow>
+ 
+@@ -79,8 +115,12 @@ interface AlertDao {
+                'لات نزدیک انقضا' AS title,
+                (i.name || ' · لات ' || l.lotCode) AS message,
+                'MEDIUM' AS severity,
+-               l.expiryEpochDay AS dueEpochDay
+-        FROM inventory_lots l INNER JOIN inventory_items i ON i.id=l.itemId
++               l.expiryEpochDay AS dueEpochDay,
++               COALESCE(sl.branchId,0) AS branchId,
++               l.locationId AS locationId
++        FROM inventory_lots l
++        INNER JOIN inventory_items i ON i.id=l.itemId
++        INNER JOIN storage_locations sl ON sl.id=l.locationId
+         WHERE l.status='ACTIVE' AND l.quantityMicros>0 AND l.expiryEpochDay IS NOT NULL
+           AND l.expiryEpochDay>=:today AND l.expiryEpochDay<=:horizon
+         ORDER BY l.expiryEpochDay
+@@ -92,31 +132,44 @@ interface AlertDao {
+                'لات منقضی شده' AS title,
+                (i.name || ' · لات ' || l.lotCode) AS message,
+                'HIGH' AS severity,
+-               l.expiryEpochDay AS dueEpochDay
+-        FROM inventory_lots l INNER JOIN inventory_items i ON i.id=l.itemId
++               l.expiryEpochDay AS dueEpochDay,
++               COALESCE(sl.branchId,0) AS branchId,
++               l.locationId AS locationId
++        FROM inventory_lots l
++        INNER JOIN inventory_items i ON i.id=l.itemId
++        INNER JOIN storage_locations sl ON sl.id=l.locationId
+         WHERE l.status='ACTIVE' AND l.quantityMicros>0 AND l.expiryEpochDay IS NOT NULL
+           AND l.expiryEpochDay<:today
+         ORDER BY l.expiryEpochDay
+     """)
+     suspend fun expiredLots(today: Long): List<GeneratedAlertRow>
+ 
++    /** Canonical AR source: Phase-2/3 receivables, never re-derived from sales invoices. */
+     @Query("""
+-        SELECT c.id AS customerId, c.name AS customerName, MIN(si.dueEpochDay) AS oldestDueEpochDay
+-        FROM sales_invoices si
+-        INNER JOIN customers c ON c.id=si.customerId
+-        WHERE c.isActive=1 AND si.status!='VOIDED' AND si.creditRial>0
+-          AND si.dueEpochDay IS NOT NULL AND si.dueEpochDay<=:today
+-        GROUP BY c.id,c.name
+-        ORDER BY oldestDueEpochDay,c.name
++        SELECT r.id AS sourceId,
++               'مطالبه سررسیدشده مشتری' AS title,
++               (c.name || ' · مانده سررسیدشده ' || r.outstandingAmountRial || ' ریال') AS message,
++               'HIGH' AS severity,
++               r.dueEpochDay AS dueEpochDay,
++               r.branchId AS branchId,
++               0 AS locationId
++        FROM receivables r
++        INNER JOIN customers c ON c.id=r.partyId
++        WHERE r.status IN ('OPEN','PARTIALLY_PAID')
++          AND r.outstandingAmountRial>0
++          AND r.dueEpochDay IS NOT NULL AND r.dueEpochDay<=:today
++        ORDER BY r.dueEpochDay,r.id
+     """)
+-    suspend fun overdueReceivableCandidates(today: Long): List<OverdueReceivableCandidateRow>
++    suspend fun overdueReceivables(today: Long): List<GeneratedAlertRow>
+ 
+     @Query("""
+         SELECT ec.id AS sourceId,
+                'پایان قرارداد پرسنل' AS title,
+                (e.name || ' · قرارداد ' || ec.contractNumber) AS message,
+                CASE WHEN ec.effectiveToEpochDay<:today THEN 'HIGH' ELSE 'MEDIUM' END AS severity,
+-               ec.effectiveToEpochDay AS dueEpochDay
++               ec.effectiveToEpochDay AS dueEpochDay,
++               COALESCE(e.branchId,0) AS branchId,
++               COALESCE(e.locationId,0) AS locationId
+         FROM employment_contract_versions ec INNER JOIN employees e ON e.id=ec.employeeId
+         WHERE ec.status='ACTIVE' AND ec.effectiveToEpochDay IS NOT NULL AND ec.effectiveToEpochDay<=:horizon
+         ORDER BY ec.effectiveToEpochDay
+@@ -128,8 +181,11 @@ interface AlertDao {
+                'حقوق پرداخت‌نشده' AS title,
+                (ps.employeeNameSnapshot || ' · مانده ' || ps.remainingAmountRial || ' ریال') AS message,
+                'HIGH' AS severity,
+-               NULL AS dueEpochDay
++               NULL AS dueEpochDay,
++               COALESCE(e.branchId,0) AS branchId,
++               COALESCE(e.locationId,0) AS locationId
+         FROM payroll_payslips ps
++        INNER JOIN employees e ON e.id=ps.employeeId
+         WHERE ps.remainingAmountRial>0 AND ps.status IN ('APPROVED','POSTED','PARTIALLY_PAID')
+         ORDER BY ps.id DESC
+     """)
+@@ -140,7 +196,9 @@ interface AlertDao {
+                'سرویس دارایی سررسید شده' AS title,
+                (fa.name || ' · ' || am.serviceType) AS message,
+                CASE WHEN am.nextServiceEpochDay<:today THEN 'HIGH' ELSE 'MEDIUM' END AS severity,
+-               am.nextServiceEpochDay AS dueEpochDay
++               am.nextServiceEpochDay AS dueEpochDay,
++               COALESCE(fa.branchId,0) AS branchId,
++               0 AS locationId
+         FROM asset_maintenance am INNER JOIN fixed_assets fa ON fa.id=am.assetId
+         WHERE fa.status='ACTIVE' AND am.nextServiceEpochDay IS NOT NULL AND am.nextServiceEpochDay<=:horizon
+           AND am.id=(SELECT MAX(am2.id) FROM asset_maintenance am2 WHERE am2.assetId=am.assetId)
+@@ -153,9 +211,11 @@ interface AlertDao {
+                'مغایرت حضور و غیاب' AS title,
+                (e.name || ' · درخواست اصلاح در انتظار بررسی') AS message,
+                'MEDIUM' AS severity,
+-               ac.businessEpochDay AS dueEpochDay
++               ac.businessEpochDay AS dueEpochDay,
++               COALESCE(e.branchId,0) AS branchId,
++               COALESCE(e.locationId,0) AS locationId
+         FROM attendance_corrections ac INNER JOIN employees e ON e.id=ac.employeeId
+-        WHERE ac.status='PENDING'
++        WHERE ac.status IN ('PENDING','SUBMITTED')
+         ORDER BY ac.businessEpochDay
+     """)
+     suspend fun attendanceAnomalies(): List<GeneratedAlertRow>
+@@ -165,7 +225,9 @@ interface AlertDao {
+                'تحویل خرید عقب‌افتاده' AS title,
+                (po.orderNo || ' · ' || po.supplierNameSnapshot) AS message,
+                'HIGH' AS severity,
+-               COALESCE(po.confirmedExpectedEpochDay,po.expectedEpochDay) AS dueEpochDay
++               COALESCE(po.confirmedExpectedEpochDay,po.expectedEpochDay) AS dueEpochDay,
++               COALESCE(po.branchId,0) AS branchId,
++               COALESCE(po.destinationLocationId,0) AS locationId
+         FROM purchase_orders po
+         WHERE po.status NOT IN ('RECEIVED','CANCELLED','CLOSED')
+           AND COALESCE(po.confirmedExpectedEpochDay,po.expectedEpochDay)<:today
+@@ -178,15 +240,16 @@ interface AlertDao {
+                'مغایرت انبارگردانی' AS title,
+                ('سند ' || s.documentNumber || ' · اختلاف ' || l.varianceQuantityMicros) AS message,
+                'HIGH' AS severity,
+-               s.businessEpochDay AS dueEpochDay
+-        FROM inventory_count_lines l INNER JOIN inventory_count_sessions s ON s.id=l.sessionId
++               s.businessEpochDay AS dueEpochDay,
++               COALESCE(sl.branchId,0) AS branchId,
++               s.locationId AS locationId
++        FROM inventory_count_lines l
++        INNER JOIN inventory_count_sessions s ON s.id=l.sessionId
++        INNER JOIN storage_locations sl ON sl.id=s.locationId
+         WHERE l.varianceQuantityMicros IS NOT NULL AND l.varianceQuantityMicros!=0 AND s.status IN ('SUBMITTED','APPROVED')
+         ORDER BY s.businessEpochDay DESC
+     """)
+     suspend fun inventoryDiscrepancies(): List<GeneratedAlertRow>
+ }
+ 
+-data class AlertKeyRow(val sourceType: String, val sourceId: Long)
+-
+-
+-data class OverdueReceivableCandidateRow(val customerId: Long, val customerName: String, val oldestDueEpochDay: Long)
++data class AlertKeyRow(val sourceType: String, val sourceId: Long, val locationId: Long)
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AlertEntities.kt b/app/src/main/java/ir/restaurant/management/data/db/AlertEntities.kt
+index 2eafe52..b9be9f4 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AlertEntities.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AlertEntities.kt
+@@ -8,11 +8,14 @@ import androidx.room.PrimaryKey
+ @Entity(
+     tableName = "app_alerts",
+     indices = [
+-        Index(value = ["sourceType", "sourceId"], unique = true),
++        Index(value = ["sourceType", "sourceId", "locationId"], unique = true),
+         Index("severity"),
+         Index("isRead"),
+         Index("isDismissed"),
+         Index("dueEpochDay"),
++        Index("branchId"),
++        Index("locationId"),
++        Index("snoozedUntilEpochMillis"),
+     ],
+ )
+ data class AppAlertEntity(
+@@ -28,6 +31,9 @@ data class AppAlertEntity(
+     val createdAtEpochMillis: Long,
+     val updatedAtEpochMillis: Long,
+     @ColumnInfo(defaultValue = "'NEW'") val status: String = "NEW",
++    @ColumnInfo(defaultValue = "0") val branchId: Long = 0,
++    @ColumnInfo(defaultValue = "0") val locationId: Long = 0,
++    val snoozedUntilEpochMillis: Long? = null,
+ )
+ 
+ data class OverdueSaleAlertRow(
+@@ -53,4 +59,6 @@ data class GeneratedAlertRow(
+     val message: String,
+     val severity: String,
+     val dueEpochDay: Long?,
++    val branchId: Long = 0,
++    val locationId: Long = 0,
+ )
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+index 99caae8..5b78fa3 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+@@ -8,7 +8,7 @@ import ir.restaurant.management.data.security.DatabaseKeyProvider
+ import java.io.File
+ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
+ 
+-internal const val APP_DATABASE_SCHEMA_VERSION = 58
++internal const val APP_DATABASE_SCHEMA_VERSION = 59
+ 
+ @Database(
+     entities = [
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt b/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
+index 7081486..8a20b87 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
+@@ -48,7 +48,7 @@ interface BusinessOperationsDao {
+     @Insert suspend fun insertTask(row: ManagementTaskEntity): Long
+     @Query("SELECT * FROM management_tasks WHERE id=:id") suspend fun task(id: Long): ManagementTaskEntity?
+     @Query("SELECT * FROM management_tasks WHERE branchId=:branchId AND status NOT IN ('COMPLETED','CANCELLED') ORDER BY dueAtEpochMillis, id") fun observeOpenTasks(branchId: Long): Flow<List<ManagementTaskEntity>>
+-    @Query("UPDATE management_tasks SET status=:status, startedAtEpochMillis=COALESCE(startedAtEpochMillis,:startedAt), completedAtEpochMillis=:completedAt, approvedByUserId=:approvedBy, approvedAtEpochMillis=:approvedAt WHERE id=:id") suspend fun updateTaskLifecycle(id: Long, status: String, startedAt: Long?, completedAt: Long?, approvedBy: Long?, approvedAt: Long?): Int
++    @Query("UPDATE management_tasks SET status=:status, startedAtEpochMillis=COALESCE(startedAtEpochMillis,:startedAt), completedAtEpochMillis=:completedAt, completedByUserId=CASE WHEN :completedBy IS NULL THEN completedByUserId ELSE :completedBy END, approvedByUserId=:approvedBy, approvedAtEpochMillis=:approvedAt WHERE id=:id") suspend fun updateTaskLifecycle(id: Long, status: String, startedAt: Long?, completedAt: Long?, completedBy: Long?, approvedBy: Long?, approvedAt: Long?): Int
+     @Query("UPDATE management_tasks SET assignedUserId=:assignedUserId, assignedEmployeeId=:assignedEmployeeId, dueAtEpochMillis=:dueAt WHERE id=:id") suspend fun updateTaskAssignment(id: Long, assignedUserId: Long?, assignedEmployeeId: Long?, dueAt: Long?): Int
+     @Insert suspend fun insertTaskAttachment(row: TaskAttachmentEntity): Long
+     @Query("SELECT COUNT(*) FROM task_attachments WHERE taskId=:taskId") suspend fun attachmentCount(taskId: Long): Int
+@@ -64,7 +64,7 @@ interface BusinessOperationsDao {
+     @Query("SELECT * FROM checklist_run_items WHERE runId=:runId ORDER BY id") suspend fun checklistRunItems(runId: Long): List<ChecklistRunItemEntity>
+     @Query("SELECT COUNT(*) FROM checklist_run_items ri JOIN checklist_template_items ti ON ti.id=ri.templateItemId WHERE ri.runId=:runId AND ti.required=1 AND ri.status='FAILED'") suspend fun requiredFailedItemCount(runId: Long): Int
+     @Query("UPDATE checklist_run_items SET status=:status,note=:note,attachmentReference=:attachmentReference,completedByUserId=:actorId,completedAtEpochMillis=:completedAt WHERE id=:id") suspend fun completeChecklistItem(id: Long, status: String, note: String?, attachmentReference: String?, actorId: Long, completedAt: Long): Int
+-    @Query("UPDATE checklist_runs SET status=:status,startedAtEpochMillis=COALESCE(startedAtEpochMillis,:now),completedAtEpochMillis=:completedAt WHERE id=:id") suspend fun updateChecklistRun(id: Long, status: String, now: Long, completedAt: Long?): Int
++    @Query("UPDATE checklist_runs SET status=:status,startedAtEpochMillis=COALESCE(startedAtEpochMillis,:now),completedAtEpochMillis=:completedAt,completedByUserId=CASE WHEN :completedBy IS NULL THEN completedByUserId ELSE :completedBy END WHERE id=:id") suspend fun updateChecklistRun(id: Long, status: String, now: Long, completedAt: Long?, completedBy: Long?): Int
+     @Query("UPDATE checklist_runs SET status='COMPLETED', approvedByUserId=:actorId, approvedAtEpochMillis=:approvedAt WHERE id=:id AND status='WAITING_APPROVAL'") suspend fun approveChecklistRun(id: Long, actorId: Long, approvedAt: Long): Int
+     @Query("SELECT * FROM checklist_templates WHERE active=1 AND (branchId IS NULL OR branchId=:branchId) ORDER BY type,name,id") fun observeChecklistTemplates(branchId: Long): Flow<List<ChecklistTemplateEntity>>
+     @Query("SELECT * FROM checklist_runs WHERE branchId=:branchId ORDER BY businessEpochDay DESC,id DESC") fun observeChecklistRuns(branchId: Long): Flow<List<ChecklistRunEntity>>
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsEntities.kt b/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsEntities.kt
+index 4696f3a..0e6df7e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsEntities.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsEntities.kt
+@@ -114,6 +114,7 @@ data class ManagementTaskEntity(
+     val dueAtEpochMillis: Long? = null,
+     val startedAtEpochMillis: Long? = null,
+     val completedAtEpochMillis: Long? = null,
++    val completedByUserId: Long? = null,
+     val requiresApproval: Boolean = false,
+     val approvedByUserId: Long? = null,
+     val approvedAtEpochMillis: Long? = null,
+@@ -169,6 +170,7 @@ data class ChecklistRunEntity(
+     val status: String,
+     val startedAtEpochMillis: Long? = null,
+     val completedAtEpochMillis: Long? = null,
++    val completedByUserId: Long? = null,
+     val approvedByUserId: Long? = null,
+     val approvedAtEpochMillis: Long? = null,
+ )
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt b/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt
+index e1d21da..fe2cc03 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt
+@@ -48,6 +48,7 @@ data class InventoryCountEntity(
+         Index("businessEpochDay"),
+         Index(value = ["referenceType", "referenceId"]),
+         Index("correlationId"),
++        Index("actorBranchIdSnapshot"),
+     ],
+ )
+ data class AuditLogEntity(
+@@ -68,4 +69,6 @@ data class AuditLogEntity(
+     val beforeSnapshot: String? = null,
+     val afterSnapshot: String? = null,
+     @ColumnInfo(defaultValue = "''") val correlationId: String = "",
++    @ColumnInfo(defaultValue = "'UNKNOWN'") val actorRoleSnapshot: String = "UNKNOWN",
++    val actorBranchIdSnapshot: Long? = null,
+ )
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/SecurityDao.kt b/app/src/main/java/ir/restaurant/management/data/db/SecurityDao.kt
+index eab45c7..c2904a2 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/SecurityDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/SecurityDao.kt
+@@ -32,6 +32,9 @@ interface SecurityDao {
+     @Query("SELECT u.* FROM app_session s INNER JOIN app_users u ON u.id = s.currentUserId WHERE s.singletonId = 1 LIMIT 1")
+     suspend fun currentUser(): AppUserEntity?
+ 
++    @Query("SELECT * FROM app_session WHERE singletonId = 1 LIMIT 1")
++    suspend fun currentSession(): AppSessionEntity?
++
+     @Query("SELECT COUNT(*) FROM app_users")
+     suspend fun userCount(): Int
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
+index 49c271a..016b894 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
+@@ -61,4 +61,5 @@ internal val ALL_MIGRATIONS: Array<Migration> = arrayOf(
+     MIGRATION_55_56,
+     MIGRATION_56_57,
+     MIGRATION_57_58,
++    MIGRATION_58_59,
+ )
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/Phase6SecurityAuditMigration.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase6SecurityAuditMigration.kt
+new file mode 100644
+index 0000000..0069285
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase6SecurityAuditMigration.kt
+@@ -0,0 +1,25 @@
++package ir.restaurant.management.data.db
++
++import androidx.room.migration.Migration
++import androidx.sqlite.db.SupportSQLiteDatabase
++
++/** Phase 6 — durable audit actor snapshots, scoped/snoozable alerts and management maker-checker evidence. */
++internal val MIGRATION_58_59 = object : Migration(58, 59) {
++    override fun migrate(db: SupportSQLiteDatabase) {
++        db.execSQL("ALTER TABLE audit_logs ADD COLUMN actorRoleSnapshot TEXT NOT NULL DEFAULT 'UNKNOWN'")
++        db.execSQL("ALTER TABLE audit_logs ADD COLUMN actorBranchIdSnapshot INTEGER")
++        db.execSQL("CREATE INDEX IF NOT EXISTS index_audit_logs_actorBranchIdSnapshot ON audit_logs(actorBranchIdSnapshot)")
++
++        db.execSQL("ALTER TABLE app_alerts ADD COLUMN branchId INTEGER NOT NULL DEFAULT 0")
++        db.execSQL("ALTER TABLE app_alerts ADD COLUMN locationId INTEGER NOT NULL DEFAULT 0")
++        db.execSQL("ALTER TABLE app_alerts ADD COLUMN snoozedUntilEpochMillis INTEGER")
++        db.execSQL("DROP INDEX IF EXISTS index_app_alerts_sourceType_sourceId")
++        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_app_alerts_sourceType_sourceId_locationId ON app_alerts(sourceType,sourceId,locationId)")
++        db.execSQL("CREATE INDEX IF NOT EXISTS index_app_alerts_branchId ON app_alerts(branchId)")
++        db.execSQL("CREATE INDEX IF NOT EXISTS index_app_alerts_locationId ON app_alerts(locationId)")
++        db.execSQL("CREATE INDEX IF NOT EXISTS index_app_alerts_snoozedUntilEpochMillis ON app_alerts(snoozedUntilEpochMillis)")
++
++        db.execSQL("ALTER TABLE management_tasks ADD COLUMN completedByUserId INTEGER")
++        db.execSQL("ALTER TABLE checklist_runs ADD COLUMN completedByUserId INTEGER")
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
+index 7304a46..d4e5cfb 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
+@@ -1,15 +1,15 @@
+ package ir.restaurant.management.data.repository
+ 
+ import androidx.room.withTransaction
+-import ir.restaurant.management.data.db.AppDatabase
+ import ir.restaurant.management.data.db.AppAlertEntity
++import ir.restaurant.management.data.db.AppDatabase
+ import ir.restaurant.management.data.db.GeneratedAlertRow
+-import ir.restaurant.management.domain.crm.ReceivableAgingCalculator
+-import ir.restaurant.management.domain.crm.ReceivableLedgerRecord
++import ir.restaurant.management.domain.operations.AlertDrillDownTarget
+ import ir.restaurant.management.domain.operations.AlertRepository
+ import ir.restaurant.management.domain.operations.AppAlert
+ import ir.restaurant.management.domain.security.AuthorizationService
+ import ir.restaurant.management.domain.security.Permission
++import kotlinx.coroutines.flow.combine
+ import kotlinx.coroutines.flow.emitAll
+ import kotlinx.coroutines.flow.flow
+ import kotlinx.coroutines.flow.map
+@@ -18,9 +18,28 @@ class LocalAlertRepository(
+     private val db: AppDatabase,
+     private val authorizer: AuthorizationService,
+ ) : AlertRepository {
++    private val dataScope by lazy {
++        require(authorizer is ir.restaurant.management.data.security.SessionAuthorizer) {
++            "Alert scope requires the canonical session authorizer."
++        }
++        LocalDataScopeService(db, authorizer)
++    }
++
+     override fun alerts() = flow {
+         authorizer.require(Permission.ACCOUNTING)
+-        emitAll(db.alertDao().observeVisible().map { rows -> rows.map { it.toDomain() } })
++        emitAll(
++            combine(db.alertDao().observeVisible(), dataScope.scopedBranches(), dataScope.scopedLocations()) { rows, branches, locations ->
++                val branchIds = branches.mapTo(mutableSetOf()) { it.id }
++                val locationIds = locations.mapTo(mutableSetOf()) { it.id }
++                val now = System.currentTimeMillis()
++                rows.asSequence()
++                    .filter { it.snoozedUntilEpochMillis == null || it.snoozedUntilEpochMillis <= now }
++                    .filter { it.branchId == 0L || it.branchId in branchIds }
++                    .filter { it.locationId == 0L || it.locationId in locationIds }
++                    .map { it.toDomain() }
++                    .toList()
++            },
++        )
+     }
+ 
+     override suspend fun refresh(todayEpochDay: Long) {
+@@ -29,11 +48,11 @@ class LocalAlertRepository(
+             require(todayEpochDay > 0)
+             val now = System.currentTimeMillis()
+             val horizon = todayEpochDay + 30
+-            val activeKeys = mutableSetOf<Pair<String, Long>>()
++            val activeKeys = mutableSetOf<Triple<String, Long, Long>>()
+ 
+             suspend fun upsert(sourceType: String, rows: List<GeneratedAlertRow>) {
+                 rows.forEach { row ->
+-                    activeKeys += sourceType to row.sourceId
++                    activeKeys += Triple(sourceType, row.sourceId, row.locationId)
+                     val updated = db.alertDao().updateGenerated(
+                         sourceType = sourceType,
+                         sourceId = row.sourceId,
+@@ -41,6 +60,8 @@ class LocalAlertRepository(
+                         message = row.message,
+                         severity = row.severity,
+                         dueEpochDay = row.dueEpochDay,
++                        branchId = row.branchId,
++                        locationId = row.locationId,
+                         now = now,
+                     )
+                     if (updated == 0) {
+@@ -51,6 +72,8 @@ class LocalAlertRepository(
+                             message = row.message,
+                             severity = row.severity,
+                             dueEpochDay = row.dueEpochDay,
++                            branchId = row.branchId,
++                            locationId = row.locationId,
+                             now = now,
+                         )
+                     }
+@@ -61,7 +84,7 @@ class LocalAlertRepository(
+             upsert("LOW_STOCK", db.alertDao().lowStock())
+             upsert("LOT_EXPIRING", db.alertDao().expiringLots(todayEpochDay, horizon))
+             upsert("LOT_EXPIRED", db.alertDao().expiredLots(todayEpochDay))
+-            upsert("CUSTOMER_RECEIVABLE", overdueReceivables(todayEpochDay))
++            upsert("CUSTOMER_RECEIVABLE", db.alertDao().overdueReceivables(todayEpochDay))
+             upsert("CONTRACT_EXPIRY", db.alertDao().expiringContracts(todayEpochDay, horizon))
+             upsert("UNPAID_PAYROLL", db.alertDao().unpaidPayroll())
+             upsert("ASSET_MAINTENANCE", db.alertDao().dueAssetMaintenance(todayEpochDay, horizon))
+@@ -70,68 +93,53 @@ class LocalAlertRepository(
+             upsert("INVENTORY_DISCREPANCY", db.alertDao().inventoryDiscrepancies())
+ 
+             db.alertDao().generatedKeys().forEach { key ->
+-                if ((key.sourceType to key.sourceId) !in activeKeys) {
+-                    db.alertDao().resolveGenerated(key.sourceType, key.sourceId, now)
++                if (Triple(key.sourceType, key.sourceId, key.locationId) !in activeKeys) {
++                    db.alertDao().resolveGenerated(key.sourceType, key.sourceId, key.locationId, now)
+                 }
+             }
+         }
+     }
+ 
+-    private suspend fun overdueReceivables(todayEpochDay: Long): List<GeneratedAlertRow> {
+-        val candidates = db.alertDao().overdueReceivableCandidates(todayEpochDay)
+-        if (candidates.isEmpty()) return emptyList()
+-        val ledgersByCustomer = db.customerReceivableDao()
+-            .ledgerForCustomers(candidates.map { it.customerId })
+-            .groupBy { it.customerId }
+-        return candidates.mapNotNull { candidate ->
+-            val ledger = ledgersByCustomer[candidate.customerId].orEmpty().map { row ->
+-                ReceivableLedgerRecord(
+-                    row.id, row.customerId, row.businessEpochDay, row.entryType, row.debitRial, row.creditRial,
+-                    row.sourceType, row.sourceId, row.reference, row.dueEpochDay,
+-                )
+-            }
+-            val aging = ReceivableAgingCalculator.calculate(ledger, todayEpochDay)
+-            val overdue = Math.addExact(
+-                Math.addExact(aging.days1To30Rial, aging.days31To60Rial),
+-                Math.addExact(aging.days61To90Rial, aging.over90Rial),
+-            )
+-            overdue.takeIf { it > 0L }?.let { amount ->
+-                GeneratedAlertRow(
+-                    sourceId = candidate.customerId,
+-                    title = "مطالبه سررسیدشده مشتری",
+-                    message = "${candidate.customerName} · مانده سررسیدشده $amount ریال",
+-                    severity = "HIGH",
+-                    dueEpochDay = candidate.oldestDueEpochDay,
+-                )
+-            }
+-        }
+-    }
+-
+     override suspend fun markRead(id: Long) {
+-        authorizer.require(Permission.ACCOUNTING)
++        requireAlertAccess(id)
+         require(db.alertDao().markRead(id, System.currentTimeMillis()) == 1) { "هشدار پیدا نشد." }
+     }
+ 
+     override suspend fun markActioned(id: Long) {
+-        authorizer.require(Permission.ACCOUNTING)
++        requireAlertAccess(id)
+         require(db.alertDao().markActioned(id, System.currentTimeMillis()) == 1) { "هشدار قابل اقدام پیدا نشد." }
+     }
+ 
+     override suspend fun resolve(id: Long) {
+-        authorizer.require(Permission.ACCOUNTING)
++        requireAlertAccess(id)
+         require(db.alertDao().resolve(id, System.currentTimeMillis()) == 1) { "هشدار قابل حل پیدا نشد." }
+     }
+ 
+     override suspend fun dismiss(id: Long) {
+-        authorizer.require(Permission.ACCOUNTING)
++        requireAlertAccess(id)
+         require(db.alertDao().dismiss(id, System.currentTimeMillis()) == 1) { "هشدار پیدا نشد." }
+     }
+ 
++    override suspend fun snooze(id: Long, untilEpochMillis: Long) {
++        requireAlertAccess(id)
++        val now = System.currentTimeMillis()
++        require(untilEpochMillis > now) { "زمان تعویق هشدار باید در آینده باشد." }
++        require(db.alertDao().snooze(id, untilEpochMillis, now) == 1) { "هشدار قابل تعویق پیدا نشد." }
++    }
++
+     override suspend fun clearDismissed() {
+         authorizer.require(Permission.ACCOUNTING)
+         db.alertDao().clearDismissed()
+     }
+ 
++    private suspend fun requireAlertAccess(id: Long): AppAlertEntity {
++        authorizer.require(Permission.ACCOUNTING)
++        val row = db.alertDao().byId(id) ?: error("هشدار پیدا نشد.")
++        if (row.locationId > 0) dataScope.requireLocation(row.locationId, row.branchId.takeIf { it > 0 })
++        else if (row.branchId > 0) dataScope.requireBranch(row.branchId, operational = false)
++        return row
++    }
++
+     private fun AppAlertEntity.toDomain() = AppAlert(
+         id = id,
+         sourceType = sourceType,
+@@ -145,5 +153,19 @@ class LocalAlertRepository(
+         createdAtEpochMillis = createdAtEpochMillis,
+         updatedAtEpochMillis = updatedAtEpochMillis,
+         status = status,
++        branchId = branchId,
++        locationId = locationId,
++        snoozedUntilEpochMillis = snoozedUntilEpochMillis,
++        drillDownTarget = when (sourceType) {
++            "LOW_STOCK" -> AlertDrillDownTarget.INVENTORY_ITEM
++            "LOT_EXPIRING", "LOT_EXPIRED" -> AlertDrillDownTarget.INVENTORY
++            "INVENTORY_DISCREPANCY" -> AlertDrillDownTarget.INVENTORY_COUNT
++            "PURCHASE_PAYABLE" -> AlertDrillDownTarget.PURCHASE
++            "PURCHASE_DELIVERY_OVERDUE" -> AlertDrillDownTarget.PROCUREMENT_ORDER
++            "CUSTOMER_RECEIVABLE" -> AlertDrillDownTarget.RECEIVABLE
++            "CONTRACT_EXPIRY", "UNPAID_PAYROLL", "ATTENDANCE_ANOMALY" -> AlertDrillDownTarget.PERSONNEL
++            "ASSET_MAINTENANCE" -> AlertDrillDownTarget.ASSET
++            else -> AlertDrillDownTarget.NONE
++        },
+     )
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalAuditEventWriter.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalAuditEventWriter.kt
+index e68d84a..a8aeb05 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalAuditEventWriter.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalAuditEventWriter.kt
+@@ -20,6 +20,9 @@ class LocalAuditEventWriter(
+         require(valid.actorId != null) { "شناسه actor رویداد Audit الزامی است." }
+         require(valid.correlationId.isNotBlank()) { "شناسه correlation رویداد Audit الزامی است." }
+         require(valid.reason.isNotBlank()) { "دلیل رویداد Audit الزامی است." }
++        val actorEntity = valid.actorId?.let { database.securityDao().byId(it) }
++        val roleSnapshot = valid.actorRoleSnapshot.takeUnless { it == "UNKNOWN" } ?: actorEntity?.role ?: "UNKNOWN"
++        val branchSnapshot = valid.actorBranchIdSnapshot ?: valid.actorId?.let { database.phase3Dao().scopeProfile(it)?.primaryBranchId }
+         return database.auditLogDao().insert(
+             AuditLogEntity(
+                 action = valid.action.storedValue,
+@@ -38,6 +41,8 @@ class LocalAuditEventWriter(
+                 beforeSnapshot = valid.beforeSnapshot,
+                 afterSnapshot = valid.afterSnapshot,
+                 correlationId = valid.correlationId,
++                actorRoleSnapshot = roleSnapshot,
++                actorBranchIdSnapshot = branchSnapshot,
+             ),
+         )
+     }
+@@ -76,6 +81,8 @@ class LocalAuditEventWriter(
+                 afterSnapshot = afterSnapshot,
+                 correlationId = correlationId,
+                 description = description,
++                actorRoleSnapshot = actor.role.name,
++                actorBranchIdSnapshot = database.phase3Dao().scopeProfile(actor.id)?.primaryBranchId,
+             ),
+         )
+     }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowReadService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowReadService.kt
+index 59b8e56..6d2fda4 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowReadService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowReadService.kt
+@@ -25,7 +25,8 @@ class LocalManagementWorkflowReadService(
+     private val database: AppDatabase,
+     private val authorizer: SessionAuthorizer,
+ ) : ManagementWorkflowReadService {
+-    override fun observeOpenIssues(branchId: Long): Flow<List<ManagementIssueRecord>> = authorized(Permission.CONTROL_VIEW) {
++    private val dataScope = LocalDataScopeService(database, authorizer)
++    override fun observeOpenIssues(branchId: Long): Flow<List<ManagementIssueRecord>> = authorizedBranch(Permission.CONTROL_VIEW, branchId) {
+         database.businessOperationsDao().observeOpenIssues(branchId).map { rows ->
+             rows.map { row ->
+                 ManagementIssueRecord(
+@@ -48,7 +49,7 @@ class LocalManagementWorkflowReadService(
+         }
+     }
+ 
+-    override fun observeOpenTasks(branchId: Long): Flow<List<ManagementTaskRecord>> = authorized(Permission.TASK_VIEW) {
++    override fun observeOpenTasks(branchId: Long): Flow<List<ManagementTaskRecord>> = authorizedBranch(Permission.TASK_VIEW, branchId) {
+         database.businessOperationsDao().observeOpenTasks(branchId).map { rows ->
+             rows.map { row ->
+                 ManagementTaskRecord(
+@@ -69,13 +70,13 @@ class LocalManagementWorkflowReadService(
+         }
+     }
+ 
+-    override fun observeChecklistTemplates(branchId: Long): Flow<List<ChecklistTemplateRecord>> = authorized(Permission.CHECKLIST_VIEW) {
++    override fun observeChecklistTemplates(branchId: Long): Flow<List<ChecklistTemplateRecord>> = authorizedBranch(Permission.CHECKLIST_VIEW, branchId) {
+         database.businessOperationsDao().observeChecklistTemplates(branchId).map { rows ->
+             rows.map { row -> ChecklistTemplateRecord(row.id, row.branchId, row.name, ChecklistType.valueOf(row.type), row.active) }
+         }
+     }
+ 
+-    override fun observeChecklistRuns(branchId: Long): Flow<List<ChecklistRunRecord>> = authorized(Permission.CHECKLIST_VIEW) {
++    override fun observeChecklistRuns(branchId: Long): Flow<List<ChecklistRunRecord>> = authorizedBranch(Permission.CHECKLIST_VIEW, branchId) {
+         database.businessOperationsDao().observeChecklistRuns(branchId).map { rows ->
+             rows.map { row -> ChecklistRunRecord(row.id, row.templateId, row.branchId, row.businessEpochDay, row.assignedEmployeeId, ChecklistStatus.valueOf(row.status)) }
+         }
+@@ -84,6 +85,8 @@ class LocalManagementWorkflowReadService(
+     override suspend fun checklistRunItems(runId: Long): List<ChecklistRunItemRecord> {
+         authorizer.require(Permission.CHECKLIST_VIEW)
+         val dao = database.businessOperationsDao()
++        val run = dao.checklistRun(runId) ?: error("اجرای چک‌لیست پیدا نشد.")
++        dataScope.requireBranch(run.branchId, operational = false)
+         return dao.checklistRunItems(runId).map { row ->
+             val template = requireNotNull(dao.checklistTemplateItem(row.templateItemId))
+             ChecklistRunItemRecord(
+@@ -106,4 +109,10 @@ class LocalManagementWorkflowReadService(
+         authorizer.require(permission)
+         emitAll(source())
+     }
++
++    private fun <T> authorizedBranch(permission: Permission, branchId: Long, source: () -> Flow<T>): Flow<T> = flow {
++        authorizer.require(permission)
++        dataScope.requireBranch(branchId, operational = false)
++        emitAll(source())
++    }
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt
+index 5e57d52..4e7b8b5 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalManagementWorkflowService.kt
+@@ -29,6 +29,7 @@ class LocalManagementWorkflowService(
+ ) : ManagementWorkflowService {
+     private val audit = LocalAuditEventWriter(database)
+     private val branchResolver = CanonicalBranchResolver(database)
++    private val dataScope = LocalDataScopeService(database, authorizer)
+ 
+     override suspend fun recordDetectedIssues(issues: List<DetectedIssue>): Int {
+         authorizer.require(Permission.CONTROL_VIEW)
+@@ -37,7 +38,7 @@ class LocalManagementWorkflowService(
+             issues.forEach { issue ->
+                 require(issue.branchId>=0 && issue.businessEpochDay>0 && issue.sourceId>0) { "منبع مسئله مدیریتی معتبر نیست." }
+                 if (issue.branchId > 0) {
+-                    branchResolver.requireActive(issue.branchId)
++                    dataScope.requireBranch(issue.branchId, operational = false)
+                 } else {
+                     require(issue.sourceType.startsWith("UNSCOPED_")) { "مسئله مدیریتی شعبه‌ای باید Branch canonical معتبر داشته باشد." }
+                 }
+@@ -59,6 +60,7 @@ class LocalManagementWorkflowService(
+         authorizer.require(Permission.CONTROL_VIEW); val now=clock()
+         database.withTransaction {
+             val current=database.businessOperationsDao().issue(issueId) ?: error("مسئله پیدا نشد.")
++            dataScope.requireBranch(current.branchId, operational = false)
+             ManagementIssueLifecycle.requireTransition(ManagementIssueStatus.valueOf(current.status),ManagementIssueStatus.ACKNOWLEDGED)
+             check(database.businessOperationsDao().updateIssueStatus(issueId,ManagementIssueStatus.ACKNOWLEDGED.name,now)==1)
+             audit.appendAuthorized(authorizer,"ACKNOWLEDGE","MANAGEMENT_ISSUE",issueId,"تأیید مشاهده مسئله مدیریتی",now,current.businessEpochDay,correlationId="issue_ack:$issueId:$now")
+@@ -71,6 +73,7 @@ class LocalManagementWorkflowService(
+         val now=clock()
+         database.withTransaction {
+             val current=database.businessOperationsDao().issue(draft.issueId) ?: error("مسئله پیدا نشد.")
++            dataScope.requireBranch(current.branchId, operational = false)
+             val from=ManagementIssueStatus.valueOf(current.status)
+             ManagementIssueLifecycle.requireTransition(from,ManagementIssueStatus.ASSIGNED)
+             check(database.businessOperationsDao().updateIssueAssignment(current.id,"ASSIGNED",draft.assignedUserId,draft.assignedEmployeeId,draft.dueAtEpochMillis,now)==1)
+@@ -82,6 +85,7 @@ class LocalManagementWorkflowService(
+         authorizer.require(Permission.CONTROL_ASSIGN); val now=clock()
+         database.withTransaction {
+             val current=database.businessOperationsDao().issue(issueId) ?: error("مسئله پیدا نشد.")
++            dataScope.requireBranch(current.branchId, operational = false)
+             ManagementIssueLifecycle.requireTransition(ManagementIssueStatus.valueOf(current.status),ManagementIssueStatus.IN_PROGRESS)
+             check(database.businessOperationsDao().updateIssueStatus(issueId,ManagementIssueStatus.IN_PROGRESS.name,now)==1)
+             audit.appendAuthorized(authorizer,"START","MANAGEMENT_ISSUE",issueId,"شروع پیگیری مسئله",now,current.businessEpochDay,correlationId="issue_start:$issueId:$now")
+@@ -92,6 +96,7 @@ class LocalManagementWorkflowService(
+         val actor=authorizer.require(Permission.CONTROL_RESOLVE); val now=clock(); val note=resolutionNote.trim(); require(note.length>=3)
+         database.withTransaction {
+             val current=database.businessOperationsDao().issue(issueId) ?: error("مسئله پیدا نشد.")
++            dataScope.requireBranch(current.branchId, operational = false)
+             ManagementIssueLifecycle.requireTransition(ManagementIssueStatus.valueOf(current.status),ManagementIssueStatus.RESOLVED)
+             check(database.businessOperationsDao().resolveIssue(issueId,"RESOLVED",note,actor.id,now)==1)
+             audit.appendAuthorized(authorizer,"RESOLVE","MANAGEMENT_ISSUE",issueId,note,now,current.businessEpochDay,correlationId="issue_resolve:$issueId:$now")
+@@ -102,6 +107,7 @@ class LocalManagementWorkflowService(
+         val actor=authorizer.require(Permission.CONTROL_RESOLVE); val now=clock(); val note=resolutionNote.trim(); require(note.length>=3)
+         database.withTransaction {
+             val current=database.businessOperationsDao().issue(issueId) ?: error("مسئله پیدا نشد.")
++            dataScope.requireBranch(current.branchId, operational = false)
+             ManagementIssueLifecycle.requireTransition(ManagementIssueStatus.valueOf(current.status),ManagementIssueStatus.DISMISSED)
+             check(database.businessOperationsDao().resolveIssue(issueId,ManagementIssueStatus.DISMISSED.name,note,actor.id,now)==1)
+             audit.appendAuthorized(authorizer,"DISMISS","MANAGEMENT_ISSUE",issueId,note,now,current.businessEpochDay,correlationId="issue_dismiss:$issueId:$now")
+@@ -112,7 +118,7 @@ class LocalManagementWorkflowService(
+         val actor=authorizer.require(Permission.TASK_CREATE); val now=clock()
+         require(draft.branchId>0 && draft.title.trim().length>=3)
+         return database.withTransaction {
+-            branchResolver.requireActive(draft.branchId)
++            dataScope.requireBranch(draft.branchId)
+             val id=database.businessOperationsDao().insertTask(ManagementTaskEntity(
+                 globalId=GlobalId.new().value, branchId=draft.branchId, title=draft.title.trim(), description=draft.description.trim(),
+                 priority=draft.priority.name, status=ManagementTaskStatus.TODO.name, assignedUserId=draft.assignedUserId, assignedEmployeeId=draft.assignedEmployeeId,
+@@ -127,6 +133,7 @@ class LocalManagementWorkflowService(
+         authorizer.require(Permission.TASK_ASSIGN); require(assignedUserId!=null || assignedEmployeeId!=null) { "وظیفه باید به کاربر یا پرسنل ارجاع شود." }; val now=clock()
+         database.withTransaction {
+             val task=database.businessOperationsDao().task(taskId) ?: error("وظیفه پیدا نشد.")
++            dataScope.requireBranch(task.branchId, operational = false)
+             require(task.status !in setOf("COMPLETED","REJECTED","CANCELLED")) { "وظیفه نهایی‌شده قابل ارجاع نیست." }
+             check(database.businessOperationsDao().updateTaskAssignment(taskId,assignedUserId,assignedEmployeeId,dueAtEpochMillis)==1)
+             audit.appendAuthorized(authorizer,"ASSIGN","MANAGEMENT_TASK",taskId,"ارجاع وظیفه مدیریتی",now,correlationId="task:$taskId:assign:$now")
+@@ -143,33 +150,51 @@ class LocalManagementWorkflowService(
+         val actor=authorizer.require(permission); val now=clock()
+         database.withTransaction {
+             val task=database.businessOperationsDao().task(taskId) ?: error("وظیفه پیدا نشد.")
++            dataScope.requireBranch(task.branchId, operational = false)
++            if(target in setOf("IN_PROGRESS","COMPLETED") && !approve && task.assignedUserId != null) {
++                require(task.assignedUserId == actor.id) { "فقط کاربر ارجاع‌شده می‌تواند وظیفه را اجرا یا تکمیل کند." }
++            }
++            if(target in setOf("COMPLETED","REJECTED") && approve) {
++                require(task.completedByUserId == null || task.completedByUserId != actor.id) { "ثبت‌کننده تکمیل نمی‌تواند همان وظیفه را تأیید کند." }
++            }
++            if(target=="REJECTED") {
++                require(task.status=="WAITING_APPROVAL") { "فقط وظیفه منتظر تأیید قابل رد است." }
++                require(task.completedByUserId == null || task.completedByUserId != actor.id) { "تکمیل‌کننده وظیفه نمی‌تواند همان وظیفه را رد کند." }
++            }
+             if(target=="IN_PROGRESS") require(task.status=="TODO") { "وظیفه قابل شروع نیست." }
+-            if(target=="REJECTED") require(task.status=="WAITING_APPROVAL") { "فقط وظیفه منتظر تأیید قابل رد است." }
+             if(target=="CANCELLED") require(task.status in setOf("TODO","IN_PROGRESS","WAITING_APPROVAL")) { "وظیفه قابل لغو نیست." }
+             if(target=="COMPLETED") {
+                 if(approve) require(task.status=="WAITING_APPROVAL") { "فقط وظیفه منتظر تأیید قابل تأیید است." }
+                 else require(task.status=="IN_PROGRESS") { "وظیفه باید قبل از تکمیل شروع شده باشد." }
+                 if(task.requiresAttachment) require(database.businessOperationsDao().attachmentCount(taskId)>0) { "این وظیفه نیازمند پیوست است." }
+                 if(task.requiresApproval && !approve) {
+-                    check(database.businessOperationsDao().updateTaskLifecycle(taskId,"WAITING_APPROVAL",task.startedAtEpochMillis ?: now,null,null,null)==1)
++                    check(database.businessOperationsDao().updateTaskLifecycle(taskId,"WAITING_APPROVAL",task.startedAtEpochMillis ?: now,null,actor.id,null,null)==1)
+                     audit.appendAuthorized(authorizer,"WAITING_APPROVAL","MANAGEMENT_TASK",taskId,"وظیفه برای تأیید ارسال شد",now,correlationId="task:$taskId:waiting_approval:$now")
+                     return@withTransaction
+                 }
+             }
+-            check(database.businessOperationsDao().updateTaskLifecycle(taskId,target,task.startedAtEpochMillis ?: now,if(target in setOf("COMPLETED","REJECTED","CANCELLED")) now else null,if(approve) actor.id else null,if(approve) now else null)==1)
++            val completedBy = if(target=="COMPLETED" && !approve) actor.id else null
++            check(database.businessOperationsDao().updateTaskLifecycle(
++                taskId,target,task.startedAtEpochMillis ?: now,
++                if(target in setOf("COMPLETED","REJECTED","CANCELLED")) now else null,
++                completedBy,if(approve) actor.id else null,if(approve) now else null,
++            )==1)
+             audit.appendAuthorized(authorizer,if(approve) "APPROVE" else target,"MANAGEMENT_TASK",taskId,"تغییر وضعیت وظیفه به $target",now,correlationId="task:$taskId:$target:$now")
+         }
+     }
+ 
+     override suspend fun attachToTask(taskId: Long, storageReference: String, mimeType: String?, originalName: String?): Long {
+         val actor=authorizer.require(Permission.TASK_COMPLETE); require(storageReference.isNotBlank()); val now=clock()
++        val task=database.businessOperationsDao().task(taskId) ?: error("وظیفه پیدا نشد.")
++        dataScope.requireBranch(task.branchId, operational = false)
++        if(task.assignedUserId != null) require(task.assignedUserId == actor.id) { "فقط کاربر ارجاع‌شده می‌تواند پیوست وظیفه را ثبت کند." }
+         return database.businessOperationsDao().insertTaskAttachment(TaskAttachmentEntity(taskId=taskId,storageReference=storageReference.trim(),mimeType=mimeType?.trim(),originalName=originalName?.trim(),createdByUserId=actor.id,createdAtEpochMillis=now))
+     }
+ 
+     override suspend fun createChecklistTemplate(draft: ChecklistTemplateDraft): Long {
+         val actor=authorizer.require(Permission.CHECKLIST_MANAGE); val now=clock(); require(draft.name.trim().length>=3 && draft.items.isNotEmpty())
+         return database.withTransaction {
+-            draft.branchId?.let { branchResolver.requireActive(it) }
++            draft.branchId?.let { dataScope.requireBranch(it) }
+             val id=database.businessOperationsDao().insertChecklistTemplate(ChecklistTemplateEntity(branchId=draft.branchId,name=draft.name.trim(),type=draft.type.name,createdByUserId=actor.id,createdAtEpochMillis=now,updatedAtEpochMillis=now))
+             database.businessOperationsDao().insertChecklistTemplateItems(draft.items.mapIndexed { index,item -> ChecklistTemplateItemEntity(templateId=id,title=item.title.trim(),description=item.description?.trim(),sortOrder=index,required=item.required,requiresPhoto=item.requiresPhoto,requiresNoteOnFailure=item.requiresNoteOnFailure) })
+             audit.appendAuthorized(authorizer,"CREATE","CHECKLIST_TEMPLATE",id,draft.name,now,correlationId="checklist_template:$id")
+@@ -180,7 +205,7 @@ class LocalManagementWorkflowService(
+     override suspend fun startChecklistRun(templateId: Long, branchId: Long, businessEpochDay: Long, assignedEmployeeId: Long?): Long {
+         authorizer.require(Permission.CHECKLIST_PERFORM); val now=clock(); require(templateId>0&&branchId>0&&businessEpochDay>0)
+         return database.withTransaction {
+-            branchResolver.requireActive(branchId)
++            dataScope.requireBranch(branchId)
+             val templateItems=database.businessOperationsDao().templateItems(templateId)
+             require(templateItems.isNotEmpty()) { "قالب چک‌لیست آیتم فعال ندارد." }
+             val runId=database.businessOperationsDao().insertChecklistRun(ChecklistRunEntity(templateId=templateId,branchId=branchId,businessEpochDay=businessEpochDay,assignedEmployeeId=assignedEmployeeId,status=ChecklistStatus.IN_PROGRESS.name,startedAtEpochMillis=now))
+@@ -194,6 +219,8 @@ class LocalManagementWorkflowService(
+         val actor=authorizer.require(Permission.CHECKLIST_PERFORM); val now=clock()
+         val normalizedNote=note?.trim()
+         val runItem=database.businessOperationsDao().checklistRunItem(runItemId) ?: error("آیتم اجرای چک‌لیست پیدا نشد.")
++        val run=database.businessOperationsDao().checklistRun(runItem.runId) ?: error("اجرای چک‌لیست پیدا نشد.")
++        dataScope.requireBranch(run.branchId, operational = false)
+         val templateItem=database.businessOperationsDao().checklistTemplateItem(runItem.templateItemId) ?: error("آیتم قالب چک‌لیست پیدا نشد.")
+         if(templateItem.requiresPhoto) require(!attachmentReference.isNullOrBlank()) { "این آیتم نیازمند پیوست/عکس است." }
+         if(!passed && templateItem.requiresNoteOnFailure) require(!normalizedNote.isNullOrBlank()) { "برای آیتم ناموفق ثبت توضیح الزامی است." }
+@@ -202,15 +229,16 @@ class LocalManagementWorkflowService(
+     }
+ 
+     override suspend fun completeChecklistRun(runId: Long) {
+-        authorizer.require(Permission.CHECKLIST_PERFORM); val now=clock()
++        val actor=authorizer.require(Permission.CHECKLIST_PERFORM); val now=clock()
+         database.withTransaction {
+             val items=database.businessOperationsDao().checklistRunItems(runId); require(items.isNotEmpty())
+             require(items.none { it.status=="NOT_STARTED" || it.status=="IN_PROGRESS" }) { "همه آیتم‌های چک‌لیست باید تعیین تکلیف شوند." }
+             val run=database.businessOperationsDao().checklistRun(runId) ?: error("اجرای چک‌لیست پیدا نشد.")
++            dataScope.requireBranch(run.branchId, operational = false)
+             val failed=items.any { it.status=="FAILED" }
+             val requiredFailed=database.businessOperationsDao().requiredFailedItemCount(runId)>0
+             val target=if(failed) ChecklistStatus.FAILED.name else ChecklistStatus.WAITING_APPROVAL.name
+-            check(database.businessOperationsDao().updateChecklistRun(runId,target,now,now)==1)
++            check(database.businessOperationsDao().updateChecklistRun(runId,target,now,now,actor.id)==1)
+             audit.appendAuthorized(authorizer,"COMPLETE","CHECKLIST_RUN",runId,"پایان اجرای چک‌لیست؛ وضعیت=$target",now,run.businessEpochDay,correlationId="checklist_run:$runId:complete")
+             if(requiredFailed) {
+                 val detected=DetectedIssue(run.branchId,ir.restaurant.management.domain.control.ManagementIssueType.CHECKLIST_FAILED,ir.restaurant.management.domain.control.ManagementIssueSeverity.HIGH,"چک‌لیست الزامی ناموفق","حداقل یک آیتم الزامی چک‌لیست ناموفق ثبت شده است.",businessEpochDay=run.businessEpochDay,sourceType="CHECKLIST_RUN",sourceId=run.id,businessPeriodKey=run.businessEpochDay.toString())
+@@ -224,7 +252,9 @@ class LocalManagementWorkflowService(
+         val actor=authorizer.require(Permission.CHECKLIST_APPROVE); val now=clock()
+         database.withTransaction {
+             val run=database.businessOperationsDao().checklistRun(runId) ?: error("اجرای چک‌لیست پیدا نشد.")
++            dataScope.requireBranch(run.branchId, operational = false)
+             require(run.status==ChecklistStatus.WAITING_APPROVAL.name) { "چک‌لیست در انتظار تأیید نیست." }
++            require(run.completedByUserId == null || run.completedByUserId != actor.id) { "تکمیل‌کننده چک‌لیست نمی‌تواند همان اجرا را تأیید کند." }
+             check(database.businessOperationsDao().approveChecklistRun(runId,actor.id,now)==1)
+             audit.appendAuthorized(authorizer,"APPROVE","CHECKLIST_RUN",runId,"تأیید چک‌لیست",now,run.businessEpochDay,correlationId="checklist_run:$runId:approve")
+         }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+index c17a3b1..cd7126f 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+@@ -63,6 +63,9 @@ import kotlinx.coroutines.flow.map
+ import kotlinx.coroutines.flow.combine
+ import kotlinx.coroutines.flow.flatMapLatest
+ import kotlinx.coroutines.flow.flowOf
++import kotlinx.coroutines.flow.flow
++import kotlinx.coroutines.flow.emitAll
++import ir.restaurant.management.domain.security.UserRole
+ 
+ class LocalOperationsRepository(
+     private val database: AppDatabase,
+@@ -183,11 +186,14 @@ class LocalOperationsRepository(
+         }
+     }
+ 
+-    override fun auditLogs(query: AuditLogQuery): Flow<List<AuditLogRecord>> {
++    override fun auditLogs(query: AuditLogQuery): Flow<List<AuditLogRecord>> = flow {
++        val actor = authorizer.require(Permission.AUDIT_VIEW)
++        val canViewSensitive = authorizer.can(Permission.AUDIT_SENSITIVE_VIEW)
++        val allowedBranches = if (actor.role == UserRole.OWNER) null else dataScope.activeBranches().map { it.id }.toSet()
+         val zone = java.time.ZoneId.systemDefault()
+         val fromMillis = query.fromEpochDay?.let { java.time.LocalDate.ofEpochDay(it).atStartOfDay(zone).toInstant().toEpochMilli() }
+         val toExclusiveMillis = query.toEpochDay?.let { java.time.LocalDate.ofEpochDay(it + 1L).atStartOfDay(zone).toInstant().toEpochMilli() }
+-        return database.auditLogDao().observeFiltered(
++        emitAll(database.auditLogDao().observeFiltered(
+             search = query.search.trim(),
+             actor = query.actor.trim(),
+             action = query.action.trim().uppercase(),
+@@ -198,16 +204,23 @@ class LocalOperationsRepository(
+             fromMillis = fromMillis,
+             toExclusiveMillis = toExclusiveMillis,
+         ).map { rows ->
+-            rows.map { row ->
+-                AuditLogRecord(
+-                    id = row.id, action = row.action, entityType = row.entityType, entityId = row.entityId,
+-                    description = row.description, actor = row.actor, createdAtEpochMillis = row.createdAtEpochMillis,
+-                    actorId = row.actorId, referenceType = row.referenceType, referenceId = row.referenceId,
+-                    reason = row.reason, beforeSnapshot = row.beforeSnapshot, afterSnapshot = row.afterSnapshot,
+-                    correlationId = row.correlationId,
+-                )
+-            }
+-        }
++            rows.asSequence()
++                .filter { row -> allowedBranches == null || row.actorBranchIdSnapshot == null || row.actorBranchIdSnapshot in allowedBranches }
++                .map { row ->
++                    val sensitive = row.entityType.startsWith("SECURITY") || row.entityType == "SENSITIVE_ACTION" ||
++                        row.action.contains("RECOVERY") || row.action.contains("LOGIN")
++                    AuditLogRecord(
++                        id = row.id, action = row.action, entityType = row.entityType, entityId = row.entityId,
++                        description = row.description, actor = row.actor, createdAtEpochMillis = row.createdAtEpochMillis,
++                        actorId = row.actorId, referenceType = row.referenceType, referenceId = row.referenceId,
++                        reason = if (sensitive && !canViewSensitive) "جزئیات حساس برای این نقش پنهان است" else row.reason,
++                        beforeSnapshot = if (sensitive && !canViewSensitive) null else row.beforeSnapshot,
++                        afterSnapshot = if (sensitive && !canViewSensitive) null else row.afterSnapshot,
++                        correlationId = row.correlationId, actorRoleSnapshot = row.actorRoleSnapshot,
++                        actorBranchIdSnapshot = row.actorBranchIdSnapshot,
++                    )
++                }.toList()
++        })
+     }
+ 
+     override val usageInsights: Flow<List<InventoryUsageInsight>> =
+diff --git a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+index f0514c5..82370cb 100644
+--- a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
++++ b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+@@ -19,14 +19,24 @@ class AccessDeniedException(val permission: Permission) :
+     BusinessRuleViolation(BusinessError.PermissionDenied(permission))
+ 
+ /** Enforces authorization at the data-command boundary. UI filtering is not a security boundary. */
+-class SessionAuthorizer(private val database: AppDatabase) : AuthorizationService {
+-    suspend fun actor(): String = database.securityDao().currentUser()
+-        ?.let { it.displayName.ifBlank { it.username } }
+-        ?: "SYSTEM"
++class SessionAuthorizer(
++    private val database: AppDatabase,
++    private val monotonicClockMillis: () -> Long = { System.nanoTime() / 1_000_000L },
++    private val idleTimeoutMillis: Long = DEFAULT_IDLE_TIMEOUT_MILLIS,
++) : AuthorizationService {
++    private var activeUserId: Long? = null
++    private var lastActivityMonotonicMillis: Long? = null
++
++    suspend fun actor(): String = try {
++        actorIdentity().displayName
++    } catch (_: AuthenticationRequiredException) {
++        "SYSTEM"
++    }
+ 
+     override suspend fun actorIdentity(): AuthorizedActor {
+         val user = database.securityDao().currentUser() ?: throw AuthenticationRequiredException()
+         if (!user.isActive) throw AuthenticationRequiredException()
++        enforceIdleSession(user.id)
+         return AuthorizedActor(
+             id = user.id,
+             displayName = user.displayName.ifBlank { user.username },
+@@ -34,10 +44,10 @@ class SessionAuthorizer(private val database: AppDatabase) : AuthorizationServic
+         )
+     }
+ 
+-    override suspend fun can(permission: Permission): Boolean {
+-        val user = database.securityDao().currentUser() ?: return false
+-        if (!user.isActive) return false
+-        return UserRole.fromStoredValue(user.role).allows(permission)
++    override suspend fun can(permission: Permission): Boolean = try {
++        actorIdentity().role.allows(permission)
++    } catch (_: AuthenticationRequiredException) {
++        false
+     }
+ 
+     override suspend fun require(permission: Permission): AuthorizedActor {
+@@ -80,4 +90,25 @@ class SessionAuthorizer(private val database: AppDatabase) : AuthorizationServic
+     internal suspend fun currentUserId(): Long {
+         return actorIdentity().id
+     }
++
++    private suspend fun enforceIdleSession(userId: Long) {
++        val now = monotonicClockMillis()
++        if (activeUserId != userId) {
++            activeUserId = userId
++            lastActivityMonotonicMillis = now
++            return
++        }
++        val last = lastActivityMonotonicMillis
++        if (last != null && now - last > idleTimeoutMillis) {
++            activeUserId = null
++            lastActivityMonotonicMillis = null
++            database.securityDao().clearSession()
++            throw AuthenticationRequiredException()
++        }
++        lastActivityMonotonicMillis = now
++    }
++
++    private companion object {
++        const val DEFAULT_IDLE_TIMEOUT_MILLIS = 30L * 60L * 1_000L
++    }
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/domain/audit/AuditEvent.kt b/app/src/main/java/ir/restaurant/management/domain/audit/AuditEvent.kt
+index 45881bf..232f42a 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/audit/AuditEvent.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/audit/AuditEvent.kt
+@@ -40,6 +40,8 @@ data class AuditEventDraft(
+     val afterSnapshot: String?,
+     val correlationId: String,
+     val description: String,
++    val actorRoleSnapshot: String = "UNKNOWN",
++    val actorBranchIdSnapshot: Long? = null,
+ ) {
+     fun validated(): AuditEventDraft {
+         val normalizedReferenceType = referenceType?.trim()?.uppercase()?.take(64)
+@@ -61,6 +63,8 @@ data class AuditEventDraft(
+             afterSnapshot = afterSnapshot?.take(MAX_SNAPSHOT_LENGTH),
+             correlationId = CorrelationId.parse(correlationId).value,
+             description = description.sanitize(1_000),
++            actorRoleSnapshot = actorRoleSnapshot.sanitize(64).ifBlank { "UNKNOWN" }.uppercase(),
++            actorBranchIdSnapshot = actorBranchIdSnapshot?.also { require(it > 0) { "شناسه شعبه snapshot در Audit معتبر نیست." } },
+         )
+     }
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt b/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
+index 86c6b9c..b572ca2 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
+@@ -2,6 +2,10 @@ package ir.restaurant.management.domain.operations
+ 
+ import kotlinx.coroutines.flow.Flow
+ 
++enum class AlertDrillDownTarget {
++    INVENTORY_ITEM, INVENTORY, INVENTORY_COUNT, PURCHASE, PROCUREMENT_ORDER, RECEIVABLE, PERSONNEL, ASSET, NONE
++}
++
+ data class AppAlert(
+     val id: Long,
+     val sourceType: String,
+@@ -15,6 +19,10 @@ data class AppAlert(
+     val createdAtEpochMillis: Long,
+     val updatedAtEpochMillis: Long,
+     val status: String,
++    val branchId: Long = 0,
++    val locationId: Long = 0,
++    val snoozedUntilEpochMillis: Long? = null,
++    val drillDownTarget: AlertDrillDownTarget = AlertDrillDownTarget.NONE,
+ )
+ 
+ interface AlertRepository {
+@@ -24,5 +32,6 @@ interface AlertRepository {
+     suspend fun markActioned(id: Long)
+     suspend fun resolve(id: Long)
+     suspend fun dismiss(id: Long)
++    suspend fun snooze(id: Long, untilEpochMillis: Long)
+     suspend fun clearDismissed()
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/domain/operations/OperationsModels.kt b/app/src/main/java/ir/restaurant/management/domain/operations/OperationsModels.kt
+index e85571a..acb52d2 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/operations/OperationsModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/operations/OperationsModels.kt
+@@ -361,6 +361,8 @@ data class AuditLogRecord(
+     val beforeSnapshot: String? = null,
+     val afterSnapshot: String? = null,
+     val correlationId: String = "",
++    val actorRoleSnapshot: String = "UNKNOWN",
++    val actorBranchIdSnapshot: Long? = null,
+ )
+ 
+ data class AuditLogQuery(
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AlertScreens.kt b/app/src/main/java/ir/restaurant/management/ui/AlertScreens.kt
+index 7c0827c..9ba366e 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AlertScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AlertScreens.kt
+@@ -2,6 +2,8 @@
+ 
+ package ir.restaurant.management.ui
+ 
++import ir.restaurant.management.domain.operations.AlertDrillDownTarget
++
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.Row
+@@ -36,7 +38,8 @@ fun AlertCenterScreen(
+     onActioned: (Long) -> Unit,
+     onResolve: (Long) -> Unit,
+     onDismiss: (Long) -> Unit,
+-    onOpenSource: (String, Long) -> Unit,
++    onSnooze: (Long) -> Unit,
++    onOpenSource: (AlertDrillDownTarget, Long) -> Unit,
+     onClearDismissed: () -> Unit,
+     onBack: () -> Unit,
+ ) {
+@@ -146,8 +149,18 @@ fun AlertCenterScreen(
+                                 Text("سررسید: ${epochDayToPersian(due).display()}", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                             }
+                             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+-                                Button(onClick = { onRead(alert.id); onOpenSource(alert.sourceType, alert.sourceId) }, modifier = Modifier.fillMaxWidth()) {
+-                                    Text(if (alert.sourceType == "LOW_STOCK") "بازکردن کالا و گردش" else "بازکردن فاکتور و تسویه")
++                                Button(onClick = { onRead(alert.id); onOpenSource(alert.drillDownTarget, alert.sourceId) }, modifier = Modifier.fillMaxWidth()) {
++                                    Text(when (alert.drillDownTarget) {
++                                        AlertDrillDownTarget.INVENTORY_ITEM -> "بازکردن کالا و گردش"
++                                        AlertDrillDownTarget.INVENTORY -> "بازکردن موجودی"
++                                        AlertDrillDownTarget.INVENTORY_COUNT -> "بازکردن انبارگردانی"
++                                        AlertDrillDownTarget.PROCUREMENT_ORDER -> "بازکردن سفارش خرید"
++                                        AlertDrillDownTarget.PURCHASE -> "بازکردن خرید و تسویه"
++                                        AlertDrillDownTarget.RECEIVABLE -> "بازکردن مطالبات"
++                                        AlertDrillDownTarget.PERSONNEL -> "بازکردن پرسنل"
++                                        AlertDrillDownTarget.ASSET -> "بازکردن دارایی"
++                                        AlertDrillDownTarget.NONE -> "مشاهده جزئیات"
++                                    })
+                                 }
+                                 if (!alert.isRead) {
+                                     Button(onClick = { onRead(alert.id) }, modifier = Modifier.fillMaxWidth()) { Text("علامت‌گذاری به‌عنوان خوانده‌شده") }
+@@ -158,6 +171,7 @@ fun AlertCenterScreen(
+                                 if (alert.status != "RESOLVED") {
+                                     OutlinedButton(onClick = { onResolve(alert.id) }, modifier = Modifier.fillMaxWidth()) { Text("علامت‌گذاری حل‌شده") }
+                                 }
++                                OutlinedButton(onClick = { onSnooze(alert.id) }, modifier = Modifier.fillMaxWidth()) { Text("تعویق ۲۴ ساعته") }
+                                 TextButton(onClick = { onDismiss(alert.id) }, modifier = Modifier.fillMaxWidth()) { Text("کنار گذاشتن هشدار") }
+                             }
+                         }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+index 5e5f5b5..4bc28e0 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+@@ -40,6 +40,10 @@ class AlertViewModel(private val repository: AlertRepository) : ViewModel() {
+     fun resolve(id: Long) = viewModelScope.launch { repository.resolve(id) }
+     fun clearMessage() { message.value = null }
+     fun dismiss(id: Long) = viewModelScope.launch { repository.dismiss(id) }
++    fun snoozeOneDay(id: Long) = viewModelScope.launch {
++        repository.snooze(id, System.currentTimeMillis() + 24L * 60L * 60L * 1_000L)
++        message.value = "هشدار برای ۲۴ ساعت به تعویق افتاد"
++    }
+     fun clearDismissed() = viewModelScope.launch {
+         repository.clearDismissed()
+         message.value = "هشدارهای کنارگذاشته‌شده پاک شدند"
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
+index 823bc73..3001ec8 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
+@@ -1,5 +1,6 @@
+ package ir.restaurant.management.ui
+ 
++import ir.restaurant.management.domain.operations.AlertDrillDownTarget
+ import androidx.compose.runtime.Composable
+ import ir.restaurant.management.data.repository.DashboardSnapshot
+ import ir.restaurant.management.domain.operations.AppUserRecord
+@@ -103,19 +104,18 @@ internal fun ManagementRoutes(
+             onActioned = alerts::markActioned,
+             onResolve = alerts::resolve,
+             onDismiss = alerts::dismiss,
+-            onOpenSource = { sourceType, sourceId ->
+-                when (sourceType) {
+-                    "LOW_STOCK", "LOT_EXPIRING", "LOT_EXPIRED", "INVENTORY_DISCREPANCY" -> {
+-                        inventory.focusItem(sourceId)
+-                        navigate(AppScreen.INVENTORY)
+-                    }
+-                    "PURCHASE_PAYABLE", "PURCHASE_DELIVERY_OVERDUE" -> {
+-                        operations.selectPurchase(sourceId)
+-                        navigate(AppScreen.PURCHASES)
+-                    }
+-                    "CUSTOMER_RECEIVABLE" -> navigate(AppScreen.SALES)
+-                    "CONTRACT_EXPIRY", "UNPAID_PAYROLL", "ATTENDANCE_ANOMALY" -> navigate(AppScreen.PERSONNEL)
+-                    "ASSET_MAINTENANCE" -> navigate(AppScreen.ASSETS)
++            onSnooze = alerts::snoozeOneDay,
++            onOpenSource = { target, sourceId ->
++                when (target) {
++                    AlertDrillDownTarget.INVENTORY_ITEM -> { inventory.focusItem(sourceId); navigate(AppScreen.INVENTORY) }
++                    AlertDrillDownTarget.INVENTORY -> navigate(AppScreen.INVENTORY)
++                    AlertDrillDownTarget.INVENTORY_COUNT -> navigate(AppScreen.INVENTORY_COUNT)
++                    AlertDrillDownTarget.PURCHASE -> { operations.selectPurchase(sourceId); navigate(AppScreen.PURCHASES) }
++                    AlertDrillDownTarget.PROCUREMENT_ORDER -> navigate(AppScreen.PROCUREMENT)
++                    AlertDrillDownTarget.RECEIVABLE -> navigate(AppScreen.SALES)
++                    AlertDrillDownTarget.PERSONNEL -> navigate(AppScreen.PERSONNEL)
++                    AlertDrillDownTarget.ASSET -> navigate(AppScreen.ASSETS)
++                    AlertDrillDownTarget.NONE -> Unit
+                 }
+             },
+             onClearDismissed = alerts::clearDismissed,

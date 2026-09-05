@@ -1,0 +1,29 @@
+
+# Local Android SDK and signing material
+.android-sdk/
+.downloads/
+*.jks
+*.keystore
+local.properties
+
+# Python audit tooling
+__pycache__/
+*.py[cod]
+
+# Gradle / Android generated state
+.gradle/
+**/build/
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Release outputs and local diagnostics
+*.apk
+*.aab
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

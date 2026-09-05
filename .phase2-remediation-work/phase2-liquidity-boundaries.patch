@@ -1,0 +1,897 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt
+index 0749992..a0a5fc2 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/EnterprisePermissionIntegrationTest.kt
+@@ -25,6 +25,7 @@ import ir.restaurant.management.domain.recipe.RecipeIngredientInput
+ import ir.restaurant.management.domain.security.Permission
+ import ir.restaurant.management.domain.treasury.TreasuryAccountId
+ import ir.restaurant.management.domain.treasury.TreasuryChannel
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
+ import ir.restaurant.management.domain.treasury.TreasuryCommand
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+@@ -80,7 +81,7 @@ class EnterprisePermissionIntegrationTest {
+                     commandId = commandId,
+                     businessEpochDay = today,
+                     correlationId = CorrelationId.forCommand("permission_test", commandId),
+-                    sourceType = "OTHER_RECEIPT",
++                    businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
+                     sourceId = 99,
+                     reason = "آزمون مجوز خزانه",
+                     accountId = TreasuryAccountId.parse("cash_main"),
+@@ -90,7 +91,7 @@ class EnterprisePermissionIntegrationTest {
+             )
+         }
+         assertEquals(0L, scalar("SELECT COUNT(*) FROM treasury_transactions"))
+-        assertEquals(0L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='OTHER_RECEIPT'"))
++        assertEquals(0L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='OTHER_INCOME'"))
+     }
+ 
+ @Test
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt
+index f59a394..5e0b05e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalAssetRepository.kt
+@@ -7,6 +7,8 @@ import androidx.room.withTransaction
+ import ir.restaurant.management.core.currentLocalEpochDay
+ import ir.restaurant.management.core.SignedLongMath
+ import ir.restaurant.management.core.MoneyRial
++import ir.restaurant.management.core.CorrelationId
++import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.data.db.AppDatabase
+ import ir.restaurant.management.data.db.AssetDepreciationEntity
+ import ir.restaurant.management.data.db.AssetLifecycleEventEntity
+@@ -32,6 +34,12 @@ import ir.restaurant.management.domain.accounting.AccountingScope
+ import ir.restaurant.management.domain.accounting.SemanticJournalDraft
+ import ir.restaurant.management.domain.accounting.SemanticJournalLine
+ import ir.restaurant.management.domain.operations.SyncChangeType
++import ir.restaurant.management.domain.treasury.TreasuryAccountId
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
++import ir.restaurant.management.domain.treasury.TreasuryChannel
++import ir.restaurant.management.domain.treasury.TreasuryCommand
++import ir.restaurant.management.domain.treasury.TreasuryDirection
++import ir.restaurant.management.domain.treasury.TreasuryService
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.map
+ 
+@@ -40,6 +48,10 @@ class LocalAssetRepository(
+     private val clock: () -> Long = System::currentTimeMillis,
+     private val syncRecorder: SyncRecorder? = null,
+     private val authorizer: SessionAuthorizer,
++    private val treasury: TreasuryService = ir.restaurant.management.data.treasury.LocalTreasuryServiceV2(
++        database = database, accounting = LocalAccountingPostingEngine(database, clock = clock), authorizer = authorizer,
++        accountCatalog = ir.restaurant.management.data.treasury.DefaultTreasuryAccountCatalog(), clock = clock,
++    ),
+ ) : AssetRepository {
+     private val dao get() = database.assetDao()
+     private val accounting get() = database.accountingDao()
+@@ -338,18 +350,39 @@ class LocalAssetRepository(
+             val asset = dao.assetById(draft.assetId) ?: error("دارایی پیدا نشد.")
+             require(asset.status == "ACTIVE") { "فقط دارایی فعال قابل سرویس است." }
+             val now = clock()
+-            val journalId = if (draft.costRial > 0) accountingPosting.post(
+-                draft = SemanticJournalDraft(
+-                    entryNo = "نگ-${asset.id}-$now", entryEpochDay = draft.serviceEpochDay,
+-                    description = "تعمیر و نگهداری ${asset.name}", sourceType = "ASSET_MAINTENANCE", sourceId = asset.id,
+-                    accountingScope = asset.accountingScope(), branchId = asset.branchId,
+-                    lines = listOf(
+-                        SemanticJournalLine(SemanticAccountRole.MAINTENANCE_EXPENSE, debit = MoneyRial.of(draft.costRial), memo = type),
+-                        SemanticJournalLine(sourceRole(draft.paymentSource), credit = MoneyRial.of(draft.costRial), memo = draft.contractor.trim()),
+-                    ),
+-                ),
+-                context = AccountingPostingContext.local("ASSET_MAINTENANCE", asset.id, now.toString(), actor.id, "asset_maintenance:${asset.id}:$now"),
+-            ) else null
++            val journalId = if (draft.costRial > 0) {
++                when (draft.paymentSource) {
++                    AssetAcquisitionSource.CASH, AssetAcquisitionSource.BANK -> {
++                        val (accountId, channel) = draft.paymentSource.treasuryAccountAndChannel()
++                        val commandId = GlobalId.new()
++                        requireNotNull(
++                            treasury.execute(
++                                TreasuryCommand.Payment(
++                                    commandId = commandId, businessEpochDay = draft.serviceEpochDay,
++                                    correlationId = CorrelationId.forCommand("asset_maintenance", commandId),
++                                    businessIntent = TreasuryBusinessIntent.ASSET_MAINTENANCE, sourceId = asset.id,
++                                    reason = draft.note.trim().ifBlank { "تعمیر و نگهداری ${asset.name}" },
++                                    accountingScope = asset.accountingScope(), branchId = asset.branchId,
++                                    accountId = accountId, channel = channel, amount = MoneyRial.of(draft.costRial),
++                                ),
++                            ).journalEntryId,
++                        ) { "سند خزانه نگهداری دارایی ایجاد نشد." }
++                    }
++                    AssetAcquisitionSource.PAYABLE -> accountingPosting.post(
++                        draft = SemanticJournalDraft(
++                            entryNo = "نگ-${asset.id}-$now", entryEpochDay = draft.serviceEpochDay,
++                            description = "تعمیر و نگهداری ${asset.name}", sourceType = "ASSET_MAINTENANCE", sourceId = asset.id,
++                            accountingScope = asset.accountingScope(), branchId = asset.branchId,
++                            lines = listOf(
++                                SemanticJournalLine(SemanticAccountRole.MAINTENANCE_EXPENSE, debit = MoneyRial.of(draft.costRial), memo = type),
++                                SemanticJournalLine(SemanticAccountRole.SUPPLIER_PAYABLE, credit = MoneyRial.of(draft.costRial), memo = draft.contractor.trim()),
++                            ),
++                        ),
++                        context = AccountingPostingContext.local("ASSET_MAINTENANCE", asset.id, now.toString(), actor.id, "asset_maintenance:${asset.id}:$now"),
++                    )
++                    AssetAcquisitionSource.OWNER_CAPITAL -> error("منبع پرداخت نگهداری معتبر نیست.")
++                }
++            } else null
+             val maintenanceId = database.assetLifecycleDao().insertMaintenance(AssetMaintenanceEntity(
+                 assetId = asset.id, serviceType = type, serviceEpochDay = draft.serviceEpochDay, costRial = draft.costRial,
+                 contractor = draft.contractor.trim(), note = draft.note.trim(), nextServiceEpochDay = draft.nextServiceEpochDay,
+@@ -407,7 +440,7 @@ class LocalAssetRepository(
+             val gain = (draft.salePriceRial - bookValue).coerceAtLeast(0)
+             val loss = (bookValue - draft.salePriceRial).coerceAtLeast(0)
+             val lines = buildList {
+-                if (draft.salePriceRial > 0) add(SemanticJournalLine(sourceRole(draft.receiptSource), debit = MoneyRial.of(draft.salePriceRial), memo = draft.buyer.trim()))
++                if (draft.salePriceRial > 0) add(SemanticJournalLine(SemanticAccountRole.TREASURY_CLEARING, debit = MoneyRial.of(draft.salePriceRial), memo = draft.buyer.trim()))
+                 if (asset.accumulatedDepreciationRial > 0) add(SemanticJournalLine(SemanticAccountRole.ACCUMULATED_DEPRECIATION, debit = MoneyRial.of(asset.accumulatedDepreciationRial)))
+                 if (asset.impairmentRial > 0) add(SemanticJournalLine(SemanticAccountRole.ACCUMULATED_IMPAIRMENT, debit = MoneyRial.of(asset.impairmentRial)))
+                 if (loss > 0) add(SemanticJournalLine(SemanticAccountRole.ASSET_DISPOSAL_LOSS, debit = MoneyRial.of(loss)))
+@@ -422,6 +455,20 @@ class LocalAssetRepository(
+                 ),
+                 context = AccountingPostingContext.local("ASSET_SALE", asset.id, now.toString(), actor.id, "asset_sale:${asset.id}:$now"),
+             )
++            if (draft.salePriceRial > 0) {
++                val (accountId, channel) = draft.receiptSource.treasuryAccountAndChannel()
++                val commandId = GlobalId.new()
++                val treasuryResult = treasury.execute(
++                    TreasuryCommand.Receipt(
++                        commandId = commandId, businessEpochDay = draft.businessEpochDay,
++                        correlationId = CorrelationId.forCommand("asset_disposal_receipt", commandId),
++                        businessIntent = TreasuryBusinessIntent.ASSET_DISPOSAL_RECEIPT, sourceId = asset.id,
++                        reason = reason, accountingScope = asset.accountingScope(), branchId = asset.branchId,
++                        accountId = accountId, channel = channel, amount = MoneyRial.of(draft.salePriceRial),
++                    ),
++                )
++                require(treasuryResult.journalEntryId != null) { "سند خزانه فروش دارایی ایجاد نشد." }
++            }
+             check(dao.markSold(asset.id, draft.salePriceRial, draft.businessEpochDay, now) == 1) { "ثبت فروش دارایی انجام نشد." }
+             val eventId = database.assetLifecycleDao().insertEvent(AssetLifecycleEventEntity(assetId = asset.id, eventType = AssetLifecycleType.SALE.name, businessEpochDay = draft.businessEpochDay, amountRial = draft.salePriceRial, counterparty = draft.buyer.trim(), note = reason, journalEntryId = journalId, actorId = actor.id, createdAtEpochMillis = now))
+             audit.appendAuthorized(authorizer, "SALE", "ASSET", asset.id, "فروش ${asset.assetCode}", now, draft.businessEpochDay, reason, beforeSnapshot = "historicalCost=${asset.purchaseCostRial};accDep=${asset.accumulatedDepreciationRial};impairment=${asset.impairmentRial};book=$bookValue", afterSnapshot = "sale=${draft.salePriceRial};gain=$gain;loss=$loss;status=SOLD", correlationId = "asset:${asset.id}:sale:$eventId")
+@@ -437,13 +484,6 @@ class LocalAssetRepository(
+         rows.map { AssetMaintenanceRecord(it.id, it.assetId, it.serviceType, it.serviceEpochDay, it.costRial, it.contractor, it.nextServiceEpochDay) }
+     }
+ 
+-    private fun sourceRole(source: AssetAcquisitionSource): SemanticAccountRole = when (source) {
+-        AssetAcquisitionSource.CASH -> SemanticAccountRole.CASH
+-        AssetAcquisitionSource.BANK -> SemanticAccountRole.BANK
+-        AssetAcquisitionSource.PAYABLE -> SemanticAccountRole.SUPPLIER_PAYABLE
+-        AssetAcquisitionSource.OWNER_CAPITAL -> SemanticAccountRole.OWNER_CAPITAL
+-    }
+-
+     private fun AssetDraft.syncPayload(): Map<String, String> = mapOf(
+         "acquisitionSource" to acquisitionSource.name,
+         "assetCode" to assetCode,
+@@ -467,36 +507,48 @@ class LocalAssetRepository(
+         actorId: Long,
+         description: String = "تحصیل دارایی ثابت: ${asset.name}",
+     ): Long {
++        if (source == AssetAcquisitionSource.CASH || source == AssetAcquisitionSource.BANK) {
++            val (accountId, channel) = source.treasuryAccountAndChannel()
++            val commandId = GlobalId.new()
++            return requireNotNull(
++                treasury.execute(
++                    TreasuryCommand.Payment(
++                        commandId = commandId, businessEpochDay = postingEpochDay,
++                        correlationId = CorrelationId.forCommand("asset_acquisition", commandId),
++                        businessIntent = TreasuryBusinessIntent.ASSET_ACQUISITION, sourceId = asset.id,
++                        reason = description, accountingScope = asset.accountingScope(), branchId = asset.branchId,
++                        accountId = accountId, channel = channel, amount = MoneyRial.of(asset.purchaseCostRial),
++                    ),
++                ).journalEntryId,
++            ) { "سند خزانه تحصیل دارایی ایجاد نشد." }
++        }
+         val sourceRole = when (source) {
+-            AssetAcquisitionSource.CASH -> SemanticAccountRole.CASH
+-            AssetAcquisitionSource.BANK -> SemanticAccountRole.BANK
+             AssetAcquisitionSource.PAYABLE -> SemanticAccountRole.SUPPLIER_PAYABLE
+             AssetAcquisitionSource.OWNER_CAPITAL -> SemanticAccountRole.OWNER_CAPITAL
++            AssetAcquisitionSource.CASH, AssetAcquisitionSource.BANK -> error("asset_liquidity_must_use_treasury")
+         }
+         return accountingPosting.post(
+             draft = SemanticJournalDraft(
+-                entryNo = "تد-${asset.id}",
+-                entryEpochDay = postingEpochDay,
+-                description = description,
+-                sourceType = "ASSET_ACQUISITION",
+-                sourceId = asset.id,
+-                accountingScope = asset.accountingScope(),
+-                branchId = asset.branchId,
++                entryNo = "تد-${asset.id}", entryEpochDay = postingEpochDay, description = description,
++                sourceType = "ASSET_ACQUISITION", sourceId = asset.id, accountingScope = asset.accountingScope(), branchId = asset.branchId,
+                 lines = listOf(
+                     SemanticJournalLine(SemanticAccountRole.FIXED_ASSET, debit = MoneyRial.of(asset.purchaseCostRial), memo = asset.assetCode),
+                     SemanticJournalLine(sourceRole, credit = MoneyRial.of(asset.purchaseCostRial), memo = source.title),
+                 ),
+             ),
+             context = AccountingPostingContext.local(
+-                sourceType = "ASSET_ACQUISITION",
+-                sourceId = asset.id,
+-                suffix = "post",
+-                actorId = actorId,
++                sourceType = "ASSET_ACQUISITION", sourceId = asset.id, suffix = "post", actorId = actorId,
+                 correlationId = "asset_acquisition:${asset.id}",
+             ),
+         )
+     }
+ 
++    private fun AssetAcquisitionSource.treasuryAccountAndChannel(): Pair<TreasuryAccountId, TreasuryChannel> = when (this) {
++        AssetAcquisitionSource.CASH -> TreasuryAccountId.parse("cash_main") to TreasuryChannel.CASH
++        AssetAcquisitionSource.BANK -> TreasuryAccountId.parse("bank_main") to TreasuryChannel.BANK
++        AssetAcquisitionSource.PAYABLE, AssetAcquisitionSource.OWNER_CAPITAL -> error("asset_source_is_not_liquidity")
++    }
++
+     private fun FixedAssetEntity.accountingScope(): AccountingScope =
+         if (branchId != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt
+index 02c13bb..9456d93 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt
+@@ -102,6 +102,10 @@ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.DocumentNumberType
+ import ir.restaurant.management.domain.common.asViolation
+ import ir.restaurant.management.domain.treasury.TreasuryChannel
++import ir.restaurant.management.domain.treasury.TreasuryAccountId
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
++import ir.restaurant.management.domain.treasury.TreasuryCommand
++import ir.restaurant.management.domain.treasury.TreasuryService
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.combine
+ import kotlinx.coroutines.flow.map
+@@ -113,6 +117,10 @@ class LocalPersonnelRepository(
+     private val clock: () -> Long = System::currentTimeMillis,
+     private val syncRecorder: SyncRecorder? = null,
+     private val authorizer: SessionAuthorizer,
++    private val treasury: TreasuryService = ir.restaurant.management.data.treasury.LocalTreasuryServiceV2(
++        database = database, accounting = LocalAccountingPostingEngine(database, clock = clock), authorizer = authorizer,
++        accountCatalog = ir.restaurant.management.data.treasury.DefaultTreasuryAccountCatalog(), clock = clock,
++    ),
+ ) : PersonnelRepository {
+     private val personnel get() = database.personnelDao()
+     private val hr get() = database.hrPayrollDao()
+@@ -805,28 +813,22 @@ class LocalPersonnelRepository(
+         return database.withTransaction {
+             val employee = personnel.employeeById(valid.employeeId) ?: error("پرسنل پیدا نشد.")
+             require(employee.status == "ACTIVE") { "برای پرسنل غیرفعال نمی‌توان مساعده ثبت کرد." }
+-            val paymentRole = valid.paymentMethod.personnelLedgerRole()
+             val branchId = employee.branchId?.also { branchResolver.requireActive(it) }
+             val now = clock()
+-            val entryId = accountingPosting.post(
+-                draft = SemanticJournalDraft(
+-                    entryNo = "م-${employee.id}-$now", entryEpochDay = valid.advanceEpochDay,
+-                    description = "مساعده پرسنل: ${employee.name}", sourceType = "EMPLOYEE_ADVANCE", sourceId = employee.id,
+-                    accountingScope = if (branchId != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION,
+-                    branchId = branchId,
+-                    lines = listOf(
+-                        SemanticJournalLine(SemanticAccountRole.EMPLOYEE_ADVANCE_RECEIVABLE, debit = MoneyRial.of(valid.amountRial), memo = "مساعده ${employee.name}"),
+-                        SemanticJournalLine(paymentRole, credit = MoneyRial.of(valid.amountRial), memo = "پرداخت مساعده"),
++            val commandId = GlobalId.new()
++            val entryId = requireNotNull(
++                treasury.execute(
++                    TreasuryCommand.Payment(
++                        commandId = commandId, businessEpochDay = valid.advanceEpochDay,
++                        correlationId = CorrelationId.forCommand("employee_advance", commandId),
++                        businessIntent = TreasuryBusinessIntent.EMPLOYEE_ADVANCE_DISBURSEMENT, sourceId = employee.id,
++                        reason = valid.notes.ifBlank { "مساعده پرسنل: ${employee.name}" },
++                        accountingScope = if (branchId != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION, branchId = branchId,
++                        accountId = valid.paymentMethod.toPersonnelTreasuryAccountId(), channel = valid.paymentMethod,
++                        amount = MoneyRial.of(valid.amountRial),
+                     ),
+-                ),
+-                context = AccountingPostingContext.local(
+-                    sourceType = "EMPLOYEE_ADVANCE",
+-                    sourceId = employee.id,
+-                    suffix = "post:$now",
+-                    actorId = actor.id,
+-                    correlationId = "employee_advance:${employee.id}:$now",
+-                ),
+-            )
++                ).journalEntryId,
++            ) { "سند خزانه مساعده ایجاد نشد." }
+             personnel.insertAdvance(
+                 EmployeeAdvanceEntity(
+                     employeeId = employee.id,
+@@ -860,28 +862,22 @@ class LocalPersonnelRepository(
+             val employee = personnel.employeeById(current.employeeId) ?: error("پرسنل پیدا نشد.")
+             val newSettled = SignedLongMath.add(current.settledAmountRial, amountRial)
+             require(newSettled <= current.amountRial) { "مبلغ تسویه بیشتر از مانده مساعده است." }
+-            val receiptRole = paymentMethod.personnelLedgerRole()
+             val branchId = employee.branchId?.also { branchResolver.requireActive(it) }
+             val now = clock()
+-            val entryId = accountingPosting.post(
+-                draft = SemanticJournalDraft(
+-                    entryNo = "م‌ت-${current.id}-$now", entryEpochDay = settlementEpochDay,
+-                    description = "بازپرداخت مساعده: ${employee.name}", sourceType = "EMPLOYEE_ADVANCE_SETTLEMENT", sourceId = current.id,
+-                    accountingScope = if (branchId != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION,
+-                    branchId = branchId,
+-                    lines = listOf(
+-                        SemanticJournalLine(receiptRole, debit = MoneyRial.of(amountRial), memo = "دریافت بازپرداخت مساعده"),
+-                        SemanticJournalLine(SemanticAccountRole.EMPLOYEE_ADVANCE_RECEIVABLE, credit = MoneyRial.of(amountRial), memo = "کاهش مطالبات مساعده"),
++            val commandId = GlobalId.new()
++            requireNotNull(
++                treasury.execute(
++                    TreasuryCommand.Receipt(
++                        commandId = commandId, businessEpochDay = settlementEpochDay,
++                        correlationId = CorrelationId.forCommand("employee_advance_settlement", commandId),
++                        businessIntent = TreasuryBusinessIntent.EMPLOYEE_ADVANCE_REPAYMENT, sourceId = current.id,
++                        reason = "بازپرداخت مساعده: ${employee.name}",
++                        accountingScope = if (branchId != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION, branchId = branchId,
++                        accountId = paymentMethod.toPersonnelTreasuryAccountId(), channel = paymentMethod,
++                        amount = MoneyRial.of(amountRial),
+                     ),
+-                ),
+-                context = AccountingPostingContext.local(
+-                    sourceType = "EMPLOYEE_ADVANCE_SETTLEMENT",
+-                    sourceId = current.id,
+-                    suffix = "settle:$now",
+-                    actorId = actor.id,
+-                    correlationId = "employee_advance_settlement:${current.id}:$now",
+-                ),
+-            )
++                ).journalEntryId,
++            ) { "سند خزانه بازپرداخت مساعده ایجاد نشد." }
+             check(
+                 personnel.updateAdvance(
+                     current.copy(
+@@ -1077,12 +1073,11 @@ private fun AttendanceEntity.toRecord() = AttendanceRecord(
+     notes = notes,
+ )
+ 
+-private fun TreasuryChannel.personnelLedgerRole(): SemanticAccountRole = when (this) {
+-    TreasuryChannel.CASH -> SemanticAccountRole.CASH
+-    TreasuryChannel.BANK -> SemanticAccountRole.BANK
+-    TreasuryChannel.CARD,
+-    TreasuryChannel.TRANSFER,
+-    -> SemanticAccountRole.BANK
++private fun TreasuryChannel.toPersonnelTreasuryAccountId(): TreasuryAccountId = when (this) {
++    TreasuryChannel.CASH -> TreasuryAccountId.parse("cash_main")
++    TreasuryChannel.BANK -> TreasuryAccountId.parse("bank_main")
++    TreasuryChannel.CARD -> TreasuryAccountId.parse("card_terminal")
++    TreasuryChannel.TRANSFER -> TreasuryAccountId.parse("bank_main")
+ }
+ 
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalProcurementRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalProcurementRepository.kt
+index a78084c..0ed5ca3 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalProcurementRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalProcurementRepository.kt
+@@ -29,6 +29,7 @@ import ir.restaurant.management.data.db.SupplierItemOfferRow
+ import ir.restaurant.management.data.security.SessionAuthorizer
+ import ir.restaurant.management.domain.common.DocumentNumberType
+ import ir.restaurant.management.domain.accounting.AccountingPostingService
++import ir.restaurant.management.domain.treasury.TreasuryService
+ import ir.restaurant.management.domain.inventory.InventoryReplenishmentRisk
+ import ir.restaurant.management.domain.inventory.InventoryReplenishmentService
+ import ir.restaurant.management.domain.purchase.GoodsReceiptDraft
+@@ -116,6 +117,10 @@ class LocalProcurementRepository(
+     private val todayEpochDay: () -> Long = ::currentLocalEpochDay,
+     private val approvalPolicy: PurchaseApprovalPolicy = PurchaseApprovalPolicy(),
+     private val accountingPosting: AccountingPostingService = LocalAccountingPostingEngine(database, clock = clock),
++    private val treasury: TreasuryService = ir.restaurant.management.data.treasury.LocalTreasuryServiceV2(
++        database = database, accounting = accountingPosting, authorizer = authorizer,
++        accountCatalog = ir.restaurant.management.data.treasury.DefaultTreasuryAccountCatalog(), clock = clock,
++    ),
+     private val inventoryReplenishment: InventoryReplenishmentService = LocalInventoryReplenishmentService(
+         database,
+         authorizer,
+@@ -133,6 +138,7 @@ class LocalProcurementRepository(
+         database = database,
+         authorizer = authorizer,
+         accountingPosting = accountingPosting,
++        treasury = treasury,
+         clock = clock,
+         syncRecorder = syncRecorder,
+     )
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
+index 1f5e04e..d96ebfa 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
+@@ -5,6 +5,8 @@ import ir.restaurant.management.domain.common.DocumentNumberType
+ 
+ import androidx.room.withTransaction
+ import ir.restaurant.management.core.MoneyRial
++import ir.restaurant.management.core.CorrelationId
++import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.core.QuantityMicros
+ import ir.restaurant.management.core.FixedPointRatio
+ import ir.restaurant.management.data.db.AppDatabase
+@@ -32,6 +34,12 @@ import ir.restaurant.management.domain.purchase.PurchaseSettlementDraft
+ import ir.restaurant.management.domain.purchase.PurchaseSettlementReversalDraft
+ import ir.restaurant.management.domain.purchase.PurchaseSettlementRecord
+ import ir.restaurant.management.domain.purchase.SettlementPaymentMethod
++import ir.restaurant.management.domain.treasury.TreasuryAccountId
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
++import ir.restaurant.management.domain.treasury.TreasuryCommand
++import ir.restaurant.management.domain.treasury.TreasuryLedgerReader
++import ir.restaurant.management.domain.treasury.TreasuryReversalCommand
++import ir.restaurant.management.domain.treasury.TreasuryService
+ import ir.restaurant.management.domain.operations.UnitConversionFactor
+ import ir.restaurant.management.domain.inventory.InventoryCommandContext
+ import ir.restaurant.management.domain.inventory.InventoryMovementType
+@@ -45,6 +53,15 @@ class LocalPurchaseRepository(
+     private val clock: () -> Long = System::currentTimeMillis,
+     private val syncRecorder: SyncRecorder? = null,
+     private val authorizer: SessionAuthorizer,
++    private val treasury: TreasuryService = ir.restaurant.management.data.treasury.LocalTreasuryServiceV2(
++        database = database,
++        accounting = LocalAccountingPostingEngine(database, clock = clock),
++        authorizer = authorizer,
++        accountCatalog = ir.restaurant.management.data.treasury.DefaultTreasuryAccountCatalog(),
++        clock = clock,
++    ),
++    private val treasuryReader: TreasuryLedgerReader = treasury as? TreasuryLedgerReader
++        ?: error("purchase_treasury_reader_required"),
+ ) : PurchaseRepository {
+     private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock, authorizer = authorizer)
+     private val accountingPosting = LocalAccountingPostingEngine(database, clock = clock)
+@@ -139,7 +156,7 @@ class LocalPurchaseRepository(
+                         branchId = branch?.id,
+                         lines = listOf(
+                             SemanticJournalLine(SemanticAccountRole.INVENTORY_ASSET, debit = total),
+-                            SemanticJournalLine(normalizedDraft.paymentMethod.settlementRole, credit = total),
++                            SemanticJournalLine(SemanticAccountRole.SUPPLIER_PAYABLE, credit = total),
+                         ),
+                     ),
+                     context = AccountingPostingContext.local(
+@@ -153,6 +170,29 @@ class LocalPurchaseRepository(
+             } else {
+                 null
+             }
++            if (paid && total > MoneyRial.ZERO) {
++                val accountId = TreasuryAccountId.parse(requireNotNull(normalizedDraft.paymentMethod.treasuryAccountId))
++                val channel = requireNotNull(normalizedDraft.paymentMethod.treasuryChannel)
++                val commandId = GlobalId.new()
++                val treasuryResult = treasury.execute(
++                    TreasuryCommand.Settlement(
++                        commandId = commandId,
++                        businessEpochDay = normalizedDraft.purchaseEpochDay,
++                        correlationId = CorrelationId.forCommand("purchase_immediate_settlement", commandId),
++                        businessIntent = TreasuryBusinessIntent.PURCHASE_PAYABLE_SETTLEMENT,
++                        sourceId = purchaseId,
++                        reason = "پرداخت هم‌زمان فاکتور ${normalizedDraft.invoiceNo}",
++                        accountingScope = if (branch != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION,
++                        branchId = branch?.id,
++                        accountId = accountId,
++                        direction = ir.restaurant.management.domain.treasury.TreasuryDirection.PAYMENT,
++                        channel = channel,
++                        amount = total,
++                    ),
++                )
++                require(treasuryResult.journalEntryId != null) { "سند خزانه پرداخت خرید ایجاد نشد." }
++            }
++
+             syncRecorder?.record("PURCHASE", purchaseId, "CREATE", now)
+             audit("CREATE", purchaseId, "ثبت فاکتور ${normalizedDraft.invoiceNo} به مبلغ ${total.value} ریال؛ سند=${journalId ?: 0}", now)
+             PostedPurchase(purchaseId, journalId, total, normalizedDraft.invoiceNo)
+@@ -205,72 +245,51 @@ class LocalPurchaseRepository(
+         }
+ 
+     override suspend fun settle(draft: PurchaseSettlementDraft): PostedPurchaseSettlement {
+-        val actor = authorizer.require(Permission.PAYMENT_APPROVE)
++        authorizer.require(Permission.PAYMENT_APPROVE)
+         val valid = draft.validated()
+         return database.withTransaction {
+             val purchase = database.purchaseDao().byId(valid.purchaseId)
+                 ?: error("فاکتور خرید پیدا نشد.")
+-            val journalDraft = BalancedJournalDraft(
+-                entryEpochDay = valid.settlementEpochDay,
+-                description = "تسویه فاکتور ${purchase.invoiceNo} با ${valid.paymentMethod.title}",
+-                sourceType = "PURCHASE_SETTLEMENT",
+-                sourceId = purchase.id,
+-                accountingScope = if (purchase.branchId != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION,
+-                branchId = purchase.branchId,
+-                lines = listOf(
+-                    JournalLineDraft(
+-                        accountCode = ir.restaurant.management.domain.accounting.SystemSemanticAccountResolver.codeFor(SemanticAccountRole.SUPPLIER_PAYABLE),
+-                        debit = valid.amount,
+-                        memo = valid.notes,
+-                    ),
+-                    JournalLineDraft(
+-                        accountCode = ir.restaurant.management.domain.accounting.SystemSemanticAccountResolver.codeFor(valid.paymentMethod.settlementRole),
+-                        credit = valid.amount,
+-                        memo = valid.referenceNo,
+-                    ),
+-                ),
+-            )
+-            val postingContext = AccountingPostingContext.local(
+-                sourceType = "PURCHASE_SETTLEMENT",
+-                sourceId = purchase.id,
+-                suffix = "command:${valid.commandId}",
+-                actorId = actor.id,
+-                correlationId = "purchase_settlement:${valid.commandId}",
+-            )
+-            if (database.accountingDao().entryByIdempotencyKey(postingContext.idempotencyKey) != null) {
+-                val replay = accountingPosting.postBalanced(
+-                    draft = journalDraft,
+-                    context = postingContext,
+-                    entryNoFactory = { id -> "ت-$id" },
+-                )
+-                val currentRemaining = MoneyRial.of(purchase.totalRial) - MoneyRial.of(purchase.paidRial)
++            treasuryReader.reversalContext(valid.commandId)?.let { replay ->
++                require(replay.sourceType == TreasuryBusinessIntent.PURCHASE_PAYABLE_SETTLEMENT.storedValue && replay.sourceId == purchase.id) {
++                    "purchase_settlement_idempotency_conflict"
++                }
++                require(replay.amountRial == valid.amount.value && replay.accountId.value == valid.paymentMethod.treasuryAccountId) {
++                    "purchase_settlement_idempotency_conflict"
++                }
++                val journalId = requireNotNull(replay.journalEntryId) { "سند خزانه تسویه پیدا نشد." }
++                val journal = database.accountingDao().entryById(journalId) ?: error("سند حسابداری تسویه پیدا نشد.")
+                 return@withTransaction PostedPurchaseSettlement(
+                     purchaseId = purchase.id,
+-                    journalEntryId = replay.entryId,
+-                    journalEntryNo = replay.entryNo,
+-                    remaining = currentRemaining,
++                    journalEntryId = journal.id,
++                    journalEntryNo = journal.entryNo,
++                    remaining = MoneyRial.of(purchase.totalRial) - MoneyRial.of(purchase.paidRial),
+                 )
+             }
+-            require(purchase.paymentMethod == null) {
+-                "این فاکتور هنگام خرید پرداخت شده است."
+-            }
++            require(purchase.paymentMethod == null) { "این فاکتور هنگام خرید پرداخت شده است." }
+             require(PurchasePaymentStatus.fromStoredValue(purchase.paymentStatus) in setOf(PurchasePaymentStatus.UNPAID, PurchasePaymentStatus.PARTIAL)) {
+                 "این فاکتور قابل تسویه نیست."
+             }
+-            require(valid.settlementEpochDay >= purchase.purchaseEpochDay) {
+-                "تاریخ تسویه نمی‌تواند قبل از تاریخ خرید باشد."
+-            }
++            require(valid.settlementEpochDay >= purchase.purchaseEpochDay) { "تاریخ تسویه نمی‌تواند قبل از تاریخ خرید باشد." }
+             val remaining = MoneyRial.of(purchase.totalRial) - MoneyRial.of(purchase.paidRial)
+-            require(valid.amount <= remaining) {
+-                "مبلغ تسویه از مانده فاکتور بیشتر است."
+-            }
+-
+-            val postedJournal = accountingPosting.postBalanced(
+-                draft = journalDraft,
+-                context = postingContext,
+-                entryNoFactory = { id -> "ت-$id" },
++            require(valid.amount <= remaining) { "مبلغ تسویه از مانده فاکتور بیشتر است." }
++            val commandId = GlobalId.parse(valid.commandId)
++            val treasuryResult = treasury.execute(
++                TreasuryCommand.Settlement(
++                    commandId = commandId,
++                    businessEpochDay = valid.settlementEpochDay,
++                    correlationId = CorrelationId.forCommand("purchase_settlement", commandId),
++                    businessIntent = TreasuryBusinessIntent.PURCHASE_PAYABLE_SETTLEMENT,
++                    sourceId = purchase.id,
++                    reason = valid.notes.ifBlank { valid.referenceNo.ifBlank { "تسویه فاکتور ${purchase.invoiceNo}" } },
++                    accountingScope = if (purchase.branchId != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION,
++                    branchId = purchase.branchId,
++                    accountId = TreasuryAccountId.parse(valid.paymentMethod.treasuryAccountId),
++                    direction = ir.restaurant.management.domain.treasury.TreasuryDirection.PAYMENT,
++                    channel = valid.paymentMethod.treasuryChannel,
++                    amount = valid.amount,
++                ),
+             )
+-
+             val newPaid = MoneyRial.of(purchase.paidRial) + valid.amount
+             val newRemaining = MoneyRial.of(purchase.totalRial) - newPaid
+             val paidInFull = newRemaining == MoneyRial.ZERO
+@@ -284,94 +303,51 @@ class LocalPurchaseRepository(
+                     reminderEpochDay = if (paidInFull) null else purchase.reminderEpochDay,
+                 ) == 1,
+             ) { "مانده فاکتور هم‌زمان تغییر کرده است؛ دوباره تلاش کنید." }
+-
++            val journalId = requireNotNull(treasuryResult.journalEntryId) { "سند خزانه تسویه ایجاد نشد." }
++            val journal = database.accountingDao().entryById(journalId) ?: error("سند حسابداری تسویه پیدا نشد.")
+             syncRecorder?.record("PURCHASE", purchase.id, "SETTLEMENT", clock())
+-            audit("SETTLEMENT", purchase.id, "تسویه ${valid.amount.value} ریال؛ سند=${postedJournal.entryNo}؛ مانده=${newRemaining.value}", clock())
+-
+-            PostedPurchaseSettlement(
+-                purchaseId = purchase.id,
+-                journalEntryId = postedJournal.entryId,
+-                journalEntryNo = postedJournal.entryNo,
+-                remaining = newRemaining,
+-            )
++            audit("SETTLEMENT", purchase.id, "تسویه ${valid.amount.value} ریال؛ سند=${journal.entryNo}؛ مانده=${newRemaining.value}", clock())
++            PostedPurchaseSettlement(purchase.id, journal.id, journal.entryNo, newRemaining)
+         }
+     }
+ 
+ 
+     override suspend fun reverseSettlement(draft: PurchaseSettlementReversalDraft) {
+-        val actor = authorizer.require(Permission.PAYMENT_APPROVE)
++        authorizer.require(Permission.PAYMENT_APPROVE)
+         authorizer.require(Permission.JOURNAL_REVERSE)
+         val valid = draft.validated()
+         database.withTransaction {
+-            val purchase = database.purchaseDao().byId(valid.purchaseId)
+-                ?: error("فاکتور خرید پیدا نشد.")
+-            require(purchase.paymentMethod == null) {
+-                "برگشت تسویه فقط برای خرید نسیه مجاز است."
+-            }
+-            require(PurchasePaymentStatus.fromStoredValue(purchase.paymentStatus) != PurchasePaymentStatus.REVERSED) {
+-                "فاکتور برگشت‌خورده قابل اصلاح تسویه نیست."
+-            }
+-            val settlementEntry = database.accountingDao().entryById(valid.settlementJournalEntryId)
+-                ?: error("سند تسویه پیدا نشد.")
+-            require(settlementEntry.sourceType == "PURCHASE_SETTLEMENT" && settlementEntry.sourceId == purchase.id) {
+-                "سند انتخاب‌شده متعلق به این فاکتور نیست."
+-            }
+-            require(valid.reversalEpochDay >= settlementEntry.entryEpochDay) {
+-                "تاریخ برگشت تسویه نمی‌تواند قبل از تاریخ خود تسویه باشد."
+-            }
+-            val originalLines = database.accountingDao().linesByEntry(settlementEntry.id)
+-            require(originalLines.size >= 2) { "آرتیکل‌های سند تسویه کامل نیستند." }
+-            val amount = originalLines.fold(MoneyRial.ZERO) { total, line ->
+-                total + MoneyRial.of(line.debitRial)
+-            }
+-            require(amount > MoneyRial.ZERO) { "مبلغ سند تسویه معتبر نیست." }
+-            require(amount.value <= purchase.paidRial) {
+-                "مانده پرداخت‌شده فاکتور از مبلغ این تسویه کمتر است."
+-            }
+-
+-            val now = clock()
+-            val reversalDraft = BalancedJournalDraft(
+-                entryEpochDay = valid.reversalEpochDay,
+-                description = "برگشت تسویه ${settlementEntry.entryNo}: ${valid.reason}",
+-                sourceType = "PURCHASE_SETTLEMENT_REVERSAL",
+-                sourceId = settlementEntry.id,
+-                accountingScope = AccountingScope.fromStoredValue(settlementEntry.accountingScope),
+-                branchId = settlementEntry.branchId,
+-                lines = originalLines.map { line ->
+-                    JournalLineDraft(
+-                        accountCode = line.accountCode,
+-                        debit = MoneyRial.of(line.creditRial),
+-                        credit = MoneyRial.of(line.debitRial),
+-                        memo = valid.reason,
+-                    )
+-                },
+-            )
+-            val postingContext = AccountingPostingContext.local(
+-                sourceType = "PURCHASE_SETTLEMENT_REVERSAL",
+-                sourceId = settlementEntry.id,
+-                suffix = "command:${valid.commandId}",
+-                actorId = actor.id,
+-                correlationId = "purchase_settlement_reversal:${valid.commandId}",
+-                reversalOfEntryId = settlementEntry.id,
+-            )
+-            if (database.accountingDao().entryByIdempotencyKey(postingContext.idempotencyKey) != null) {
+-                accountingPosting.postBalanced(
+-                    draft = reversalDraft,
+-                    context = postingContext,
+-                    entryNoFactory = { id -> "بت-$id" },
+-                )
++            val purchase = database.purchaseDao().byId(valid.purchaseId) ?: error("فاکتور خرید پیدا نشد.")
++            treasuryReader.reversalContext(valid.commandId)?.let { replay ->
++                require(replay.reversalOfTransactionId != null && replay.sourceId == purchase.id) { "purchase_settlement_reversal_idempotency_conflict" }
+                 return@withTransaction
+             }
+-            require(!database.accountingDao().hasSettlementReversal(settlementEntry.id)) {
+-                "این تسویه قبلاً برگشت خورده است."
++            require(purchase.paymentMethod == null) { "برگشت تسویه فقط برای خرید نسیه مجاز است." }
++            require(PurchasePaymentStatus.fromStoredValue(purchase.paymentStatus) != PurchasePaymentStatus.REVERSED) { "فاکتور برگشت‌خورده قابل اصلاح تسویه نیست." }
++            val settlementEntry = database.accountingDao().entryById(valid.settlementJournalEntryId) ?: error("سند تسویه پیدا نشد.")
++            require(settlementEntry.sourceType == TreasuryBusinessIntent.PURCHASE_PAYABLE_SETTLEMENT.storedValue && settlementEntry.sourceId == purchase.id) {
++                "سند انتخاب‌شده متعلق به تسویه خزانه این فاکتور نیست."
+             }
+-            accountingPosting.postBalanced(
+-                draft = reversalDraft,
+-                context = postingContext,
+-                entryNoFactory = { id -> "بت-$id" },
++            require(valid.reversalEpochDay >= settlementEntry.entryEpochDay) { "تاریخ برگشت تسویه نمی‌تواند قبل از تاریخ خود تسویه باشد." }
++            val context = treasuryReader.reversalContextByJournalEntryId(settlementEntry.id) ?: error("تراکنش خزانه تسویه پیدا نشد.")
++            require(context.sourceId == purchase.id && context.amountRial in 1..purchase.paidRial) { "مبلغ/منشأ تسویه خزانه معتبر نیست." }
++            val reversalCommandId = GlobalId.parse(valid.commandId)
++            treasury.reverse(
++                TreasuryReversalCommand(
++                    commandId = reversalCommandId,
++                    originalTransactionId = context.transactionId,
++                    originalJournalEntryId = settlementEntry.id,
++                    businessEpochDay = valid.reversalEpochDay,
++                    correlationId = CorrelationId.forCommand("purchase_settlement_reversal", reversalCommandId),
++                    sourceType = "PURCHASE_SETTLEMENT_REVERSAL",
++                    sourceId = purchase.id,
++                    reason = valid.reason,
++                    accountId = context.accountId,
++                    channel = context.channel,
++                    amount = MoneyRial.of(context.amountRial),
++                ),
+             )
+-
+-            val newPaid = MoneyRial.of(purchase.paidRial) - amount
++            val newPaid = MoneyRial.of(purchase.paidRial) - MoneyRial.of(context.amountRial)
+             val newStatus = if (newPaid == MoneyRial.ZERO) PurchasePaymentStatus.UNPAID.storedValue else PurchasePaymentStatus.PARTIAL.storedValue
+             check(
+                 database.purchaseDao().updateSettlementState(
+@@ -383,11 +359,13 @@ class LocalPurchaseRepository(
+                     reminderEpochDay = purchase.reminderEpochDay,
+                 ) == 1,
+             ) { "مانده فاکتور هم‌زمان تغییر کرده است؛ دوباره تلاش کنید." }
++            val now = clock()
+             syncRecorder?.record("PURCHASE", purchase.id, "SETTLEMENT_REVERSAL", now)
+-            audit("REVERSE_SETTLEMENT", purchase.id, "برگشت تسویه ${settlementEntry.entryNo} به مبلغ ${amount.value} ریال؛ دلیل=${valid.reason}", now)
++            audit("REVERSE_SETTLEMENT", purchase.id, "برگشت تسویه ${settlementEntry.entryNo} به مبلغ ${context.amountRial} ریال؛ دلیل=${valid.reason}", now)
+         }
+     }
+ 
++
+     override suspend fun reverse(draft: PurchaseReversalDraft) {
+         authorizer.require(Permission.PURCHASES)
+         val actor = authorizer.require(Permission.JOURNAL_REVERSE)
+@@ -448,6 +426,30 @@ class LocalPurchaseRepository(
+                 )
+             }
+ 
++            if (purchase.paymentMethod != null && purchase.paidRial > 0L) {
++                val treasuryContexts = treasuryReader.activeReversalContextsBySource(TreasuryBusinessIntent.PURCHASE_PAYABLE_SETTLEMENT.storedValue, purchase.id)
++                require(treasuryContexts.isNotEmpty()) { "تراکنش خزانه پرداخت هم‌زمان خرید پیدا نشد." }
++                treasuryContexts.forEach { context ->
++                    val originalTreasuryJournalId = requireNotNull(context.journalEntryId) { "سند خزانه خرید پیدا نشد." }
++                    val reversalCommandId = GlobalId.new()
++                    treasury.reverse(
++                        TreasuryReversalCommand(
++                            commandId = reversalCommandId,
++                            originalTransactionId = context.transactionId,
++                            originalJournalEntryId = originalTreasuryJournalId,
++                            businessEpochDay = valid.reversalEpochDay,
++                            correlationId = CorrelationId.forCommand("purchase_immediate_reversal", reversalCommandId),
++                            sourceType = "PURCHASE_SETTLEMENT_REVERSAL",
++                            sourceId = purchase.id,
++                            reason = valid.reason,
++                            accountId = context.accountId,
++                            channel = context.channel,
++                            amount = MoneyRial.of(context.amountRial),
++                        ),
++                    )
++                }
++            }
++
+             if (originalJournalLines.isNotEmpty()) {
+                 accountingPosting.postBalanced(
+                     draft = BalancedJournalDraft(
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/PayrollPaymentPostingService.kt b/app/src/main/java/ir/restaurant/management/data/repository/PayrollPaymentPostingService.kt
+index 501a355..ff4bc4b 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/PayrollPaymentPostingService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/PayrollPaymentPostingService.kt
+@@ -11,6 +11,7 @@ import ir.restaurant.management.data.db.PayrollPaymentEntity
+ import ir.restaurant.management.domain.audit.AuditAction
+ import ir.restaurant.management.domain.audit.AuditEntityType
+ import ir.restaurant.management.domain.audit.AuditEventDraft
++import ir.restaurant.management.domain.accounting.AccountingScope
+ import ir.restaurant.management.domain.audit.AuditService
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.asViolation
+@@ -27,6 +28,7 @@ import ir.restaurant.management.domain.personnel.ReversePayrollPaymentCommand
+ import ir.restaurant.management.domain.security.AuthorizationService
+ import ir.restaurant.management.domain.security.Permission
+ import ir.restaurant.management.domain.treasury.TreasuryAccountId
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
+ import ir.restaurant.management.domain.treasury.TreasuryCommand
+ import ir.restaurant.management.domain.treasury.TreasuryReversalCommand
+ import ir.restaurant.management.domain.treasury.TreasuryService
+@@ -71,14 +73,17 @@ internal class PayrollPaymentPostingService(
+             if (valid.amountRial > payslip.remainingAmountRial) {
+                 throw BusinessError.InvalidInput("amountRial", "payroll_overpayment").asViolation()
+             }
++            val batch = hr.payrollBatch(payslip.batchId) ?: missing("PAYROLL_BATCH", payslip.batchId)
+             val treasuryResult = treasury.execute(
+                 TreasuryCommand.Payment(
+                     commandId = GlobalId.parse(valid.commandId),
+                     businessEpochDay = valid.paymentEpochDay,
+                     correlationId = correlation,
+-                    sourceType = "PAYROLL_PAYMENT",
++                    businessIntent = TreasuryBusinessIntent.PAYROLL_PAYMENT,
+                     sourceId = payslip.id,
+                     reason = "پرداخت حقوق ${valid.paymentReference}",
++                    accountingScope = if (batch.branchId != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION,
++                    branchId = batch.branchId,
+                     accountId = TreasuryAccountId.parse(valid.treasuryAccountId),
+                     channel = valid.channel,
+                     amount = MoneyRial.of(valid.amountRial),
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/ProcurementInvoiceMatchingService.kt b/app/src/main/java/ir/restaurant/management/data/repository/ProcurementInvoiceMatchingService.kt
+index 824d51c..71057bd 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/ProcurementInvoiceMatchingService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/ProcurementInvoiceMatchingService.kt
+@@ -3,6 +3,7 @@ package ir.restaurant.management.data.repository
+ import ir.restaurant.management.core.toLongExactCompat
+ import androidx.room.withTransaction
+ import ir.restaurant.management.core.CorrelationId
++import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.core.MoneyRial
+ import ir.restaurant.management.core.QuantityMicros
+ import ir.restaurant.management.data.db.AppDatabase
+@@ -24,6 +25,11 @@ import ir.restaurant.management.domain.purchase.ThreeWayMatchResult
+ import ir.restaurant.management.domain.purchase.ThreeWayMatchStatus
+ import ir.restaurant.management.domain.security.AuthorizationService
+ import ir.restaurant.management.domain.security.Permission
++import ir.restaurant.management.domain.treasury.TreasuryAccountId
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
++import ir.restaurant.management.domain.treasury.TreasuryCommand
++import ir.restaurant.management.domain.treasury.TreasuryDirection
++import ir.restaurant.management.domain.treasury.TreasuryService
+ import java.math.BigInteger
+ import kotlin.math.abs
+ 
+@@ -32,6 +38,7 @@ internal class ProcurementInvoiceMatchingService(
+     private val database: AppDatabase,
+     private val authorizer: AuthorizationService,
+     private val accountingPosting: AccountingPostingService,
++    private val treasury: TreasuryService,
+     private val clock: () -> Long,
+     private val syncRecorder: SyncRecorder?,
+ ) {
+@@ -143,7 +150,7 @@ internal class ProcurementInvoiceMatchingService(
+                         ),
+                     )
+                 }
+-                add(SemanticJournalLine(prepared.draft.paymentMethod.settlementRole, credit = prepared.total))
++                add(SemanticJournalLine(SemanticAccountRole.SUPPLIER_PAYABLE, credit = prepared.total))
+             }
+             val journalId = accountingPosting.post(
+                 AccountingPostingCommand(
+@@ -160,6 +167,26 @@ internal class ProcurementInvoiceMatchingService(
+                     actorId = actor.id,
+                 ),
+             ).entryId
++            if (paid && prepared.total > MoneyRial.ZERO) {
++                val commandId = GlobalId.new()
++                val treasuryResult = treasury.execute(
++                    TreasuryCommand.Settlement(
++                        commandId = commandId,
++                        businessEpochDay = prepared.draft.purchaseEpochDay,
++                        correlationId = CorrelationId.forCommand("procurement_invoice_settlement", commandId),
++                        businessIntent = TreasuryBusinessIntent.PURCHASE_PAYABLE_SETTLEMENT,
++                        sourceId = purchaseId,
++                        reason = "پرداخت فاکتور تطبیق‌شده ${prepared.draft.invoiceNo}",
++                        accountingScope = if (branch != null) AccountingScope.BRANCH else AccountingScope.ORGANIZATION,
++                        branchId = branch?.id,
++                        accountId = TreasuryAccountId.parse(requireNotNull(prepared.draft.paymentMethod.treasuryAccountId)),
++                        direction = TreasuryDirection.PAYMENT,
++                        channel = requireNotNull(prepared.draft.paymentMethod.treasuryChannel),
++                        amount = prepared.total,
++                    ),
++                )
++                require(treasuryResult.journalEntryId != null) { "سند خزانه پرداخت فاکتور تطبیق‌شده ایجاد نشد." }
++            }
+             database.procurementDao().insertInvoiceLink(
+                 ProcurementInvoiceLinkEntity(
+                     purchaseOrderId = order.id,
+diff --git a/app/src/main/java/ir/restaurant/management/domain/purchase/PurchaseModels.kt b/app/src/main/java/ir/restaurant/management/domain/purchase/PurchaseModels.kt
+index 68f4e68..8112fa4 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/purchase/PurchaseModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/purchase/PurchaseModels.kt
+@@ -3,20 +3,21 @@ package ir.restaurant.management.domain.purchase
+ import ir.restaurant.management.core.MoneyRial
+ import ir.restaurant.management.core.QuantityMicros
+ import ir.restaurant.management.core.GlobalId
+-import ir.restaurant.management.domain.accounting.SemanticAccountRole
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.asViolation
++import ir.restaurant.management.domain.treasury.TreasuryChannel
+ import kotlinx.coroutines.flow.Flow
+ 
+ enum class PurchasePaymentMethod(
+-    val settlementRole: SemanticAccountRole,
+     val storedValue: String?,
+     val title: String,
++    val treasuryAccountId: String?,
++    val treasuryChannel: TreasuryChannel?,
+ ) {
+-    PAYABLE(SemanticAccountRole.SUPPLIER_PAYABLE, null, "نسیه"),
+-    CASH(SemanticAccountRole.CASH, "نقدی", "نقدی"),
+-    CARD(SemanticAccountRole.BANK, "کارتخوان", "کارتخوان"),
+-    TRANSFER(SemanticAccountRole.BANK, "حواله", "حواله"),
++    PAYABLE(null, "نسیه", null, null),
++    CASH("نقدی", "نقدی", "cash_main", TreasuryChannel.CASH),
++    CARD("کارتخوان", "کارتخوان", "card_terminal", TreasuryChannel.CARD),
++    TRANSFER("حواله", "حواله", "bank_main", TreasuryChannel.BANK),
+     ;
+ 
+     companion object {
+@@ -71,10 +72,10 @@ data class PostedPurchase(
+     val invoiceNo: String,
+ )
+ 
+-enum class SettlementPaymentMethod(val title: String, val settlementRole: SemanticAccountRole) {
+-    CASH("نقدی", SemanticAccountRole.CASH),
+-    CARD("کارتخوان", SemanticAccountRole.BANK),
+-    TRANSFER("حواله", SemanticAccountRole.BANK),
++enum class SettlementPaymentMethod(val title: String, val treasuryAccountId: String, val treasuryChannel: TreasuryChannel) {
++    CASH("نقدی", "cash_main", TreasuryChannel.CASH),
++    CARD("کارتخوان", "card_terminal", TreasuryChannel.CARD),
++    TRANSFER("حواله", "bank_main", TreasuryChannel.BANK),
+     ;
+ 
+     companion object {
