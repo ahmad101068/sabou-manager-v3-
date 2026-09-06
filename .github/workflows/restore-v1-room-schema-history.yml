@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: restore-canonical-room-schema-history
@@ -40,6 +41,16 @@ jobs:
           set -euo pipefail
           bash .github/scripts/reconstruct-phase8-1-candidate.sh phase8-1-source
 
+      - name: Recover authentic historical schemas
+        if: steps.guard.outputs.missing == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/recover-phase8-1-schemas.sh phase8-1-source
+
       - name: Restore exact schema history
         if: steps.guard.outputs.missing == 'true'
         shell: bash
@@ -48,15 +59,12 @@ jobs:
           src='phase8-1-source/app/schemas/ir.restaurant.management.data.db.AppDatabase'
           dst='app/schemas/ir.restaurant.management.data.db.AppDatabase'
           mkdir -p "$dst"
-          cp "$src/56.json" "$dst/56.json"
-          cp "$src/57.json" "$dst/57.json"
-          cp "$src/58.json" "$dst/58.json"
-          cp "$src/60.json" "$dst/60.json"
+          for v in 56 57 58 60; do cp "$src/$v.json" "$dst/$v.json"; done
           echo '3218181977b7fb8079bd478db3eac97c72874628da427d0b39b6ef2fe12f92fd  app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json' | sha256sum -c -
           echo '50eb41e5dc49e6b0f03275510f32c2ef9ac49db0ad157253be0531650cb88894  app/schemas/ir.restaurant.management.data.db.AppDatabase/57.json' | sha256sum -c -
           echo '3ff188efb092b87ecaa6b3db3a4285a1f6749a992e2ea8611e15c61aade0a0d5  app/schemas/ir.restaurant.management.data.db.AppDatabase/58.json' | sha256sum -c -
           echo '209deaa5ffa9bb562609395d6cdbf09dc70a6fd7105c32693939e82db81e5389  app/schemas/ir.restaurant.management.data.db.AppDatabase/60.json' | sha256sum -c -
-          rm -rf phase8-1-source
+          rm -rf phase8-1-source history
 
       - name: Commit restored schema history
         if: steps.guard.outputs.missing == 'true'
