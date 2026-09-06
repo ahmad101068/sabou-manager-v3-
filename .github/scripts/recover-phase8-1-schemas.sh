@@ -4,7 +4,7 @@ set -euo pipefail
 repo="${REPO:-ahmad101068/sabou-manager-v3-}"
 artifact_id="${PHASE8_1_FINAL_ARTIFACT_ID:-9671596355}"
 verified_head="5d9f1bda813225edf2f0b82cbc3ef6599e4c5017"
-verified_source_sha256="19d6c3e992e18e71a8a94f44705e259d7c93e86baf2d171f21bb2108682a17bc"
+verified_source_sha256="5e1d8f862bbc06cee54507f145f12adc4e325af804c6a8662ea0f27f0c2ec373"
 root="${1:-phase8-1-source}"
 work="history/phase8-1-final"
 mkdir -p "$work"
