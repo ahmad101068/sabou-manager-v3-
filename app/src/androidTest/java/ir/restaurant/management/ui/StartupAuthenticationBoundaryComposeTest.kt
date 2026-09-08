@@ -57,7 +57,8 @@ class StartupAuthenticationBoundaryComposeTest {
         composeRule.onNodeWithTag("security_login_confirm").performClick()
 
         composeRule.waitUntil(10_000) {
-            composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty()
+            composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() &&
+                runBlocking { app.container.securityRepository.currentUser.first()?.id == cashier.id }
         }
         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_action_sale"))
         composeRule.onNodeWithTag("home_action_sale").assertIsDisplayed()
@@ -86,14 +87,16 @@ class StartupAuthenticationBoundaryComposeTest {
         composeRule.onNodeWithTag("security_switch_${owner.id}").performClick()
         composeRule.onNodeWithTag("security_login_pin").performTextReplacement(OWNER_PIN)
         composeRule.onNodeWithTag("security_login_confirm").performClick()
-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() }
+        composeRule.waitUntil(10_000) {
+            composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() &&
+                runBlocking { app.container.securityRepository.currentUser.first()?.id == owner.id }
+        }
         composeRule.onNodeWithTag("nav_operations_hub").performClick()
         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("operations_hub").fetchSemanticsNodes().isNotEmpty() }
         composeRule.onNodeWithTag("operations_hub").performScrollToNode(hasTestTag("module_PERSONNEL_پرسنل"))
         composeRule.onNodeWithTag("module_PERSONNEL_پرسنل").performClick()
         composeRule.onNodeWithText("منابع انسانی و حقوق").assertIsDisplayed()
     }
-
 
     @Test
     fun persistedSessionInvalidatedByStartupBoundary_returnsToLoginAndDropsProtectedGraph() {
