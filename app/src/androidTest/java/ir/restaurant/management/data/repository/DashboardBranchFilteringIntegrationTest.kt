@@ -129,7 +129,7 @@ class DashboardBranchFilteringIntegrationTest {
     private fun purchase(no: String, supplierId: Long, branchId: Long, branchName: String, day: Long, amount: Long) =
         PurchaseEntity(
             invoiceNo = no,
-            normalizedInvoiceNo = no.trim().lowercase(),
+            normalizedInvoiceNo = no.trim().uppercase(),
             supplierId = supplierId,
             purchaseEpochDay = day,
             branchName = branchName,
@@ -144,6 +144,7 @@ class DashboardBranchFilteringIntegrationTest {
             reminderEpochDay = null,
             createdAtEpochMillis = day * 86_400_000L,
         )
+
 
     private fun dailySale(globalId: String, branchId: Long, day: Long, amount: Long) =
         DailySalesSummaryEntity(
