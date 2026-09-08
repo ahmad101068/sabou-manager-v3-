@@ -11,6 +11,8 @@ import ir.restaurant.management.domain.brief.DailyManagementBriefService
 import ir.restaurant.management.domain.brief.DailyManagementKpiReadModel
 import ir.restaurant.management.domain.brief.DailyManagementKpiReadModelFactory
 import ir.restaurant.management.domain.operations.AppUserRecord
+import ir.restaurant.management.domain.security.Permission
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class DashboardViewModel(
     private val repository: DashboardRepository,
     private val dailyBriefService: DailyManagementBriefService,
@@ -111,9 +114,13 @@ class DashboardViewModel(
         query,
         state,
         managementRefresh,
-    ) { selected, snapshot, _ ->
+        dashboardContext,
+    ) { selected, _, _, context ->
         val effectiveBranchId = selected.branchId
         when {
+            context.user == null || !context.user.role.allows(Permission.DAILY_BRIEF_VIEW) -> HomeManagementOverviewRequest.Unavailable(
+                "شاخص‌های مدیریتی قطعی برای این نقش در دسترس نیست.",
+            )
             selected.period != DashboardPeriod.TODAY -> HomeManagementOverviewRequest.Unavailable(
                 "شاخص‌های مدیریتی قطعی برای صفحه اصلی در نمای امروز ارائه می‌شوند.",
             )
