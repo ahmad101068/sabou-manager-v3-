@@ -51,7 +51,7 @@ class InventoryLedgerIntegrationTest {
 
     @Test
     fun receiveIsIdempotentAndLedgerIsAppendOnly() = runBlocking {
-        val itemId = insertItem("برنج")
+        val itemId = insertItem("برنج", trackLot = false)
         val context = command("purchase:77:item:$itemId", 77)
 
         val first = engine.receive(
@@ -113,7 +113,7 @@ class InventoryLedgerIntegrationTest {
 
     @Test
     fun closedPeriodFailureRollsBackProjectionAndLedger() = runBlocking {
-        val itemId = insertItem("روغن")
+        val itemId = insertItem("روغن", trackLot = false)
         database.inventoryControlDao().insertClosure(
             InventoryPeriodClosureEntity(
                 fromEpochDay = 200,
@@ -156,7 +156,7 @@ class InventoryLedgerIntegrationTest {
 
     @Test
     fun stockAtAnotherLocationCannotMaskLocationShortage() = runBlocking {
-        val itemId = insertItem("روغن مکان‌محور")
+        val itemId = insertItem("روغن مکان‌محور", trackLot = false)
         engine.receive(
             itemId = itemId,
             quantityMicros = 2_000_000,
@@ -167,10 +167,13 @@ class InventoryLedgerIntegrationTest {
             movementEpochDay = 100,
             context = command("purchase:501:item:$itemId", 501),
         )
+        val mainLocation = requireNotNull(database.inventoryLocationDao().byId(defaultLocationId))
         val kitchenId = database.inventoryLocationDao().insert(
             StorageLocationEntity(
                 code = "KITCHEN-1",
                 name = "آشپزخانه تست",
+                branchName = mainLocation.branchName,
+                branchId = requireNotNull(mainLocation.branchId),
                 kind = "KITCHEN",
                 createdAtEpochMillis = NOW,
             ),
@@ -209,7 +212,7 @@ class InventoryLedgerIntegrationTest {
 
     @Test
     fun movementAndAggregateRollBackWhenLocationProjectionUpdateFails() = runBlocking {
-        val itemId = insertItem("پروجکشن اتمیک")
+        val itemId = insertItem("پروجکشن اتمیک", trackLot = false)
         engine.receive(
             itemId = itemId,
             quantityMicros = 1_000_000,
@@ -262,9 +265,7 @@ class InventoryLedgerIntegrationTest {
 
     @Test
     fun normalFefoConsumptionSkipsExpiredLotAndUsesEligibleLot() = runBlocking {
-        val itemId = insertItem("کالای FEFO")
-        val item = requireNotNull(database.inventoryDao().byId(itemId))
-        assertEquals(1, database.inventoryDao().update(item.copy(trackExpiry = true)))
+        val itemId = insertItem("کالای FEFO", trackLot = false)
         engine.receive(
             itemId = itemId,
             quantityMicros = 3_000_000,
@@ -275,6 +276,8 @@ class InventoryLedgerIntegrationTest {
             movementEpochDay = 90,
             context = command("purchase:701:item:$itemId", 701),
         )
+        val item = requireNotNull(database.inventoryDao().byId(itemId))
+        assertEquals(1, database.inventoryDao().update(item.copy(trackLot = true, trackExpiry = true)))
         val locationId = requireNotNull(database.managementControlDao().defaultLocationId())
         val expiredId = database.inventoryLotDao().insert(
             InventoryLotEntity(
@@ -589,6 +592,7 @@ class InventoryLedgerIntegrationTest {
         name: String,
         stockMicros: Long = 0,
         inventoryValueRial: Long = 0,
+        trackLot: Boolean = true,
     ): Long = database.inventoryDao().insert(
         InventoryItemEntity(
             name = name,
@@ -596,7 +600,7 @@ class InventoryLedgerIntegrationTest {
             unit = "کیلوگرم",
             stockMicros = stockMicros,
             inventoryValueRial = inventoryValueRial,
-            trackLot = true,
+            trackLot = trackLot,
             createdAtEpochMillis = NOW,
             updatedAtEpochMillis = NOW,
         ),
