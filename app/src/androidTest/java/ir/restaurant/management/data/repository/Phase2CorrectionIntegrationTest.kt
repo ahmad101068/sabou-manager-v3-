@@ -581,7 +581,7 @@ class Phase2CorrectionIntegrationTest {
         )
     }
 
-    private suspend fun postBranchPayroll(branchId: Long, baseSalaryRial: Long) {
+    private suspend fun postBranchPayroll(branchId: Long, baseSalaryRial: Long): Long {
         val security = LocalSecurityRepository(database, clock = { ++now }, authorizer = authorizer)
         val approverId = security.save(
             null,
@@ -722,10 +722,7 @@ class Phase2CorrectionIntegrationTest {
             branchId,
             scalar("SELECT branchId FROM journal_entries WHERE sourceType='PAYROLL_ACCRUAL' AND accountingScope='BRANCH'"),
         )
-        assertEquals(
-            baseSalaryRial,
-            scalar("SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='PAYROLL_ACCRUAL' AND e.branchId=$branchId AND l.accountCode='6101'"),
-        )
+        return scalar("SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='PAYROLL_ACCRUAL' AND e.branchId=$branchId AND l.accountCode='6101'")
     }
 
     private data class Fixture(val itemId: Long, val menuId: Long, val personId: Long, val companyId: Long)
