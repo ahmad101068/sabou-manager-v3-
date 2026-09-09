@@ -30,12 +30,4 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: |
-            set +e
-            chmod +x ./gradlew
-            ./gradlew --no-daemon --stacktrace :app:connectedDebugAndroidTest \
-              -Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.ui.DashboardNavigationSettingsUx2ComposeTest,ir.restaurant.management.ui.StartupAuthenticationBoundaryComposeTest
-            status=$?
-            echo '===== CONNECTED TEST XML ====='
-            find app/build/outputs/androidTest-results -type f -name '*.xml' -print -exec cat {} \; || true
-            exit $status
+          script: bash -lc 'set +e; chmod +x ./gradlew; ./gradlew --no-daemon --stacktrace :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.ui.DashboardNavigationSettingsUx2ComposeTest,ir.restaurant.management.ui.StartupAuthenticationBoundaryComposeTest; status=$?; echo "===== CONNECTED TEST XML ====="; find app/build/outputs/androidTest-results -type f -name "*.xml" -print | while read -r f; do cat "$f"; done; exit $status'
