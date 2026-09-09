@@ -18,8 +18,9 @@ jobs:
           ref: release/v1.0.0
           fetch-depth: 0
       - name: Restore verified personnel subscription guard
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           from pathlib import Path
           path = Path('app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt')
           text = path.read_text()
@@ -35,6 +36,7 @@ jobs:
               raise SystemExit(f'expected exactly one personnel subscription, got {count}')
           path.write_text(text.replace(old, new))
           Path('.github/workflows/__restore-personnel-guard.yml').unlink()
+          PY
       - name: Commit verified lifecycle correction
         shell: bash
         run: |
