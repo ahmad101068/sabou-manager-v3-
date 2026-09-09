@@ -74,6 +74,7 @@ jobs:
       fail-fast: false
       matrix:
         api-level: [23, 35]
+        shard: [0, 1, 2]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +82,19 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Build immutable instrumentation APKs
+        shell: bash
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Create exact instrumentation shard plan
+        shell: bash
+        run: |
+          python3 .github/scripts/list-phase81-instrumentation-classes.py \
+            app/src/androidTest/java \
+            --shards 3 \
+            --shard ${{ matrix.shard }} \
+            --plan > "$RUNNER_TEMP/canonical-instrumentation-plan.tsv"
       - name: Enable KVM
         shell: bash
         run: |
@@ -91,9 +105,27 @@ jobs:
         with:
           api-level: ${{ matrix.api-level }}
           arch: x86_64
+          target: google_apis
           profile: pixel_2
+          ram-size: 4096M
+          heap-size: 768M
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            chmod +x ./gradlew
-            ./gradlew --no-daemon --stacktrace :app:connectedDebugAndroidTest
+            app_apk="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+            test_apk="$(find app/build/outputs/apk/androidTest/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+            test -s "$app_apk"
+            test -s "$test_apk"
+            bash .github/scripts/run-phase81-instrumentation-plan.sh \
+              "$app_apk" \
+              "$test_apk" \
+              "$RUNNER_TEMP/canonical-instrumentation-plan.tsv" \
+              "$GITHUB_WORKSPACE/canonical-instrumentation-results/api-${{ matrix.api-level }}/shard-${{ matrix.shard }}" \
+              "CANONICAL-API${{ matrix.api-level }}-shard-${{ matrix.shard }}"
+      - name: Verify shard expected-count evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          d="canonical-instrumentation-results/api-${{ matrix.api-level }}/shard-${{ matrix.shard }}"
+          expected="$(awk -F '\t' '{s+=$2} END {print s+0}' "$RUNNER_TEMP/canonical-instrumentation-plan.tsv")"
+          test "$(cat "$d/expected-test-count.txt")" = "$expected"
