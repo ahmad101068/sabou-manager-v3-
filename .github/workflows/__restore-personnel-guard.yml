@@ -20,22 +20,28 @@ jobs:
       - name: Restore verified personnel subscription guard
         shell: bash
         run: |
+          set -euo pipefail
           python - <<'PY'
           from pathlib import Path
           path = Path('app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt')
           text = path.read_text()
           old = '    val personnelState by personnel.state.collectAsStateWithLifecycle()'
-          new = '''    val canObservePersonnel = securityState.currentUser?.role?.allows(Permission.PERSONNEL_VIEW) == true
-    val personnelState = if (canObservePersonnel) {
-        personnel.state.collectAsStateWithLifecycle().value
-    } else {
-        PersonnelUiState()
-    }'''
+          new = '\n'.join([
+              '    val canObservePersonnel = securityState.currentUser?.role?.allows(Permission.PERSONNEL_VIEW) == true',
+              '    val personnelState = if (canObservePersonnel) {',
+              '        personnel.state.collectAsStateWithLifecycle().value',
+              '    } else {',
+              '        PersonnelUiState()',
+              '    }',
+          ])
           count = text.count(old)
           if count != 1:
               raise SystemExit(f'expected exactly one personnel subscription, got {count}')
           path.write_text(text.replace(old, new))
           Path('.github/workflows/__restore-personnel-guard.yml').unlink()
+          diagnostic = Path('.github/workflows/__release-auth-dashboard-diagnostic.yml')
+          if diagnostic.exists():
+              diagnostic.unlink()
           PY
       - name: Commit verified lifecycle correction
         shell: bash
@@ -43,7 +49,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt .github/workflows/__restore-personnel-guard.yml
+          git add app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt .github/workflows/__restore-personnel-guard.yml .github/workflows/__release-auth-dashboard-diagnostic.yml
           git diff --cached --check
           git commit -m 'fix(release): restore personnel permission subscription guard'
           git push origin HEAD:release/v1.0.0
