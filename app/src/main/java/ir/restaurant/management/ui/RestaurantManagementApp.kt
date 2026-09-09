@@ -298,7 +298,12 @@ private fun AuthenticatedRestaurantManagementApp(
     } else {
         AlertUiState()
     }
-    val personnelState by personnel.state.collectAsStateWithLifecycle()
+    val canObservePersonnel = securityState.currentUser?.role?.allows(Permission.PERSONNEL_VIEW) == true
+    val personnelState = if (canObservePersonnel) {
+        personnel.state.collectAsStateWithLifecycle().value
+    } else {
+        PersonnelUiState()
+    }
     val canObservePayroll = securityState.currentUser?.role?.allows(Permission.PAYROLL_VIEW_ALL) == true
     val hrPayrollState = if (canObservePayroll) {
         personnel.hrState.collectAsStateWithLifecycle().value
