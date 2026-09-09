@@ -21,25 +21,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt')
-          t = p.read_text()
-          old = '    private suspend fun postBranchPayroll(branchId: Long, baseSalaryRial: Long) {'
-          new = '    private suspend fun postBranchPayroll(branchId: Long, baseSalaryRial: Long): Long {'
-          if t.count(old) != 1:
-              raise SystemExit(f'expected one payroll helper signature, found {t.count(old)}')
-          t = t.replace(old, new)
-          old2 = '''        assertEquals(
-            baseSalaryRial,
-            scalar("SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='PAYROLL_ACCRUAL' AND e.branchId=$branchId AND l.accountCode='6101'"),
-        )'''
-          new2 = '''        return scalar("SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='PAYROLL_ACCRUAL' AND e.branchId=$branchId AND l.accountCode='6101'")'''
-          if t.count(old2) != 1:
-              raise SystemExit(f'expected one hard-coded payroll assertion, found {t.count(old2)}')
-          p.write_text(t.replace(old2, new2))
-          Path('.github/workflows/__fix-phase2-payroll-helper.yml').unlink()
-          PY
+          python -c 'from pathlib import Path; p=Path("app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt"); t=p.read_text(); old="    private suspend fun postBranchPayroll(branchId: Long, baseSalaryRial: Long) {"; new="    private suspend fun postBranchPayroll(branchId: Long, baseSalaryRial: Long): Long {"; assert t.count(old)==1, t.count(old); t=t.replace(old,new); old2="        assertEquals(\n            baseSalaryRial,\n            scalar(\"SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='"'"'PAYROLL_ACCRUAL'"'"' AND e.branchId=$branchId AND l.accountCode='"'"'6101'"'"'\"),\n        )"; new2="        return scalar(\"SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='"'"'PAYROLL_ACCRUAL'"'"' AND e.branchId=$branchId AND l.accountCode='"'"'6101'"'"'\")"; assert t.count(old2)==1, t.count(old2); p.write_text(t.replace(old2,new2)); Path(".github/workflows/__fix-phase2-payroll-helper.yml").unlink()'
       - name: Commit compile-safe payroll fixture correction
         shell: bash
         run: |
