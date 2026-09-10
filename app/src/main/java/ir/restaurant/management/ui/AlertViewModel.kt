@@ -23,8 +23,7 @@ class AlertViewModel(private val repository: AlertRepository) : ViewModel() {
     private val refreshing = MutableStateFlow(false)
     val state: StateFlow<AlertUiState> = combine(repository.alerts(), message, refreshing) { alerts, text, busy ->
         AlertUiState(alerts, text, busy)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AlertUiState())
-
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(stopTimeoutMillis = 0), AlertUiState())
 
     fun refresh() = viewModelScope.launch {
         refreshing.value = true
