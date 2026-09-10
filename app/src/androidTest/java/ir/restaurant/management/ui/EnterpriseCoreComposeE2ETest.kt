@@ -164,7 +164,6 @@ class EnterpriseCoreComposeE2ETest {
         assertEquals(beforeBalance + amount, afterBalance)
     }
 
-
 @Test
     fun recipeActivation_uiCreatesDraftAndActivatesImmutableVersion() {
         val fixture = seedSaleFixture("ui-recipe")
@@ -199,10 +198,6 @@ class EnterpriseCoreComposeE2ETest {
         assertTrue(after.first { it.id == draftId }.revisionNo > originalActive.revisionNo)
     }
 
-
-
-
-
     @Test
     fun inventoryCount_uiRecordApproveAndPost_reachesPostedWithoutChangingExactBalance() {
         val fixture = seedInventoryCountFixture("ui-count")
@@ -234,8 +229,6 @@ class EnterpriseCoreComposeE2ETest {
             runBlocking { app.container.securityRepository.currentUser.first()?.id == fixture.managerId } &&
                 composeRule.onAllNodesWithTag("inventory_overview_list").fetchSemanticsNodes().isNotEmpty()
         }
-        // User identity changes intentionally recreate the protected ViewModelStore. Re-enter the
-        // Counts workspace as the manager instead of relying on stale owner-session UI state.
         composeRule.onNodeWithTag("inventory_overview_list").performScrollToNode(hasTestTag("inventory_section_COUNTS"))
         composeRule.onNodeWithTag("inventory_section_COUNTS").performClick()
         composeRule.waitUntil(timeoutMillis = 10_000) {
@@ -380,9 +373,6 @@ class EnterpriseCoreComposeE2ETest {
         assertEquals(beforeAsset.bookValueRial - depreciation.amountRial, afterAsset.bookValueRial)
         assertEquals(journal.totalDebitRial, journal.totalCreditRial)
     }
-
-
-
 
     @Test
     fun payrollRegistrationAndApproval_uiCalculatesReviewsAndPostsAccrual() {
@@ -606,7 +596,6 @@ class EnterpriseCoreComposeE2ETest {
         assertEquals(beforeJournalCount + 1, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='CRM_ADJUSTMENT'"))
         assertEquals(1L, scalar("SELECT COUNT(*) FROM audit_logs WHERE action='ADJUST' AND entityType='CUSTOMER_RECEIVABLE' AND entityId=${row.id}"))
     }
-
 
     private fun scrollTo(containerTag: String, targetTag: String) {
         composeRule.waitUntil(timeoutMillis = 10_000) {
@@ -1130,7 +1119,8 @@ class EnterpriseCoreComposeE2ETest {
                 supplierId = null,
             ),
         )
-        val locationId = app.container.inventoryRepository.defaultLocationId()
+        val branchId = ensureE2EBranchId()
+        val locationId = createE2EInventoryLocation("انبار رسپی $prefix", "RCP", branchId)
         app.container.inventoryCommandService.receive(
             ReceiveInventoryCommand(
                 itemId = inventoryItemId,
