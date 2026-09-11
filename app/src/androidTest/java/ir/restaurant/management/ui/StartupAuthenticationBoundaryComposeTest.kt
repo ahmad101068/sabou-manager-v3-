@@ -7,7 +7,6 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextReplacement
 import ir.restaurant.management.MainActivity
@@ -33,14 +32,13 @@ class StartupAuthenticationBoundaryComposeTest {
     @After
     fun leaveNoSession() {
         runBlocking { app.container.securityRepository.logout() }
+        waitForLoggedOutGraph()
     }
 
     @Test
     fun coldStartWithoutSession_showsSecurityAndDoesNotComposeProtectedModules() {
         runBlocking { app.container.securityRepository.logout() }
-        composeRule.waitUntil(10_000) {
-            composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty()
-        }
+        waitForLoggedOutGraph()
         composeRule.onNodeWithTag("security_root").assertIsDisplayed()
         assertTrue(composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty())
     }
@@ -48,7 +46,6 @@ class StartupAuthenticationBoundaryComposeTest {
     @Test
     fun cashierWithoutPayrollPermission_logsInWithoutPayrollSubscription_andLogoutTearsDownProtectedGraph() {
         val cashier = prepareCashierAndLogout()
-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_users_loaded").fetchSemanticsNodes().isNotEmpty() }
 
         composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_user_${cashier.id}"))
@@ -68,10 +65,7 @@ class StartupAuthenticationBoundaryComposeTest {
         composeRule.onNodeWithTag("more_hub").performScrollToNode(hasTestTag("module_SECURITY_کاربران"))
         composeRule.onNodeWithTag("module_SECURITY_کاربران").performClick()
         composeRule.onNodeWithTag("security_logout").performClick()
-        composeRule.waitUntil(10_000) {
-            composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() &&
-                runBlocking { app.container.securityRepository.currentUser.first() == null }
-        }
+        waitForLoggedOutGraph()
         assertTrue(composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty())
         check(runBlocking { app.container.securityRepository.currentUser.first() } == null)
     }
@@ -79,7 +73,6 @@ class StartupAuthenticationBoundaryComposeTest {
     @Test
     fun ownerWithPayrollPermission_afterLoginCanLoadPayrollWorkspace() {
         val owner = prepareOwnerAndLogout()
-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_users_loaded").fetchSemanticsNodes().isNotEmpty() }
 
         composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_user_${owner.id}"))
@@ -94,7 +87,6 @@ class StartupAuthenticationBoundaryComposeTest {
         composeRule.onNodeWithText("منابع انسانی و حقوق").assertIsDisplayed()
     }
 
-
     @Test
     fun persistedSessionInvalidatedByStartupBoundary_returnsToLoginAndDropsProtectedGraph() {
         val owner = runBlocking { prepareOwnerForFixture() }
@@ -102,58 +94,66 @@ class StartupAuthenticationBoundaryComposeTest {
             val security = app.container.securityRepository
             if (security.currentUser.first()?.id != owner.id) security.switchUser(owner.id, OWNER_PIN)
             check(security.currentUser.first()?.id == owner.id)
+        }
+        composeRule.waitUntil(10_000) {
+            composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty()
+        }
+        runBlocking {
             StartupSessionBoundary.invalidatePersistedSession(app.container.databaseForTesting.openHelper.writableDatabase)
         }
 
-        composeRule.waitUntil(10_000) {
-            composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty()
-        }
+        waitForLoggedOutGraph()
         composeRule.onNodeWithTag("security_root").assertIsDisplayed()
         assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
         assertTrue(composeRule.onAllNodesWithTag("module_TREASURY").fetchSemanticsNodes().isEmpty())
         check(runBlocking { app.container.securityRepository.currentUser.first() } == null)
     }
 
-    private fun prepareOwnerAndLogout() = runBlocking {
-        val security = app.container.securityRepository
-        val users = security.users.first()
-        val owner = users.firstOrNull { it.role == UserRole.OWNER && it.username in KNOWN_OWNER_USERNAMES } ?: run {
-            check(users.none { it.role == UserRole.OWNER }) { "Unexpected persistent owner prevents deterministic UI-test login" }
-            security.save(
-                null,
-                UserDraft(
-                    username = OWNER_USERNAME,
-                    displayName = "مالک آزمون مرز احراز",
-                    pin = OWNER_PIN,
-                    role = UserRole.OWNER,
-                    recoveryCode = OWNER_RECOVERY,
-                ),
-            )
-            security.users.first().first { it.username == OWNER_USERNAME }
-        }
-        if (security.currentUser.first()?.id != owner.id) security.switchUser(owner.id, OWNER_PIN)
-        security.logout()
-        owner
+    private fun prepareOwnerAndLogout(): ir.restaurant.management.domain.operations.AppUserRecord {
+        val owner = runBlocking { prepareOwnerForFixture() }
+        ensureFixtureSessionLoggedOut()
+        return owner
     }
 
-    private fun prepareCashierAndLogout() = runBlocking {
-        val security = app.container.securityRepository
-        val owner = prepareOwnerForFixture()
-        if (security.currentUser.first()?.id != owner.id) security.switchUser(owner.id, OWNER_PIN)
-        val cashier = security.users.first().firstOrNull { it.username == CASHIER_USERNAME } ?: run {
-            security.save(
-                null,
-                UserDraft(
-                    username = CASHIER_USERNAME,
-                    displayName = "صندوقدار آزمون مرز احراز",
-                    pin = CASHIER_PIN,
-                    role = UserRole.CASHIER,
-                ),
-            )
-            security.users.first().first { it.username == CASHIER_USERNAME }
+    private fun prepareCashierAndLogout(): ir.restaurant.management.domain.operations.AppUserRecord {
+        val owner = runBlocking { prepareOwnerForFixture() }
+        val cashier = runBlocking {
+            val security = app.container.securityRepository
+            if (security.currentUser.first()?.id != owner.id) security.switchUser(owner.id, OWNER_PIN)
+            security.users.first().firstOrNull { it.username == CASHIER_USERNAME } ?: run {
+                security.save(
+                    null,
+                    UserDraft(
+                        username = CASHIER_USERNAME,
+                        displayName = "صندوقدار آزمون مرز احراز",
+                        pin = CASHIER_PIN,
+                        role = UserRole.CASHIER,
+                    ),
+                )
+                security.users.first().first { it.username == CASHIER_USERNAME }
+            }
         }
-        security.logout()
-        cashier
+        ensureFixtureSessionLoggedOut()
+        return cashier
+    }
+
+    private fun ensureFixtureSessionLoggedOut() {
+        val hasSession = runBlocking { app.container.securityRepository.currentUser.first() != null }
+        if (hasSession) {
+            composeRule.waitUntil(10_000) {
+                composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty()
+            }
+            runBlocking { app.container.securityRepository.logout() }
+        }
+        waitForLoggedOutGraph()
+    }
+
+    private fun waitForLoggedOutGraph() {
+        composeRule.waitUntil(10_000) {
+            composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty() &&
+                runBlocking { app.container.securityRepository.currentUser.first() == null }
+        }
     }
 
     private suspend fun prepareOwnerForFixture() = app.container.securityRepository.let { security ->
