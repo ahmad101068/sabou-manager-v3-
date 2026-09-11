@@ -88,28 +88,34 @@ class StartupAuthenticationBoundaryComposeTest {
     }
 
     @Test
-    fun persistedSessionInvalidatedByStartupBoundary_returnsToLoginAndDropsProtectedGraph() {
-        val owner = runBlocking { prepareOwnerForFixture() }
-        runBlocking {
-            val security = app.container.securityRepository
-            if (security.currentUser.first()?.id != owner.id) security.switchUser(owner.id, OWNER_PIN)
-            check(security.currentUser.first()?.id == owner.id)
-        }
-        composeRule.waitUntil(10_000) {
-            composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty()
-        }
-        runBlocking {
-            StartupSessionBoundary.invalidatePersistedSession(app.container.databaseForTesting.openHelper.writableDatabase)
-            // Production performs the raw startup-boundary deletion before Room observers exist.
-            // This test invokes that deletion against an already-running process. Calling logout
-            // after the raw delete cannot create a LOGOUT audit because currentUser is already null;
-            // it only executes Room's clearSession path so the live-process observers receive the
-            // invalidation that a fresh production process gets naturally on first subscription.
-            app.container.securityRepository.logout()
-        }
-
+    fun persistedSessionInvalidatedBeforeProtectedGraph_staysOnLogin() {
+        val owner = prepareOwnerAndLogout()
         waitForLoggedOutGraph()
+
+        val sqlite = app.container.databaseForTesting.openHelper.writableDatabase
+        sqlite.execSQL(
+            "INSERT OR REPLACE INTO app_session(singletonId, currentUserId, updatedAtEpochMillis) VALUES (1, ?, ?)",
+            arrayOf(owner.id, System.currentTimeMillis()),
+        )
+        val persistedBefore = sqlite.query("SELECT currentUserId FROM app_session WHERE singletonId = 1").use { cursor ->
+            check(cursor.moveToFirst()) { "Persisted session fixture was not written" }
+            cursor.getLong(0)
+        }
+        check(persistedBefore == owner.id)
+
+        // Production executes this raw boundary during database bootstrap, before Room observers or
+        // protected ViewModels exist. Keep the Compose graph logged out while seeding/removing the
+        // persisted row so this running-process test preserves that exact ordering instead of
+        // deleting an active session underneath live protected collectors.
+        StartupSessionBoundary.invalidatePersistedSession(sqlite)
+
+        val persistedCount = sqlite.query("SELECT COUNT(*) FROM app_session").use { cursor ->
+            check(cursor.moveToFirst())
+            cursor.getInt(0)
+        }
+        check(persistedCount == 0)
         composeRule.onNodeWithTag("security_root").assertIsDisplayed()
+        assertTrue(composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty())
         assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
         assertTrue(composeRule.onAllNodesWithTag("module_TREASURY").fetchSemanticsNodes().isEmpty())
         check(runBlocking { app.container.securityRepository.currentUser.first() } == null)
