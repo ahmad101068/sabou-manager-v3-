@@ -58,10 +58,12 @@ class DashboardNavigationSettingsUx2ComposeTest {
     }
 
     @After
-    fun restoreOwner() {
-        runBlocking {
-            val security = app.container.securityRepository
-            if (security.currentUser.first()?.id != owner.id) runCatching { security.switchUser(owner.id, OWNER_PIN) }
+    fun leaveNoSession() {
+        runBlocking { app.container.securityRepository.logout() }
+        composeRule.waitUntil(10_000) {
+            composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty() &&
+                runBlocking { app.container.securityRepository.currentUser.first() == null }
         }
     }
 
@@ -228,15 +230,20 @@ class DashboardNavigationSettingsUx2ComposeTest {
     private fun switchToRoleUser(username: String, pin: String, role: UserRole) {
         val target = runBlocking {
             val security = app.container.securityRepository
-            if (security.currentUser.first()?.id != owner.id) security.switchUser(owner.id, OWNER_PIN)
+            check(security.currentUser.first()?.id == owner.id) { "UX2 role fixture requires authenticated owner" }
             val existing = security.users.first().firstOrNull { it.username == username }
-            val user = existing ?: run {
+            existing ?: run {
                 security.save(null, UserDraft(username, "کاربر ${role.title}", pin, role))
                 security.users.first().first { it.username == username }
             }
-            security.switchUser(user.id, pin)
-            user
         }
+        runBlocking { app.container.securityRepository.logout() }
+        composeRule.waitUntil(10_000) {
+            composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty() &&
+                runBlocking { app.container.securityRepository.currentUser.first() == null }
+        }
+        runBlocking { app.container.securityRepository.switchUser(target.id, pin) }
         composeRule.waitUntil(10_000) {
             composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() &&
                 runBlocking { app.container.securityRepository.currentUser.first()?.id == target.id }
