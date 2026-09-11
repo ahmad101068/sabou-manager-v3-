@@ -101,11 +101,11 @@ class StartupAuthenticationBoundaryComposeTest {
         runBlocking {
             StartupSessionBoundary.invalidatePersistedSession(app.container.databaseForTesting.openHelper.writableDatabase)
         }
-        // Production performs this raw startup-boundary deletion before Room observers exist.
-        // This test invokes it against an already-running Activity, so explicitly refresh Room's
-        // invalidation tracker to model the process-bootstrap visibility boundary without changing
-        // production authentication semantics.
-        app.container.databaseForTesting.invalidationTracker.refreshAsync()
+        // Production invalidates the persisted session during database bootstrap, before any Room
+        // observer or protected ViewModel graph exists. Recreate the Activity after the raw startup
+        // deletion so this running-process regression test exercises the same lifecycle boundary:
+        // the previous protected graph is disposed and a fresh observer reads the now-empty session.
+        composeRule.activityRule.scenario.recreate()
 
         waitForLoggedOutGraph()
         composeRule.onNodeWithTag("security_root").assertIsDisplayed()
