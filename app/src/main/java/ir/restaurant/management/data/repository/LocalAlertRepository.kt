@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import ir.restaurant.management.data.db.AppAlertEntity
 import ir.restaurant.management.data.db.AppDatabase
 import ir.restaurant.management.data.db.GeneratedAlertRow
+import ir.restaurant.management.data.security.AuthenticationRequiredException
 import ir.restaurant.management.domain.operations.AlertRepository
 import ir.restaurant.management.domain.operations.AlertTarget
 import ir.restaurant.management.domain.operations.AppAlert
@@ -29,7 +30,11 @@ class LocalAlertRepository(
         requireAnyAlertDomainPermission()
         emitAll(
             combine(db.alertDao().observeVisible(), dataScope.scopedBranches(), dataScope.scopedLocations()) { rows, branches, locations ->
-                val permissions = requireAnyAlertDomainPermission()
+                val permissions = try {
+                    requireAnyAlertDomainPermission()
+                } catch (_: AuthenticationRequiredException) {
+                    return@combine emptyList()
+                }
                 val branchIds = branches.mapTo(mutableSetOf()) { it.id }
                 val locationIds = locations.mapTo(mutableSetOf()) { it.id }
                 val now = System.currentTimeMillis()
