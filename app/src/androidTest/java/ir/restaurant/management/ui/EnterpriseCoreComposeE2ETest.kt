@@ -224,10 +224,10 @@ class EnterpriseCoreComposeE2ETest {
         }
         composeRule.onNodeWithTag("inventory_count_close").performClick()
 
-        runBlocking { app.container.securityRepository.switchUser(fixture.managerId, TEST_MANAGER_PIN) }
+        switchUiUser(fixture.managerId, TEST_MANAGER_PIN)
+        openModule(AppScreen.INVENTORY)
         composeRule.waitUntil(timeoutMillis = 10_000) {
-            runBlocking { app.container.securityRepository.currentUser.first()?.id == fixture.managerId } &&
-                composeRule.onAllNodesWithTag("inventory_overview_list").fetchSemanticsNodes().isNotEmpty()
+            composeRule.onAllNodesWithTag("inventory_overview_list").fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithTag("inventory_overview_list").performScrollToNode(hasTestTag("inventory_section_COUNTS"))
         composeRule.onNodeWithTag("inventory_section_COUNTS").performClick()
@@ -602,6 +602,23 @@ class EnterpriseCoreComposeE2ETest {
             composeRule.onAllNodesWithTag(containerTag).fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithTag(containerTag).performScrollToNode(hasTestTag(targetTag))
+    }
+
+    private fun switchUiUser(userId: Long, pin: String) {
+        runBlocking { app.container.securityRepository.logout() }
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            runBlocking { app.container.securityRepository.currentUser.first() == null } &&
+                composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty()
+        }
+        composeRule.waitForIdle()
+        runBlocking { app.container.securityRepository.switchUser(userId, pin) }
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            runBlocking { app.container.securityRepository.currentUser.first()?.id == userId } &&
+                composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isEmpty()
+        }
+        composeRule.waitForIdle()
     }
 
     private fun openModule(screen: AppScreen) {

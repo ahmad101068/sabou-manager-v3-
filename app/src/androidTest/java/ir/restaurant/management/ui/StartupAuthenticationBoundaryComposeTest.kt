@@ -53,9 +53,7 @@ class StartupAuthenticationBoundaryComposeTest {
         composeRule.onNodeWithTag("security_login_pin").performTextReplacement(CASHIER_PIN)
         composeRule.onNodeWithTag("security_login_confirm").performClick()
 
-        composeRule.waitUntil(10_000) {
-            composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty()
-        }
+        waitForAuthenticatedGraph(cashier.id)
         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_action_sale"))
         composeRule.onNodeWithTag("home_action_sale").assertIsDisplayed()
         assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
@@ -79,7 +77,7 @@ class StartupAuthenticationBoundaryComposeTest {
         composeRule.onNodeWithTag("security_switch_${owner.id}").performClick()
         composeRule.onNodeWithTag("security_login_pin").performTextReplacement(OWNER_PIN)
         composeRule.onNodeWithTag("security_login_confirm").performClick()
-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() }
+        waitForAuthenticatedGraph(owner.id)
         composeRule.onNodeWithTag("nav_operations_hub").performClick()
         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("operations_hub").fetchSemanticsNodes().isNotEmpty() }
         composeRule.onNodeWithTag("operations_hub").performScrollToNode(hasTestTag("module_PERSONNEL_پرسنل"))
@@ -122,12 +120,14 @@ class StartupAuthenticationBoundaryComposeTest {
     }
 
     private fun prepareOwnerAndLogout(): ir.restaurant.management.domain.operations.AppUserRecord {
+        resetLoggedOutActivityGraph()
         val owner = runBlocking { prepareOwnerForFixture() }
         ensureFixtureSessionLoggedOut()
         return owner
     }
 
     private fun prepareCashierAndLogout(): ir.restaurant.management.domain.operations.AppUserRecord {
+        resetLoggedOutActivityGraph()
         val owner = runBlocking { prepareOwnerForFixture() }
         val cashier = runBlocking {
             val security = app.container.securityRepository
@@ -149,15 +149,27 @@ class StartupAuthenticationBoundaryComposeTest {
         return cashier
     }
 
+    private fun resetLoggedOutActivityGraph() {
+        ensureFixtureSessionLoggedOut()
+        composeRule.activityRule.scenario.recreate()
+        waitForLoggedOutGraph()
+    }
+
     private fun ensureFixtureSessionLoggedOut() {
         val hasSession = runBlocking { app.container.securityRepository.currentUser.first() != null }
         if (hasSession) {
-            composeRule.waitUntil(10_000) {
-                composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty()
-            }
             runBlocking { app.container.securityRepository.logout() }
         }
         waitForLoggedOutGraph()
+    }
+
+    private fun waitForAuthenticatedGraph(userId: Long) {
+        composeRule.waitUntil(10_000) {
+            runBlocking { app.container.securityRepository.currentUser.first()?.id == userId } &&
+                composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() &&
+                composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isEmpty()
+        }
+        composeRule.waitForIdle()
     }
 
     private fun waitForLoggedOutGraph() {
@@ -166,6 +178,7 @@ class StartupAuthenticationBoundaryComposeTest {
                 composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty() &&
                 runBlocking { app.container.securityRepository.currentUser.first() == null }
         }
+        composeRule.waitForIdle()
     }
 
     private suspend fun prepareOwnerForFixture() = app.container.securityRepository.let { security ->
