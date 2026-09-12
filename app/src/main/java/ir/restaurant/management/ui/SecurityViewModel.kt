@@ -13,14 +13,15 @@ import ir.restaurant.management.domain.operations.SecurityRepository
 import ir.restaurant.management.domain.operations.SensitiveAction
 import ir.restaurant.management.domain.operations.SensitiveActionContext
 import ir.restaurant.management.domain.operations.UserDraft
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
 data class SecurityUiState(
     val users: List<AppUserRecord> = emptyList(),
@@ -75,10 +76,12 @@ class SecurityViewModel(private val repository: SecurityRepository, private val 
             busy.value = true
             message.value = null
             try {
-                // Hide the authenticated graph first so its scoped ViewModels are disposed before
-                // the durable session is cleared. This prevents protected collectors from racing
-                // SessionAuthorizer during logout while preserving fail-closed authorization.
-                delay(50)
+                // Wait for the UI-facing security state to publish the logged-out boundary before
+                // clearing the durable session. A fixed delay is not a synchronization primitive:
+                // slower API-23/API-35 Compose scheduling can otherwise leave protected collectors
+                // alive while SessionAuthorizer starts rejecting them.
+                state.first { it.currentUser == null }
+                yield()
                 repository.logout()
                 message.value = "نشست کاربر بسته شد."
             } catch (e: Exception) {
@@ -100,7 +103,7 @@ class SecurityViewModel(private val repository: SecurityRepository, private val 
         backups.value = container.describeBackups()
     }
     fun exportBackup(name: String, destination: Uri, password: CharArray) = run("نسخه پشتیبان قابل‌انتقال صادر شد.") { container.exportBackup(name, password, destination) }
-    fun importBackup(source: Uri, password: CharArray) = run("نسخه پشتیبان وارد شد؛ پس از انتخاب بازیابی، برنامه را دوباره باز کنید.") { container.importBackup(source, password); backups.value = container.describeBackups() }
+    fun importBackup(source: Uri, password: CharArray) = run("نسخه پشتیبان وارد شد؛ پس از انتخاب بازیابی، برنامه را کامل ببندید و دوباره باز کنید.") { container.importBackup(source, password); backups.value = container.describeBackups() }
     fun restore(name: String, pin: String) = run("بازیابی برای اجرای بعدی برنامه زمان‌بندی شد؛ برنامه را کامل ببندید و دوباره باز کنید.") {
         repository.authorizeSensitiveAction(SensitiveAction.RESTORE_BACKUP, pin, SensitiveActionContext.resource("BACKUP", name))
         container.scheduleRestore(name)
