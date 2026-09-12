@@ -13,6 +13,7 @@ import ir.restaurant.management.domain.operations.SecurityRepository
 import ir.restaurant.management.domain.operations.SensitiveAction
 import ir.restaurant.management.domain.operations.SensitiveActionContext
 import ir.restaurant.management.domain.operations.UserDraft
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +34,7 @@ class SecurityViewModel(private val repository: SecurityRepository, private val 
     private val busy = MutableStateFlow(false)
     private val message = MutableStateFlow<String?>(null)
     private val backups = MutableStateFlow<List<BackupDescriptor>>(emptyList())
+    private val sessionEnding = MutableStateFlow(false)
 
     init {
         viewModelScope.launch {
@@ -46,18 +48,47 @@ class SecurityViewModel(private val repository: SecurityRepository, private val 
         }
     }
 
-    val state: StateFlow<SecurityUiState> = combine(repository.users, repository.currentUser, backups, busy, message) { users, current, copies, isBusy, msg ->
+    private val effectiveCurrentUser = combine(repository.currentUser, sessionEnding) { current, ending ->
+        if (ending) null else current
+    }
+
+    val state: StateFlow<SecurityUiState> = combine(repository.users, effectiveCurrentUser, backups, busy, message) { users, current, copies, isBusy, msg ->
         SecurityUiState(users, current, copies, isBusy, msg)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SecurityUiState())
 
     fun save(id: Long?, draft: UserDraft, done: () -> Unit = {}) = run("کاربر ذخیره شد.", done) { repository.save(id, draft) }
     fun deactivate(id: Long) = run("کاربر غیرفعال شد.") { repository.deactivate(id) }
-    fun switchUser(id: Long, pin: String, done: () -> Unit = {}) = run("کاربر فعال تغییر کرد.", done) { repository.switchUser(id, pin) }
+    fun switchUser(id: Long, pin: String, done: () -> Unit = {}) {
+        sessionEnding.value = false
+        run("کاربر فعال تغییر کرد.", done) { repository.switchUser(id, pin) }
+    }
     fun setRecoveryCode(id: Long, recoveryCode: String, done: () -> Unit = {}) =
         run("کد بازیابی با موفقیت ذخیره شد.", done) { repository.setRecoveryCode(id, recoveryCode) }
-    fun recoverPin(id: Long, recoveryCode: String, newPin: String, done: () -> Unit = {}) =
+    fun recoverPin(id: Long, recoveryCode: String, newPin: String, done: () -> Unit = {}) {
+        sessionEnding.value = false
         run("رمز ورود تغییر کرد و کاربر وارد برنامه شد.", done) { repository.resetPinWithRecovery(id, recoveryCode, newPin) }
-    fun logout() = run("نشست کاربر بسته شد.") { repository.logout() }
+    }
+    fun logout() {
+        if (busy.value) return
+        sessionEnding.value = true
+        viewModelScope.launch {
+            busy.value = true
+            message.value = null
+            try {
+                // Hide the authenticated graph first so its scoped ViewModels are disposed before
+                // the durable session is cleared. This prevents protected collectors from racing
+                // SessionAuthorizer during logout while preserving fail-closed authorization.
+                delay(50)
+                repository.logout()
+                message.value = "نشست کاربر بسته شد."
+            } catch (e: Exception) {
+                sessionEnding.value = false
+                message.value = UiErrorHandler.message("SecurityViewModel", e)
+            } finally {
+                busy.value = false
+            }
+        }
+    }
     fun createBackup() = run("نسخه پشتیبان ساخته شد.") { container.createBackup(); backups.value = container.describeBackups() }
     fun factoryReset(pin: String, done: () -> Unit = {}) = run("اطلاعات برنامه به حالت اولیه بازگردانده شد.", done) {
         repository.authorizeSensitiveAction(SensitiveAction.FACTORY_RESET, pin, SensitiveActionContext.resource("DATABASE", "FACTORY_RESET"))
