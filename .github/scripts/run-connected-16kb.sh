@@ -16,15 +16,36 @@ if [[ "$page_size" != "16384" ]]; then
 fi
 
 cd "$GITHUB_WORKSPACE/phase3-source"
-set +e
-gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
-status=$?
-set -e
+run_suite() {
+  set +e
+  gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+  local status=$?
+  set -e
+  return "$status"
+}
 
-if [[ "$status" -ne 0 ]]; then
+status=0
+if ! run_suite; then
+  status=$?
   adb shell pm list instrumentation > "$EVIDENCE_DIR/16kb-instrumentation.txt" 2>&1 || true
   adb shell getprop > "$EVIDENCE_DIR/16kb-getprop.txt" 2>&1 || true
   adb logcat -d -v threadtime > "$EVIDENCE_DIR/16kb-logcat.txt" 2>&1 || true
+
+  if grep -Fq "androidx.test.services was killed, which is usually due to low memory conditions" "$EVIDENCE_DIR/16kb-logcat.txt"; then
+    echo "Detected AndroidTestOrchestrator infrastructure crash caused by test-services memory pressure; retrying once."
+    adb shell am force-stop androidx.test.orchestrator || true
+    adb shell am force-stop androidx.test.services || true
+    adb logcat -c || true
+    sleep 3
+    if run_suite; then
+      status=0
+    else
+      status=$?
+      adb shell pm list instrumentation > "$EVIDENCE_DIR/16kb-instrumentation-retry.txt" 2>&1 || true
+      adb shell getprop > "$EVIDENCE_DIR/16kb-getprop-retry.txt" 2>&1 || true
+      adb logcat -d -v threadtime > "$EVIDENCE_DIR/16kb-logcat-retry.txt" 2>&1 || true
+    fi
+  fi
 fi
 
 exit "$status"
