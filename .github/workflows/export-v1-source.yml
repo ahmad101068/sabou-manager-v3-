@@ -1,0 +1,44 @@
+name: Export v1.0.0 Source
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/export-v1-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out v1.0.0 source
+        uses: actions/checkout@v4
+        with:
+          ref: v1.0.0
+          fetch-depth: 0
+
+      - name: Verify source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "873e8814444a4ffa23504b8aa3af2e257314ce00"
+          git status --porcelain
+
+      - name: Package source
+        run: |
+          set -euo pipefail
+          mkdir -p source-export
+          git archive --format=zip --prefix=Sabou-Manager-v1.0.0-Source/ -o source-export/Sabou-Manager-v1.0.0-Source.zip HEAD
+          sha256sum source-export/Sabou-Manager-v1.0.0-Source.zip > source-export/SHA256SUMS.txt
+          git rev-parse HEAD > source-export/SOURCE-SHA.txt
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: sabou-v1.0.0-source
+          path: source-export/
+          if-no-files-found: error
+          retention-days: 30
