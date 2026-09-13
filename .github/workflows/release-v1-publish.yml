@@ -25,7 +25,7 @@ jobs:
           set -euo pipefail
           grep -q 'versionCode = 209' app/build.gradle.kts
           grep -q 'versionName = "1.0.0"' app/build.gradle.kts
-          grep -q 'version = 60' app/src/main/java/com/restaurant/management/data/local/AppDatabase.kt
+          grep -q 'APP_DATABASE_SCHEMA_VERSION = 60' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
 
       - name: Publish tag and GitHub Release
         env:
