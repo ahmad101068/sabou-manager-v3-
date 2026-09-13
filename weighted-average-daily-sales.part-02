@@ -1,0 +1,105 @@
++        val recipeVersionId: Long,
++        val name: String,
++        val quantity: Long,
++        val gross: Long?,
++        val packagingCost: Long,
++        val directLaborCost: Long,
++        val allocatedOverhead: Long,
++        val recipeYieldMicros: Long,
++        val preparationWasteBasisPoints: Int,
++        val cookingWasteBasisPoints: Int,
++    )
+     private data class PreparedLine(
+         val menuId: Long,
+         val recipeVersionId: Long,
+@@ -99,8 +123,9 @@ class LocalDailySalesRepository(
+         val cardSnapshot: Long,
+         val transferSnapshot: Long,
+         val lines: List<PreparedLine>,
+-        val consumptions: List<Triple<InventoryItemEntity, Long, Long>>,
++        val consumptions: List<PreparedConsumption>,
+         val totalCost: Long,
++        val sourceLocationId: Long,
+     )
+ 
+     override suspend fun post(draft: DailySalesDraft): Long {
+@@ -233,11 +258,12 @@ class LocalDailySalesRepository(
+             })
+             check(database.dailySalesDao().updateConfirmedCost(summary.id, prepared.totalCost, actor.id, now) == 1) { "به‌روزرسانی بهای فروش تأییدشده انجام نشد." }
+ 
+-            prepared.consumptions.forEach { (item, quantity, cost) ->
++            prepared.consumptions.forEach { consumption ->
++                val item = consumption.item
+                 inventoryCommands.issue(
+                     itemId = item.id,
+-                    quantityMicros = quantity,
+-                    valueRial = cost,
++                    quantityMicros = consumption.quantity,
++                    valueRial = consumption.cost,
+                     movementType = InventoryMovementType.DAILY_SALES_CONSUMPTION,
+                     referenceType = InventoryReferenceType.DAILY_SALES,
+                     referenceId = summary.id,
+@@ -250,6 +276,7 @@ class LocalDailySalesRepository(
+                         reasonCode = InventoryReasonCode.SALES_CONSUMPTION,
+                         reason = "مصرف رسپی فروش روزانه",
+                         correlationId = "daily_sales:${summary.id}",
++                        locationId = consumption.locationId,
+                     ),
+                     notes = "مصرف رسپی فروش روزانه",
+                     lotPolicy = LocalInventoryCommandEngine.LotIssuePolicy.FEFO_ALL,
+@@ -374,36 +401,138 @@ class LocalDailySalesRepository(
+         val cardSnapshot = effectiveSettlements.filter { it.type == SalesSettlementType.CARD }.fold(0L) { a,b -> SignedLongMath.add(a,b.amountRial) }
+         val transferSnapshot = effectiveSettlements.filter { it.type == SalesSettlementType.BANK_TRANSFER }.fold(0L) { a,b -> SignedLongMath.add(a,b.amountRial) }
+ 
+-        val consumptions = mutableListOf<Consumption>()
+-        val preparedLines = draft.lines.map { line ->
++        // Daily Sales has no separate inventory-location field. Resolve the same canonical default
++        // location that the inventory command engine would use, then pin it into every issue context.
++        // This prevents costing from an aggregate item average while physically issuing another location.
++        val sourceLocationId = database.managementControlDao().defaultLocationId()
++            ?: error("محل پیش‌فرض موجودی برای مصرف فروش روزانه تعریف نشده است.")
++        val sourceLocation = database.managementControlDao().activeLocation(sourceLocationId)
++            ?: error("محل پیش‌فرض موجودی برای مصرف فروش روزانه فعال نیست.")
++        require(sourceLocation.branchId == null || sourceLocation.branchId == draft.branchId) {
++            "محل پیش‌فرض موجودی به شعبه دیگری تعلق دارد؛ محل مصرف فروش روزانه را اصلاح کنید."
++        }
++
++        val consumptionNeeds = mutableListOf<ConsumptionNeed>()
++        val lineSeeds = draft.lines.mapIndexed { lineIndex, line ->
+             val menu = database.recipeDao().activeMenuItem(line.menuItemId) ?: error("آیتم منوی انتخاب‌شده فعال نیست.")
+             val recipeVersion = database.recipeDao().effectiveVersion(menu.id, draft.businessEpochDay) ?: error("برای «${menu.name}» در تاریخ فروش، نسخه مؤثر رسپی وجود ندارد.")
+             val ingredients = database.recipeDao().versionIngredients(recipeVersion.id)
+             require(ingredients.isNotEmpty()) { "برای «${menu.name}» رسپی کامل ثبت نشده است." }
+-            var lineCost=0L
+             ingredients.forEach { ingredient ->
+-                val item=database.inventoryDao().activeById(ingredient.inventoryItemId) ?: error("یکی از مواد اولیه «${menu.name}» فعال نیست.")
+-                val needed=mulDiv(ingredient.quantityMicrosPerUnit,line.quantityMicros,1_000_000L)
+-                require(needed>0) { "مصرف محاسبه‌شده برای ${item.name} نامعتبر است." }
+-                val cost=if(item.stockMicros==0L) 0L else mulDiv(item.inventoryValueRial,needed,item.stockMicros)
+-                consumptions += Consumption(item,needed,cost)
+-                lineCost=SignedLongMath.add(lineCost,cost)
++                val item = database.inventoryDao().activeById(ingredient.inventoryItemId)
++                    ?: error("یکی از مواد اولیه «${menu.name}» فعال نیست.")
++                val needed = mulDiv(ingredient.quantityMicrosPerUnit, line.quantityMicros, 1_000_000L)
++                require(needed > 0) { "مصرف محاسبه‌شده برای ${item.name} نامعتبر است." }
++                consumptionNeeds += ConsumptionNeed(item, lineIndex, needed)
+             }
+-            val packaging=mulDiv(recipeVersion.packagingCostRial,line.quantityMicros,1_000_000L)
+-            val labor=mulDiv(recipeVersion.directLaborCostRial,line.quantityMicros,1_000_000L)
+-            val overhead=mulDiv(recipeVersion.allocatedOverheadRial,line.quantityMicros,1_000_000L)
+-            val fullCost=FullCostCalculator.calculate(FullCostCalculator.Input(lineCost,recipeVersion.yieldMicros,recipeVersion.preparationWasteBasisPoints,recipeVersion.cookingWasteBasisPoints,packaging,labor,overhead,line.grossSalesRial ?: 0L))
+-            PreparedLine(menu.id,recipeVersion.id,menu.name,line.quantityMicros,line.grossSalesRial,lineCost,fullCost.foodCostRial,packaging,labor,overhead)
++            PreparedLineSeed(
++                menuId = menu.id,
++                recipeVersionId = recipeVersion.id,
++                name = menu.name,
++                quantity = line.quantityMicros,
++                gross = line.grossSalesRial,
++                packagingCost = mulDiv(recipeVersion.packagingCostRial, line.quantityMicros, 1_000_000L),
++                directLaborCost = mulDiv(recipeVersion.directLaborCostRial, line.quantityMicros, 1_000_000L),
++                allocatedOverhead = mulDiv(recipeVersion.allocatedOverheadRial, line.quantityMicros, 1_000_000L),
++                recipeYieldMicros = recipeVersion.yieldMicros,
++                preparationWasteBasisPoints = recipeVersion.preparationWasteBasisPoints,
++                cookingWasteBasisPoints = recipeVersion.cookingWasteBasisPoints,
++            )
+         }

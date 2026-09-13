@@ -1,0 +1,73 @@
+diff --git a/app/src/main/java/ir/restaurant/management/data/AppContainer.kt b/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
+index 4a9bfe9..7062129 100644
+--- a/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
++++ b/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
+@@ -222,7 +222,10 @@ class AppContainer(context: Context) {
+     }
+ 
+     val purchaseRepository: PurchaseRepository by lazy {
+-        LocalPurchaseRepository(database, syncRecorder = syncRecorder, authorizer = authorizer)
++        LocalPurchaseRepository(
++            database = database, syncRecorder = syncRecorder, authorizer = authorizer,
++            treasury = treasuryService, treasuryReader = treasuryLedgerReader,
++        )
+     }
+ 
+     val procurementRepository: ProcurementRepository by lazy {
+@@ -230,21 +233,32 @@ class AppContainer(context: Context) {
+             database,
+             authorizer,
+             syncRecorder = syncRecorder,
++            treasury = treasuryService,
+             inventoryReplenishment = inventoryReplenishmentService,
+         )
+     }
+     val procurementUseCases: ProcurementUseCases by lazy { ProcurementUseCases(procurementRepository, purchaseRepository) }
+ 
++    val receivableService: ReceivableService by lazy {
++        LocalReceivableService(
++            database = database,
++            authorizer = authorizer,
++            treasury = treasuryService,
++            treasuryReader = treasuryLedgerReader,
++        )
++    }
++
+     val dailySalesRepository: DailySalesRepository by lazy {
+         LocalDailySalesRepository(
+             database,
+             authorizer,
+             syncRecorder = syncRecorder,
+             sensitiveActionGate = sensitiveActionGate,
++            treasury = treasuryService,
++            receivables = receivableService,
++            treasuryReader = treasuryLedgerReader,
+         )
+     }
+-
+-    val receivableService: ReceivableService by lazy { LocalReceivableService(database, authorizer) }
+     val managementWorkflowService: ManagementWorkflowService by lazy { LocalManagementWorkflowService(database, authorizer) }
+     val managementWorkflowReadService: ManagementWorkflowReadService by lazy { LocalManagementWorkflowReadService(database, authorizer) }
+     val dailyManagementBriefService: DailyManagementBriefService by lazy { LocalDailyManagementBriefService(database, authorizer) }
+@@ -367,7 +381,9 @@ class AppContainer(context: Context) {
+         )
+     }
+ 
+-    val personnelRepository: PersonnelRepository by lazy { LocalPersonnelRepository(database, syncRecorder = syncRecorder, authorizer = authorizer) }
++    val personnelRepository: PersonnelRepository by lazy {
++        LocalPersonnelRepository(database, syncRecorder = syncRecorder, authorizer = authorizer, treasury = treasuryService)
++    }
+     val personnelUseCases: PersonnelUseCases by lazy { PersonnelUseCases(personnelRepository) }
+     val attendanceUseCases: AttendanceUseCases by lazy { AttendanceUseCases(personnelRepository) }
+     val performanceRepository by lazy { LocalPerformanceRepository(database, authorizer = authorizer, syncRecorder = syncRecorder) }
+@@ -405,7 +421,9 @@ class AppContainer(context: Context) {
+     suspend fun runSyncAuthorized() = authorizer.require(Permission.BACKUP).let { runSync() }
+     suspend fun resolveSyncIssueAuthorized(changeId:String,keepLocal:Boolean){authorizer.require(Permission.BACKUP);syncRepository.resolveIssue(changeId,keepLocal)}
+     val syncRecorder by lazy { SyncRecorder(database, deviceId) }
+-    val assetRepository: AssetRepository by lazy { LocalAssetRepository(database, syncRecorder = syncRecorder, authorizer = authorizer) }
++    val assetRepository: AssetRepository by lazy {
++        LocalAssetRepository(database, syncRecorder = syncRecorder, authorizer = authorizer, treasury = treasuryService)
++    }
+     val assetUseCases: AssetUseCases by lazy { AssetUseCases(assetRepository) }
+     val alertRepository: AlertRepository by lazy { LocalAlertRepository(database, authorizer) }
+     val managementControlRepository: ManagementControlRepository by lazy {

@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+set -euo pipefail
+workspace="${GITHUB_WORKSPACE:-$(pwd)}"
+target="${1:-phase8-1-source}"
+root="${workspace}/${target}"
+base_phase8_sha="38b2b13883bcb806796c9de41ac8914a8974b016"
+hotfix="${workspace}/phase8-1-remediation/phase8-1-hotfix-chunked.py"
+overlay="${workspace}/phase8-1-remediation/overlay"
+schema_history="${workspace}/phase8-1-remediation/schema-history"
+followup="${workspace}/phase8-1-remediation/followup/phase8-1-followup-01.patch"
+followup2="${workspace}/phase8-1-remediation/followup/phase8-1-followup-02.py"
+followup3="${workspace}/phase8-1-remediation/followup/phase8-1-followup-03.patch"
+followup4="${workspace}/phase8-1-remediation/followup/phase8-1-followup-04.patch"
+followup5="${workspace}/phase8-1-remediation/followup/phase8-1-followup-05.patch"
+expected_patch_sha="865b2d29bad1ee39b116fd6e1e201cd40663f4e7aaa4254af664e255400284f4"
+expected_followup_sha="f9590666c6bb94c58da3c3ae72668a171cadc35c68e41075045c107e0d62309c"
+expected_followup2_sha="e9f97f7b34f1e96708a2a0830a7e239b7347f1e69fb43e1d5b6ef752a7f51e45"
+expected_followup3_sha="1ad5d32997c25d06bd56bc4f4c7fac9ac5ff90821e4d8c357f8e33c169528127"
+expected_followup4_sha="add75c6498d1d26a6fd5c696e2aaec3a698a49a824973a1f0099612fe3321c2b"
+expected_followup5_sha="a317d66fd2274d50a2514dbc802e823546517d4676aebf22dfa804aaebe43a6d"
+expected_schema59_sha="c23b7d1f794cdb6febc643fa79ddf4f68222eb6fe3ba42622bbbd36599a14e00"
+expected_schema59_b64_sha="6148cc2a64e3d51c483dde5cfcdb3576f2341d328736d7d0ef3741ff38da55f2"
+
+verify_copy() {
+  local rel="$1"
+  local expected="$2"
+  local source="${overlay}/${rel}"
+  local destination="${root}/${rel}"
+  local actual
+  test -s "$source" || { echo "::error::missing Phase8.1 overlay $rel"; exit 1; }
+  actual="$(sha256sum "$source" | awk '{print $1}')"
+  test "$actual" = "$expected" || { echo "::error::Phase8.1 overlay digest mismatch $rel: $actual"; exit 1; }
+  mkdir -p "$(dirname "$destination")"
+  cp "$source" "$destination"
+}
+
+verify_git_blob_copy() {
+  local rel="$1"
+  local expected="$2"
+  local source="${overlay}/${rel}"
+  local destination="${root}/${rel}"
+  local actual
+  test -s "$source" || { echo "::error::missing Phase8.1 overlay $rel"; exit 1; }
+  actual="$(git -C "$workspace" hash-object "$source")"
+  test "$actual" = "$expected" || { echo "::error::Phase8.1 overlay git-blob mismatch $rel: $actual"; exit 1; }
+  mkdir -p "$(dirname "$destination")"
+  cp "$source" "$destination"
+}
+
+apply_followup_patch() {
+  local file="$1" expected="$2" label="$3"
+  test -s "$file"
+  local actual="$(sha256sum "$file" | awk '{print $1}')"
+  test "$actual" = "$expected" || { echo "::error::${label} digest mismatch: $actual"; exit 1; }
+  patch --dry-run --batch --forward -p1 -d "$root" -i "$file" >/dev/null
+  patch --batch --forward -p1 -d "$root" -i "$file" >/dev/null
+  printf '%s' "$actual"
+}
+
+bash "${workspace}/.github/scripts/reconstruct-phase8-candidate.sh" "$target"
+test -s "$hotfix"
+for i in 00 01 02 03 04 05 06 07; do
+  test -s "${workspace}/phase8-1-remediation/patch/phase8-1-patch.part${i}" || {
+    echo "::error::missing Phase8.1 patch chunk ${i}"
+    exit 1
+  }
+done
+python3 "$hotfix" "$root" | tee "${workspace}/phase8-1-patch-apply.log"
+grep -Fq "PHASE8_1_PATCH_SHA256=${expected_patch_sha}" "${workspace}/phase8-1-patch-apply.log"
+grep -Fq 'PHASE8_1_PATCH_APPLIED=PASS' "${workspace}/phase8-1-patch-apply.log"
+
+verify_copy 'app/src/main/java/ir/restaurant/management/core/BusinessCalendar.kt' '28c0d302cf768a562378666233c5a06a2fe27bcc14e90cdf68e10e13fa0b9321'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/repository/OperationalAlertWriter.kt' 'bbb79c23061bb6c036fe4cc87ac39431cbcae6704b5ad7382bb35a8104e04288'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/repository/AuditIntegrityVerifier.kt' '12b4b12d83ad47ad415daa66eabf000fd692bae87f0e02d99c7074d6eda40195'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt' '5e227dc549de9e183c3546ad9ce7aae921c2cc2922da2711c6a9a332313504c4'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/security/AuditIntegrity.kt' 'e56b8cec658934b15d99cfacdc06b8004afeddbdb860f3c79bd982a643f037cc'
+verify_copy 'app/src/main/java/ir/restaurant/management/data/security/ForensicIntegrityLedger.kt' '4c5360fe7f540e1660d94c0f9584644e790c4d0c55740df6d73b194735348ccc'
+verify_git_blob_copy 'app/src/androidTest/java/ir/restaurant/management/data/db/Migration59To60Test.kt' 'dfb8a6700dd3ef81176676fd5abe7f043b5838da'
+
+schema_dir="${root}/app/schemas/ir.restaurant.management.data.db.AppDatabase"
+mkdir -p "$schema_dir"
+schema59_b64="${workspace}/phase8-1-schema59.b64"
+: > "$schema59_b64"
+for i in 00 01 02 03 04 05; do
+  part="${schema_history}/59.json.gz.b64.part${i}"
+  test -s "$part" || { echo "::error::missing canonical Room 59 schema chunk ${i}"; exit 1; }
+  cat "$part" >> "$schema59_b64"
+done
+actual_schema59_b64_sha="$(sha256sum "$schema59_b64" | awk '{print $1}')"
+test "$actual_schema59_b64_sha" = "$expected_schema59_b64_sha" || {
+  echo "::error::canonical Room 59 base64 payload digest mismatch: $actual_schema59_b64_sha"
+  exit 1
+}
+base64 --decode "$schema59_b64" | gzip -dc > "${schema_dir}/59.json"
+actual_schema59_sha="$(sha256sum "${schema_dir}/59.json" | awk '{print $1}')"
+test "$actual_schema59_sha" = "$expected_schema59_sha" || {
+  echo "::error::canonical Room 59 schema digest mismatch: $actual_schema59_sha"
+  exit 1
+}
+
+actual_followup_sha="$(apply_followup_patch "$followup" "$expected_followup_sha" 'Phase8.1 followup-01')"
+
+test -s "$followup2"
+actual_followup2_sha="$(sha256sum "$followup2" | awk '{print $1}')"
+test "$actual_followup2_sha" = "$expected_followup2_sha" || {
+  echo "::error::Phase8.1 followup-02 digest mismatch: $actual_followup2_sha"
+  exit 1
+}
+python3 "$followup2" "$root" | tee "${workspace}/phase8-1-followup-02.log"
+grep -Fq 'PHASE8_1_TEST_API_ALIGNMENT=PASS' "${workspace}/phase8-1-followup-02.log"
+grep -Fq 'PRESERVED_RESOURCE_ID=1' "${workspace}/phase8-1-followup-02.log"
+
+actual_followup3_sha="$(apply_followup_patch "$followup3" "$expected_followup3_sha" 'Phase8.1 followup-03')"
+grep -Fq 'Math.multiplyExact(businessEpochDay, 86_400_000L)' "$root/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceCalculationEngine.kt"
+if grep -Fq 'BusinessCalendar.startOfDayEpochMillis(businessEpochDay)' "$root/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceCalculationEngine.kt"; then
+  echo '::error::attendance engine illegally reinterprets an existing businessEpochDay through timezone conversion'
+  exit 1
+fi
+grep -Fq 'dropLast(1)' "$root/app/src/test/java/ir/restaurant/management/ui/InputParsersTest.kt"
+grep -Fq 'dropLast(2)' "$root/app/src/test/java/ir/restaurant/management/ui/InputParsersTest.kt"
+
+actual_followup4_sha="$(apply_followup_patch "$followup4" "$expected_followup4_sha" 'Phase8.1 followup-04')"
+actual_followup5_sha="$(apply_followup_patch "$followup5" "$expected_followup5_sha" 'Phase8.1 followup-05')"
+grep -Fq 'Regex("[A-Za-z0-9:._-]{3,120}")' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalDocumentNumberAllocator.kt"
+grep -Fq 'components.sortedBy(PayrollComponentEntity::id)' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalHrPayrollService.kt"
+grep -Fq 'requireAnyAlertDomainPermission()' "$root/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt"
+grep -Fq 'treasury_source_type_${intent.storedValue}' "$root/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt"
+
+grep -Fq 'APP_DATABASE_SCHEMA_VERSION = 60' "$root/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt"
+grep -Fq 'MIGRATION_59_60' "$root/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt"
+grep -Fq 'MIGRATION_59_60' "$root/app/src/androidTest/java/ir/restaurant/management/data/db/Migration59To60Test.kt"
+grep -Fq 'integritySequence' "$root/app/src/main/java/ir/restaurant/management/data/db/ControlEntities.kt"
+grep -Fq 'rowVersion' "$root/app/src/main/java/ir/restaurant/management/data/db/SecurityEntities.kt"
+grep -Fq 'ForensicIntegrityLedger' "$root/app/src/main/java/ir/restaurant/management/data/AppContainer.kt"
+grep -Fq 'formatRialMoneyInput' "$root/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt"
+if grep -R -n 'fallbackToDestructiveMigration' "$root/app/src/main/java"; then
+  echo '::error::destructive migration fallback found'
+  exit 1
+fi
+if grep -R -nE '@Ignore|@Disabled' "$root/app/src"; then
+  echo '::error::ignored/disabled test found in Phase8.1 candidate'
+  exit 1
+fi
+if grep -R -nF -e 'MAX(revisionNo)' -e 'MAX(integritySequence)' "$root/app/src/main/java"; then
+  echo '::error::sensitive aggregate-based allocation remains'
+  exit 1
+fi
+
+echo PHASE8_1_OVERLAY_FILES=7
+echo PHASE8_1_SCHEMA59_B64_SHA256=$actual_schema59_b64_sha
+echo PHASE8_1_SCHEMA59_SHA256=$actual_schema59_sha
+echo PHASE8_1_FOLLOWUP_SHA256=$actual_followup_sha
+echo PHASE8_1_FOLLOWUP2_SHA256=$actual_followup2_sha
+echo PHASE8_1_FOLLOWUP3_SHA256=$actual_followup3_sha
+echo PHASE8_1_FOLLOWUP4_SHA256=$actual_followup4_sha
+echo PHASE8_1_FOLLOWUP5_SHA256=$actual_followup5_sha
+echo PHASE8_1_RECONSTRUCTION=PASS
+echo BASE_PHASE8_SHA=$base_phase8_sha
+echo ROOM_VERSION=60

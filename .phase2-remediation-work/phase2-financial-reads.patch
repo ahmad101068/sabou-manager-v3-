@@ -1,0 +1,603 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/CrmReceivablesIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/CrmReceivablesIntegrationTest.kt
+index e8672c2..931b8c8 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/CrmReceivablesIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/CrmReceivablesIntegrationTest.kt
+@@ -6,12 +6,15 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.data.db.AppDatabase
+ import ir.restaurant.management.data.db.CustomerEntity
+ import ir.restaurant.management.data.db.CustomerReceivableLedgerEntity
++import ir.restaurant.management.data.db.SalesInvoiceEntity
+ import ir.restaurant.management.data.security.SessionAuthorizer
+ import ir.restaurant.management.domain.crm.CustomerOpeningBalanceCommand
+ import ir.restaurant.management.domain.crm.CustomerReceivableAdjustmentCommand
+ import ir.restaurant.management.domain.crm.ReceivableAdjustmentDirection
++import ir.restaurant.management.domain.crm.ReceivableAdjustmentEconomicNature
+ import ir.restaurant.management.domain.operations.UserDraft
+ import ir.restaurant.management.domain.operations.UserRole
++import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+ import org.junit.Assert.assertEquals
+@@ -79,23 +82,39 @@ class CrmReceivablesIntegrationTest {
+     }
+ 
+     @Test
+-    fun merge_movesLedgerPreservesCombinedBalance_marksSourceMerged_andAudits() = runBlocking {
++    fun merge_preservesPostedFinancialHistory_andExposesLogicalCombinedLedger() = runBlocking {
+         val sourceId = insertCustomer("CUS-MERGE-S", "مشتری مبدا")
+         val targetId = insertCustomer("CUS-MERGE-T", "مشتری مقصد")
+         insertLedger(sourceId, 31_000L, 31_010L, 70_000L, 0L, "SALE", 10)
+         insertLedger(sourceId, 31_005L, null, 0L, 20_000L, "RECEIPT", 11)
+         insertLedger(targetId, 31_000L, 31_020L, 40_000L, 0L, "SALE", 12)
++        val postedInvoiceId = database.salesDao().insertInvoice(
++            SalesInvoiceEntity(
++                invoiceNo = "MERGE-HISTORY-1", commandId = "merge-history-command-1", businessEpochDay = 31_000L,
++                customerId = sourceId, dueEpochDay = 31_010L, grossRial = 70_000L, discountRial = 0L,
++                serviceRial = 0L, taxRial = 0L, netRial = 70_000L, creditRial = 70_000L,
++                theoreticalCostRial = 0L, journalEntryId = null, cogsJournalEntryId = null, status = "POSTED",
++                notes = "immutable merge history", createdByActorId = actorId, createdAtEpochMillis = now++,
++            ),
++        )
+         val sourceBefore = database.customerReceivableDao().balanceRial(sourceId)
+         val targetBefore = database.customerReceivableDao().balanceRial(targetId)
++        val sourceLedgerIdsBefore = database.customerReceivableDao().ledger(sourceId).map { it.id }
+ 
+         val mergeId = service.merge(sourceId, targetId, "حذف رکورد تکراری مشتری")
+ 
+         val source = requireNotNull(database.salesDao().customerById(sourceId))
+         assertFalse(source.isActive)
+         assertEquals("MERGED", source.status)
+-        assertEquals(0L, database.customerReceivableDao().balanceRial(sourceId))
+-        assertEquals(sourceBefore + targetBefore, database.customerReceivableDao().balanceRial(targetId))
+-        assertEquals(3, database.customerReceivableDao().ledger(targetId).size)
++        // Historical rows stay owned by their original party; merge is an alias/read-model relation.
++        assertEquals(sourceBefore, database.customerReceivableDao().balanceRial(sourceId))
++        assertEquals(targetBefore, database.customerReceivableDao().balanceRial(targetId))
++        assertEquals(sourceId, requireNotNull(database.salesDao().invoiceById(postedInvoiceId)).customerId)
++        assertEquals(sourceLedgerIdsBefore, database.customerReceivableDao().ledger(sourceId).map { it.id })
++        assertEquals(0L, scalar("SELECT COUNT(*) FROM customer_receivable_ledger WHERE customerId=$targetId AND id IN (${sourceLedgerIdsBefore.joinToString()})"))
++        val logicalLedger = service.observeLedger(targetId).first()
++        assertEquals(3, logicalLedger.size)
++        assertEquals(sourceBefore + targetBefore, logicalLedger.sumOf { it.debitRial - it.creditRial })
+         assertEquals(1L, scalar("SELECT COUNT(*) FROM customer_merge_history WHERE id=$mergeId AND sourceCustomerId=$sourceId AND targetCustomerId=$targetId"))
+         assertEquals(1L, scalar("SELECT COUNT(*) FROM audit_logs WHERE entityType='CUSTOMER' AND entityId=$targetId AND action='MERGE'"))
+     }
+@@ -143,6 +162,7 @@ class CrmReceivablesIntegrationTest {
+                 businessEpochDay = 33_000L,
+                 amountRial = 40_000L,
+                 direction = ReceivableAdjustmentDirection.DEBIT,
++                economicNature = ReceivableAdjustmentEconomicNature.SALES_CORRECTION,
+                 dueEpochDay = 33_010L,
+                 reason = "اصلاح بدهکار تایید شده",
+                 commandId = "crm-adjustment-debit-1",
+@@ -154,6 +174,7 @@ class CrmReceivablesIntegrationTest {
+                 businessEpochDay = 33_001L,
+                 amountRial = 15_000L,
+                 direction = ReceivableAdjustmentDirection.CREDIT,
++                economicNature = ReceivableAdjustmentEconomicNature.SALES_CORRECTION,
+                 reason = "اصلاح بستانکار تایید شده",
+                 commandId = "crm-adjustment-credit-1",
+             ),
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt
+index 18b0142..2bd33db 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt
+@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.data.db.AppDatabase
+ import ir.restaurant.management.data.db.BranchEntity
+ import ir.restaurant.management.data.db.BranchLegacyAliasEntity
++import ir.restaurant.management.data.db.DailySalesSummaryEntity
+ import ir.restaurant.management.data.db.PurchaseEntity
+ import ir.restaurant.management.data.db.SalesInvoiceEntity
+ import ir.restaurant.management.data.db.SupplierEntity
+@@ -36,7 +37,7 @@ class DashboardBranchFilteringIntegrationTest {
+     @After fun tearDown() { database.close() }
+ 
+     @Test
+-    fun canonicalBranchIdsIsolateDashboardDataAndPreserveLegacySalesCompatibility() = runBlocking {
++    fun canonicalBranchIdsIsolateDashboardDataAndIgnoreLegacySalesTruth() = runBlocking {
+         val fixture = seedTwoBranches()
+         val repository = DashboardRepository(database)
+ 
+@@ -117,8 +118,11 @@ class DashboardBranchFilteringIntegrationTest {
+         )
+         database.purchaseDao().insert(purchase("PUR-A", supplierId, idA, "Branch A", day, 1_000))
+         database.purchaseDao().insert(purchase("PUR-B", supplierId, idB, "Branch B", day, 3_000))
+-        database.salesDao().insertInvoice(invoice("SAL-A", "cmd-a", "Branch A", day, 100))
+-        database.salesDao().insertInvoice(invoice("SAL-B", "cmd-b", "Branch B", day, 300))
++        database.dailySalesDao().insertSummary(dailySale("DS-A", idA, day, 100))
++        database.dailySalesDao().insertSummary(dailySale("DS-B", idB, day, 300))
++        // Legacy sales rows remain historical compatibility data and must not become a second dashboard truth.
++        database.salesDao().insertInvoice(invoice("SAL-LEGACY-A", "legacy-cmd-a", "Branch A", day, 900))
++        database.salesDao().insertInvoice(invoice("SAL-LEGACY-B", "legacy-cmd-b", "Branch B", day, 800))
+         return Fixture(day, idA, idB)
+     }
+ 
+@@ -139,6 +143,15 @@ class DashboardBranchFilteringIntegrationTest {
+             createdAtEpochMillis = day * 86_400_000L,
+         )
+ 
++
++    private fun dailySale(globalId: String, branchId: Long, day: Long, amount: Long) =
++        DailySalesSummaryEntity(
++            globalId = globalId, branchId = branchId, businessEpochDay = day,
++            grossSalesRial = amount, discountRial = 0, serviceRial = 0, taxRial = 0, netSalesRial = amount,
++            theoreticalCostRial = 0, cashRial = amount, cardRial = 0, transferRial = 0, notes = "canonical-dashboard-test",
++            journalEntryId = null, costJournalEntryId = null, createdAtEpochMillis = day * 86_400_000L, status = "POSTED",
++        )
++
+     private fun invoice(no: String, command: String, branch: String, day: Long, amount: Long) =
+         SalesInvoiceEntity(
+             invoiceNo = no,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchRenameCompatibilityIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchRenameCompatibilityIntegrationTest.kt
+index 05ac5a8..6160003 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchRenameCompatibilityIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchRenameCompatibilityIntegrationTest.kt
+@@ -4,6 +4,7 @@ import android.content.Context
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.DailySalesSummaryEntity
+ import ir.restaurant.management.data.db.SalesInvoiceEntity
+ import ir.restaurant.management.data.security.SessionAuthorizer
+ import ir.restaurant.management.domain.branch.BranchDraft
+@@ -38,9 +39,10 @@ class DashboardBranchRenameCompatibilityIntegrationTest {
+     fun tearDown() = database.close()
+ 
+     @Test
+-    fun legacySalesRemainAttributedToSameBranchIdAfterRename() = runBlocking {
++    fun canonicalDailySalesRemainAttributedToSameBranchIdAfterRename() = runBlocking {
+         val branchId = branches.create(BranchDraft(name = "ونک", code = "VNK"))
+-        database.salesDao().insertInvoice(invoice("REN-BEFORE", "rename-before", "ونک", 100_000L))
++        database.dailySalesDao().insertSummary(dailySale("rename-before", branchId, 100_000L))
++        database.salesDao().insertInvoice(invoice("REN-LEGACY-BEFORE", "legacy-rename-before", "ونک", 900_000L))
+ 
+         val before = DashboardRepository(database)
+             .observeRange(day, day, DashboardPeriod.TODAY, branchId = branchId)
+@@ -49,7 +51,8 @@ class DashboardBranchRenameCompatibilityIntegrationTest {
+         assertEquals(100_000L, before.grossSalesRial)
+ 
+         branches.rename(branchId, "ونک مرکزی")
+-        database.salesDao().insertInvoice(invoice("REN-AFTER", "rename-after", "ونک مرکزی", 200_000L))
++        database.dailySalesDao().insertSummary(dailySale("rename-after", branchId, 200_000L))
++        database.salesDao().insertInvoice(invoice("REN-LEGACY-AFTER", "legacy-rename-after", "ونک مرکزی", 800_000L))
+ 
+         val after = DashboardRepository(database)
+             .observeRange(day, day, DashboardPeriod.TODAY, branchId = branchId)
+@@ -75,9 +78,17 @@ class DashboardBranchRenameCompatibilityIntegrationTest {
+ 
+         assertEquals(0L, firstSnapshot.grossSalesRial)
+         assertEquals(0L, secondSnapshot.grossSalesRial)
+-        assertEquals(500_000L, organization.grossSalesRial)
++        assertEquals(0L, organization.grossSalesRial)
+     }
+ 
++
++    private fun dailySale(globalId: String, branchId: Long, amount: Long) = DailySalesSummaryEntity(
++        globalId = globalId, branchId = branchId, businessEpochDay = day, grossSalesRial = amount, discountRial = 0L,
++        serviceRial = 0L, taxRial = 0L, netSalesRial = amount, theoreticalCostRial = 0L, cashRial = amount,
++        cardRial = 0L, transferRial = 0L, notes = "canonical-rename-dashboard-regression", journalEntryId = null,
++        costJournalEntryId = null, createdAtEpochMillis = ++now, status = "POSTED",
++    )
++
+     private fun invoice(no: String, command: String, branchName: String, amount: Long) = SalesInvoiceEntity(
+         invoiceNo = no,
+         commandId = command,
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AccountingDao.kt b/app/src/main/java/ir/restaurant/management/data/db/AccountingDao.kt
+index 3694025..494ebbb 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AccountingDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AccountingDao.kt
+@@ -278,10 +278,9 @@ interface AccountingDao {
+             debitLine.debitRial AS amountRial,
+             CASE creditLine.accountCode
+                 WHEN '1101' THEN 'نقدی'
+-                ELSE CASE
+-                    WHEN je.description LIKE '%حواله%' THEN 'حواله'
+-                    ELSE 'کارتخوان'
+-                END
++                WHEN '1104' THEN 'کارتخوان'
++                WHEN '1102' THEN 'حواله'
++                ELSE 'نامشخص'
+             END AS paymentMethod,
+             creditLine.memo AS referenceNo,
+             debitLine.memo AS notes,
+@@ -289,7 +288,7 @@ interface AccountingDao {
+                 SELECT 1
+                 FROM journal_entries reversal
+                 WHERE reversal.sourceType = 'PURCHASE_SETTLEMENT_REVERSAL'
+-                  AND reversal.sourceId = je.id
++                  AND reversal.reversalOfEntryId = je.id
+                   AND reversal.status = 'POSTED'
+             ) AS isReversed
+         FROM journal_entries je
+@@ -313,7 +312,7 @@ interface AccountingDao {
+         SELECT EXISTS(
+             SELECT 1 FROM journal_entries
+             WHERE sourceType = 'PURCHASE_SETTLEMENT_REVERSAL'
+-              AND sourceId = :settlementEntryId
++              AND reversalOfEntryId = :settlementEntryId
+               AND status = 'POSTED'
+         )
+         """,
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/DashboardAnalyticsDao.kt b/app/src/main/java/ir/restaurant/management/data/db/DashboardAnalyticsDao.kt
+index 2572418..802c351 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/DashboardAnalyticsDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/DashboardAnalyticsDao.kt
+@@ -8,24 +8,14 @@ import kotlinx.coroutines.flow.Flow
+ interface DashboardAnalyticsDao {
+     @Query(
+         """
+-        WITH deterministic_branch_aliases AS (
+-          SELECT normalizedAlias
+-          FROM branch_legacy_aliases
+-          GROUP BY normalizedAlias
+-          HAVING COUNT(DISTINCT branchId)=1 AND MAX(branchId)=:branchId
+-        )
+         SELECT
+-          COALESCE((SELECT SUM(si.grossRial) FROM sales_invoices si WHERE si.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND si.status!='VOIDED' AND (:branchId IS NULL OR lower(trim(si.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS grossSalesRial,
+-          COALESCE((SELECT SUM(si.netRial) FROM sales_invoices si WHERE si.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND si.status!='VOIDED' AND (:branchId IS NULL OR lower(trim(si.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0)
+-            - COALESCE((SELECT SUM(sr.refundRial) FROM sales_returns sr INNER JOIN sales_invoices sri ON sri.id=sr.invoiceId WHERE sr.returnEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND (:branchId IS NULL OR lower(trim(sri.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS netSalesRial,
+-          COALESCE((SELECT SUM(si.discountRial) FROM sales_invoices si WHERE si.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND si.status!='VOIDED' AND (:branchId IS NULL OR lower(trim(si.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS discountRial,
+-          COALESCE((SELECT SUM(si.taxRial) FROM sales_invoices si WHERE si.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND si.status!='VOIDED' AND (:branchId IS NULL OR lower(trim(si.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0)
+-            - COALESCE((SELECT SUM(sr.taxRial) FROM sales_returns sr INNER JOIN sales_invoices sri ON sri.id=sr.invoiceId WHERE sr.returnEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND (:branchId IS NULL OR lower(trim(sri.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS taxRial,
+-          COALESCE((SELECT SUM(si.serviceRial) FROM sales_invoices si WHERE si.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND si.status!='VOIDED' AND (:branchId IS NULL OR lower(trim(si.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0)
+-            - COALESCE((SELECT SUM(sr.serviceRial) FROM sales_returns sr INNER JOIN sales_invoices sri ON sri.id=sr.invoiceId WHERE sr.returnEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND (:branchId IS NULL OR lower(trim(sri.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS serviceRial,
+-          COALESCE((SELECT SUM(sr.refundRial) FROM sales_returns sr INNER JOIN sales_invoices sri ON sri.id=sr.invoiceId WHERE sr.returnEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND (:branchId IS NULL OR lower(trim(sri.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS salesReturnRial,
+-          COALESCE((SELECT SUM(si.theoreticalCostRial) FROM sales_invoices si WHERE si.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND si.status!='VOIDED' AND (:branchId IS NULL OR lower(trim(si.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0)
+-            - COALESCE((SELECT SUM(sr.cogsRial) FROM sales_returns sr INNER JOIN sales_invoices sri ON sri.id=sr.invoiceId WHERE sr.returnEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND (:branchId IS NULL OR lower(trim(sri.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS cogsRial,
++          COALESCE((SELECT SUM(ds.grossSalesRial) FROM daily_sales_summaries ds WHERE ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND (:branchId IS NULL OR ds.branchId=:branchId)),0) AS grossSalesRial,
++          COALESCE((SELECT SUM(ds.netSalesRial) FROM daily_sales_summaries ds WHERE ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND (:branchId IS NULL OR ds.branchId=:branchId)),0) AS netSalesRial,
++          COALESCE((SELECT SUM(ds.discountRial) FROM daily_sales_summaries ds WHERE ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND (:branchId IS NULL OR ds.branchId=:branchId)),0) AS discountRial,
++          COALESCE((SELECT SUM(ds.taxRial) FROM daily_sales_summaries ds WHERE ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND (:branchId IS NULL OR ds.branchId=:branchId)),0) AS taxRial,
++          COALESCE((SELECT SUM(ds.serviceRial) FROM daily_sales_summaries ds WHERE ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND (:branchId IS NULL OR ds.branchId=:branchId)),0) AS serviceRial,
++          COALESCE((SELECT SUM(ds.returnRial) FROM daily_sales_summaries ds WHERE ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND (:branchId IS NULL OR ds.branchId=:branchId)),0) AS salesReturnRial,
++          COALESCE((SELECT SUM(ds.theoreticalCostRial) FROM daily_sales_summaries ds WHERE ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND (:branchId IS NULL OR ds.branchId=:branchId)),0) AS cogsRial,
+           COALESCE((SELECT SUM(p.totalRial) FROM purchases p WHERE p.purchaseEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND p.paymentStatus!='REVERSED' AND (:branchId IS NULL OR p.branchId=:branchId)),0) AS purchaseRial,
+           COALESCE((SELECT SUM(pr.supplierCreditValueRial) FROM purchase_returns pr LEFT JOIN purchases pp ON pp.id=pr.purchaseId WHERE pr.returnEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND (:branchId IS NULL OR pp.branchId=:branchId)),0) AS purchaseReturnRial,
+           COALESCE((SELECT SUM(p.totalRial-p.paidRial) FROM purchases p WHERE p.paymentStatus IN ('UNPAID','PARTIAL') AND (:branchId IS NULL OR p.branchId=:branchId)),0) AS supplierPayablesRial,
+@@ -49,9 +39,9 @@ interface DashboardAnalyticsDao {
+              (:warehouseLocationId IS NULL AND :branchId IS NOT NULL AND EXISTS(SELECT 1 FROM inventory_balances b INNER JOIN storage_locations sl ON sl.id=b.locationId WHERE b.itemId=i.id AND sl.branchId=:branchId AND b.onHandMicros>0)) OR
+              (:warehouseLocationId IS NOT NULL AND EXISTS(SELECT 1 FROM inventory_balances b INNER JOIN storage_locations sl ON sl.id=b.locationId WHERE b.itemId=i.id AND b.locationId=:warehouseLocationId AND (:branchId IS NULL OR sl.branchId=:branchId) AND b.onHandMicros>0))) AND
+             NOT EXISTS(SELECT 1 FROM stock_movements sm LEFT JOIN storage_locations slm ON slm.id=sm.locationId WHERE sm.itemId=i.id AND sm.movementEpochDay>=(:toEpochDay-30) AND (:warehouseLocationId IS NULL OR sm.locationId=:warehouseLocationId) AND (:branchId IS NULL OR slm.branchId=:branchId))),0) AS slowStockCount,
+-          COALESCE((SELECT SUM(jl.debitRial-jl.creditRial) FROM journal_lines jl INNER JOIN journal_entries je ON je.id=jl.entryId WHERE je.status='POSTED' AND jl.accountCode='1101'),0) AS cashBalanceRial,
+-          COALESCE((SELECT SUM(jl.debitRial-jl.creditRial) FROM journal_lines jl INNER JOIN journal_entries je ON je.id=jl.entryId WHERE je.status='POSTED' AND jl.accountCode='1102'),0) AS bankBalanceRial,
+-          COALESCE((SELECT SUM(l.debitRial-l.creditRial) FROM customer_receivable_ledger l INNER JOIN customers c ON c.id=l.customerId WHERE (:branchId IS NULL OR lower(trim(c.branch)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS customerReceivablesRial,
++          COALESCE((SELECT SUM(jl.debitRial-jl.creditRial) FROM journal_lines jl INNER JOIN journal_entries je ON je.id=jl.entryId WHERE je.status='POSTED' AND jl.accountCode='1101' AND (:branchId IS NULL OR (je.accountingScope='BRANCH' AND je.branchId=:branchId))),0) AS cashBalanceRial,
++          COALESCE((SELECT SUM(jl.debitRial-jl.creditRial) FROM journal_lines jl INNER JOIN journal_entries je ON je.id=jl.entryId WHERE je.status='POSTED' AND jl.accountCode='1102' AND (:branchId IS NULL OR (je.accountingScope='BRANCH' AND je.branchId=:branchId))),0) AS bankBalanceRial,
++          COALESCE((SELECT SUM(r.outstandingAmountRial) FROM receivables r WHERE r.status IN ('OPEN','PARTIALLY_PAID') AND (:branchId IS NULL OR r.branchId=:branchId)),0) AS customerReceivablesRial,
+           COALESCE((SELECT COUNT(DISTINCT ae.employeeId) FROM attendance_events ae INNER JOIN employees e ON e.id=ae.employeeId WHERE ae.businessEpochDay=:toEpochDay AND ae.eventType IN ('CHECK_IN','IN') AND (:branchId IS NULL OR e.branchId=:branchId)),0) AS presentCount,
+           COALESCE((SELECT COUNT(*) FROM planned_shifts ps INNER JOIN employees e ON e.id=ps.employeeId WHERE ps.epochDay=:toEpochDay AND (:branchId IS NULL OR e.branchId=:branchId) AND NOT EXISTS(SELECT 1 FROM attendance_events ae WHERE ae.employeeId=ps.employeeId AND ae.businessEpochDay=:toEpochDay AND ae.eventType IN ('CHECK_IN','IN'))),0) AS absentCount,
+           COALESCE((SELECT COUNT(*) FROM attendance_corrections ac INNER JOIN employees e ON e.id=ac.employeeId WHERE ac.businessEpochDay=:toEpochDay AND ac.status='PENDING' AND (:branchId IS NULL OR e.branchId=:branchId)),0) AS attendanceAnomalyCount,
+@@ -59,8 +49,8 @@ interface DashboardAnalyticsDao {
+           COALESCE((SELECT SUM(MAX(0,fa.purchaseCostRial-fa.accumulatedDepreciationRial-fa.impairmentRial)) FROM fixed_assets fa WHERE fa.status='ACTIVE' AND (:branchId IS NULL OR fa.branchId=:branchId)),0) AS assetBookValueRial,
+           COALESCE((SELECT SUM(ad.amountRial) FROM asset_depreciations ad INNER JOIN fixed_assets fa ON fa.id=ad.assetId WHERE ((ad.periodYear*12)+ad.periodMonth) >= 0 AND (:branchId IS NULL OR fa.branchId=:branchId)),0) AS accumulatedDepreciationRial,
+           COALESCE((SELECT COUNT(*) FROM asset_maintenance am INNER JOIN fixed_assets fa ON fa.id=am.assetId WHERE fa.status='ACTIVE' AND (:branchId IS NULL OR fa.branchId=:branchId) AND am.nextServiceEpochDay IS NOT NULL AND am.nextServiceEpochDay<=:toEpochDay+30 AND am.id=(SELECT MAX(am2.id) FROM asset_maintenance am2 WHERE am2.assetId=am.assetId)),0) AS dueMaintenanceCount,
+-          COALESCE((SELECT COUNT(*) FROM sales_invoices si WHERE si.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND si.status!='VOIDED' AND (:branchId IS NULL OR lower(trim(si.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS invoiceCount,
+-          COALESCE((SELECT COUNT(*) FROM sales_returns sr INNER JOIN sales_invoices sri ON sri.id=sr.invoiceId WHERE sr.returnEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND (:branchId IS NULL OR lower(trim(sri.branchName)) IN (SELECT normalizedAlias FROM deterministic_branch_aliases))),0) AS returnCount
++          COALESCE((SELECT COUNT(*) FROM daily_sales_summaries ds WHERE ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND (:branchId IS NULL OR ds.branchId=:branchId)),0) AS invoiceCount,
++          COALESCE((SELECT COUNT(*) FROM daily_sales_summaries ds WHERE ds.businessEpochDay BETWEEN :fromEpochDay AND :toEpochDay AND ds.status='POSTED' AND ds.returnRial>0 AND (:branchId IS NULL OR ds.branchId=:branchId)),0) AS returnCount
+         """,
+     )
+     fun observeRange(
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/CanonicalReceivableReadModel.kt b/app/src/main/java/ir/restaurant/management/data/repository/CanonicalReceivableReadModel.kt
+index c70c3bc..3747c12 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/CanonicalReceivableReadModel.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/CanonicalReceivableReadModel.kt
+@@ -132,9 +132,10 @@ internal class CanonicalReceivableReadModel(private val database: AppDatabase) {
+ 
+     suspend fun openLotsForParty(partyId: Long): List<CanonicalOpenReceivableLot> {
+         require(partyId > 0) { "طرف‌حساب معتبر نیست." }
+-        val ledger = database.customerReceivableDao().allLedger()
+-        val explicit = CanonicalReceivableAllocator.explicitLots(database.businessOperationsDao().openReceivablesForParty(partyId), ledger)
+-        val legacy = CanonicalReceivableAllocator.legacyLots(ledger.filter { it.customerId == partyId })
++        val partyIds = database.customerReceivableDao().mergedCustomerIds(partyId).distinct()
++        val ledger = database.customerReceivableDao().ledgerForCustomers(partyIds)
++        val explicit = CanonicalReceivableAllocator.explicitLots(database.businessOperationsDao().openReceivablesForParties(partyIds), ledger)
++        val legacy = CanonicalReceivableAllocator.legacyLots(ledger)
+         return explicit + legacy
+     }
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/DashboardRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/DashboardRepository.kt
+index 54fce40..034b86c 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/DashboardRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/DashboardRepository.kt
+@@ -86,8 +86,8 @@ class DashboardRepository(private val database: AppDatabase) {
+         }.distinctUntilChanged()
+ 
+         return branchContext.flatMapLatest { branch ->
+-            // Compatibility boundary: canonical branchId is retained end-to-end. Legacy rows
+-            // are resolved only through deterministic historical aliases; display name is never identity.
++            // Canonical branchId is retained end-to-end. Financial dashboard reads are based on
++            // canonical Daily Sales/AR/Treasury sources; legacy display names are never identity.
+             val analytics = database.dashboardAnalyticsDao().observeRange(
+                 fromEpochDay = fromEpochDay,
+                 toEpochDay = toEpochDay,
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalCustomerAccountService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalCustomerAccountService.kt
+index a97cdb8..65db5aa 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalCustomerAccountService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalCustomerAccountService.kt
+@@ -17,6 +17,7 @@ import ir.restaurant.management.domain.crm.CustomerDuplicateCandidate
+ import ir.restaurant.management.domain.crm.CustomerOpeningBalanceCommand
+ import ir.restaurant.management.domain.crm.CustomerReceivableAdjustmentCommand
+ import ir.restaurant.management.domain.crm.ReceivableAdjustmentDirection
++import ir.restaurant.management.domain.crm.ReceivableAdjustmentEconomicNature
+ import ir.restaurant.management.domain.crm.ReceivableAging
+ import ir.restaurant.management.domain.crm.ReceivableLedgerRecord
+ import ir.restaurant.management.domain.security.AuthorizationService
+@@ -34,7 +35,7 @@ class LocalCustomerAccountService(
+ 
+     override fun observeLedger(customerId: Long): Flow<List<ReceivableLedgerRecord>> {
+         require(customerId > 0)
+-        return database.customerReceivableDao().observeLedger(customerId).map { rows ->
++        return database.customerReceivableDao().observeLedgerIncludingMerged(customerId).map { rows ->
+             rows.map { ReceivableLedgerRecord(it.id, it.customerId, it.businessEpochDay, it.entryType, it.debitRial, it.creditRial, it.sourceType, it.sourceId, it.reference, it.dueEpochDay) }
+         }
+     }
+@@ -175,14 +176,19 @@ class LocalCustomerAccountService(
+                 ),
+             )
+             val money = MoneyRial.of(valid.amountRial)
++            val counterpartRole = when (valid.economicNature) {
++                ReceivableAdjustmentEconomicNature.SALES_CORRECTION -> SemanticAccountRole.SALES_REVENUE
++                ReceivableAdjustmentEconomicNature.OTHER_INCOME -> SemanticAccountRole.OTHER_INCOME
++                ReceivableAdjustmentEconomicNature.OPERATING_EXPENSE -> SemanticAccountRole.OTHER_OPERATING_EXPENSE
++            }
+             val lines = if (valid.direction == ReceivableAdjustmentDirection.DEBIT) {
+                 listOf(
+                     SemanticJournalLine(SemanticAccountRole.CUSTOMER_RECEIVABLE, debit = money, memo = customer.name),
+-                    SemanticJournalLine(SemanticAccountRole.OTHER_INCOME, credit = money, memo = valid.reason),
++                    SemanticJournalLine(counterpartRole, credit = money, memo = valid.reason),
+                 )
+             } else {
+                 listOf(
+-                    SemanticJournalLine(SemanticAccountRole.OTHER_OPERATING_EXPENSE, debit = money, memo = valid.reason),
++                    SemanticJournalLine(counterpartRole, debit = money, memo = valid.reason),
+                     SemanticJournalLine(SemanticAccountRole.CUSTOMER_RECEIVABLE, credit = money, memo = customer.name),
+                 )
+             }
+@@ -222,12 +228,7 @@ class LocalCustomerAccountService(
+             val beforeSourceBalance = database.customerReceivableDao().balanceRial(source.id)
+             val beforeTargetBalance = database.customerReceivableDao().balanceRial(target.id)
+             val crm = database.customerReceivableDao()
+-            crm.moveSalesInvoices(source.id, target.id)
+-            crm.moveLedger(source.id, target.id)
+-            database.businessOperationsDao().moveReceivables(source.id, target.id)
+             val expectedMergedBalance = SignedLongMath.add(beforeSourceBalance, beforeTargetBalance)
+-            check(database.customerReceivableDao().balanceRial(source.id) == 0L) { "مانده طرف‌حساب مبدا بعد از ادغام صفر نشد." }
+-            check(database.customerReceivableDao().balanceRial(target.id) == expectedMergedBalance) { "مانده یکپارچه طرف‌حساب بعد از ادغام ناسازگار است." }
+             val now = clock()
+             check(database.salesDao().markCustomerMerged(source.id, now) == 1) { "غیرفعال‌سازی مشتری ادغام‌شده انجام نشد." }
+             val mergeId = crm.insertMerge(
+@@ -243,7 +244,7 @@ class LocalCustomerAccountService(
+                 authorizer, "MERGE", "CUSTOMER", target.id,
+                 "ادغام ${source.customerCode} در ${target.customerCode}", now, reason = normalized,
+                 beforeSnapshot = "sourceBalance=$beforeSourceBalance;targetBalance=$beforeTargetBalance",
+-                afterSnapshot = "sourceStatus=MERGED;targetBalance=$expectedMergedBalance;mergeId=$mergeId",
++                afterSnapshot = "sourceStatus=MERGED;logicalMergedBalance=$expectedMergedBalance;historicalRowsRewritten=false;mergeId=$mergeId",
+                 correlationId = "customer_merge:$mergeId", referenceType = "CUSTOMER", referenceId = source.id,
+             )
+             mergeId
+diff --git a/app/src/main/java/ir/restaurant/management/domain/crm/CrmModels.kt b/app/src/main/java/ir/restaurant/management/domain/crm/CrmModels.kt
+index 38d144b..5737fdb 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/crm/CrmModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/crm/CrmModels.kt
+@@ -30,6 +30,12 @@ data class CustomerDuplicateCandidate(val id: Long, val customerCode: String, va
+ 
+ enum class ReceivableAdjustmentDirection { DEBIT, CREDIT }
+ 
++enum class ReceivableAdjustmentEconomicNature {
++    SALES_CORRECTION,
++    OTHER_INCOME,
++    OPERATING_EXPENSE,
++}
++
+ data class CustomerOpeningBalanceCommand(
+     val customerId: Long,
+     val businessEpochDay: Long,
+@@ -56,6 +62,7 @@ data class CustomerReceivableAdjustmentCommand(
+     val businessEpochDay: Long,
+     val amountRial: Long,
+     val direction: ReceivableAdjustmentDirection,
++    val economicNature: ReceivableAdjustmentEconomicNature,
+     val dueEpochDay: Long? = null,
+     val reason: String,
+     val commandId: String = GlobalId.new().value,
+@@ -65,6 +72,11 @@ data class CustomerReceivableAdjustmentCommand(
+         require(businessEpochDay > 0) { "تاریخ تعدیل معتبر نیست." }
+         require(amountRial > 0) { "مبلغ تعدیل باید بیشتر از صفر باشد." }
+         require(dueEpochDay == null || dueEpochDay >= businessEpochDay) { "سررسید تعدیل معتبر نیست." }
++        when (economicNature) {
++            ReceivableAdjustmentEconomicNature.SALES_CORRECTION -> Unit
++            ReceivableAdjustmentEconomicNature.OTHER_INCOME -> require(direction == ReceivableAdjustmentDirection.DEBIT) { "سایر درآمد فقط برای افزایش دریافتنی مجاز است." }
++            ReceivableAdjustmentEconomicNature.OPERATING_EXPENSE -> require(direction == ReceivableAdjustmentDirection.CREDIT) { "هزینه عملیاتی فقط برای کاهش دریافتنی مجاز است." }
++        }
+         val normalizedReason = reason.trim()
+         require(normalizedReason.length in 3..300) { "دلیل تعدیل الزامی است." }
+         require(commandId.isNotBlank()) { "شناسه فرمان تعدیل معتبر نیست." }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+index 811e51b..a95f4d1 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+@@ -35,9 +35,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.platform.testTag
+ import androidx.compose.ui.unit.dp
++import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.core.currentLocalEpochDay
+ import ir.restaurant.management.domain.branch.BranchRecord
+ import ir.restaurant.management.domain.crm.ReceivableAdjustmentDirection
++import ir.restaurant.management.domain.crm.ReceivableAdjustmentEconomicNature
+ import ir.restaurant.management.domain.receivables.ReceivableCollectionDraft
+ import ir.restaurant.management.domain.receivables.ReceivableCollectionMethod
+ import ir.restaurant.management.domain.receivables.ReceivableRecord
+@@ -53,7 +55,7 @@ internal fun CrmScreen(
+     onSelect: (Long?) -> Unit,
+     onSaveCustomer: (Long?, CustomerDraft) -> Unit,
+     onPostOpening: (Long, ReceivableAdjustmentDirection, Long, Long?, String) -> Unit,
+-    onPostAdjustment: (Long, ReceivableAdjustmentDirection, Long, Long?, String) -> Unit,
++    onPostAdjustment: (Long, ReceivableAdjustmentDirection, ReceivableAdjustmentEconomicNature, Long, Long?, String) -> Unit,
+     onRefreshAging: (Long) -> Unit,
+     onDetectDuplicates: (Long) -> Unit,
+     onMerge: (Long, String) -> Unit,
+@@ -108,10 +110,11 @@ internal fun CrmScreen(
+             title = if (accountAction == "OPENING") "ثبت مانده افتتاحیه" else "ثبت تعدیل حساب",
+             confirmTag = if (accountAction == "OPENING") "crm_opening_confirm" else "crm_adjustment_confirm",
+             busy = state.busy,
++            adjustmentMode = accountAction == "ADJUSTMENT",
+             onDismiss = { accountAction = null },
+-            onConfirm = { amount, direction, businessDay, dueDay, reason ->
++            onConfirm = { amount, direction, economicNature, businessDay, dueDay, reason ->
+                 if (accountAction == "OPENING") onPostOpening(amount, direction, businessDay, dueDay, reason)
+-                else onPostAdjustment(amount, direction, businessDay, dueDay, reason)
++                else onPostAdjustment(amount, direction, requireNotNull(economicNature), businessDay, dueDay, reason)
+                 accountAction = null
+             },
+         )
+@@ -385,6 +388,7 @@ private fun ReceivableCollectionDialog(
+     var method by remember(receivable.id) { mutableStateOf(ReceivableCollectionMethod.CASH) }
+     var reference by remember(receivable.id) { mutableStateOf("") }
+     var businessDay by remember(receivable.id) { mutableStateOf(currentLocalEpochDay()) }
++    val commandId = remember(receivable.id) { GlobalId.new().value }
+     val parsedAmount = parseMoneyInputOrNull(amount)
+     AlertDialog(
+         onDismissRequest = onDismiss,
+@@ -423,9 +427,11 @@ private fun ReceivableCollectionDialog(
+                 onClick = {
+                     onConfirm(
+                         ReceivableCollectionDraft(
++                            commandId = commandId,
+                             receivableId = receivable.id,
+                             amountRial = parsedAmount ?: 0L,
+                             method = method,
++                            treasuryAccountId = method.canonicalTreasuryAccountId,
+                             reference = reference,
+                             businessEpochDay = businessDay,
+                         ),
+@@ -529,11 +535,13 @@ private fun CustomerAccountEntryDialog(
+     title: String,
+     confirmTag: String,
+     busy: Boolean,
++    adjustmentMode: Boolean,
+     onDismiss: () -> Unit,
+-    onConfirm: (Long, ReceivableAdjustmentDirection, Long, Long?, String) -> Unit,
++    onConfirm: (Long, ReceivableAdjustmentDirection, ReceivableAdjustmentEconomicNature?, Long, Long?, String) -> Unit,
+ ) {
+     var amount by remember { mutableStateOf("") }
+     var direction by remember { mutableStateOf(ReceivableAdjustmentDirection.DEBIT) }
++    var economicNature by remember { mutableStateOf(ReceivableAdjustmentEconomicNature.SALES_CORRECTION) }
+     var businessDay by remember { mutableStateOf(currentLocalEpochDay()) }
+     var dueDay by remember { mutableStateOf(currentLocalEpochDay()) }
+     var reason by remember { mutableStateOf("") }
+@@ -545,8 +553,25 @@ private fun CustomerAccountEntryDialog(
+             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                 OutlinedTextField(amount, { amount = it }, Modifier.fillMaxWidth().testTag("crm_account_amount"), label = { Text("مبلغ (ریال)") })
+                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+-                    OutlinedButton(onClick = { direction = ReceivableAdjustmentDirection.DEBIT }) { Text(if (direction == ReceivableAdjustmentDirection.DEBIT) "✓ بدهکار" else "بدهکار") }
+-                    OutlinedButton(onClick = { direction = ReceivableAdjustmentDirection.CREDIT }) { Text(if (direction == ReceivableAdjustmentDirection.CREDIT) "✓ بستانکار" else "بستانکار") }
++                    OutlinedButton(onClick = { direction = ReceivableAdjustmentDirection.DEBIT; if (economicNature == ReceivableAdjustmentEconomicNature.OPERATING_EXPENSE) economicNature = ReceivableAdjustmentEconomicNature.SALES_CORRECTION }) { Text(if (direction == ReceivableAdjustmentDirection.DEBIT) "✓ بدهکار" else "بدهکار") }
++                    OutlinedButton(onClick = { direction = ReceivableAdjustmentDirection.CREDIT; if (economicNature == ReceivableAdjustmentEconomicNature.OTHER_INCOME) economicNature = ReceivableAdjustmentEconomicNature.SALES_CORRECTION }) { Text(if (direction == ReceivableAdjustmentDirection.CREDIT) "✓ بستانکار" else "بستانکار") }
++                }
++                if (adjustmentMode) {
++                    Text("ماهیت اقتصادی تعدیل", style = MaterialTheme.typography.labelLarge)
++                    val allowedNatures = if (direction == ReceivableAdjustmentDirection.DEBIT) {
++                        listOf(ReceivableAdjustmentEconomicNature.SALES_CORRECTION, ReceivableAdjustmentEconomicNature.OTHER_INCOME)
++                    } else {
++                        listOf(ReceivableAdjustmentEconomicNature.SALES_CORRECTION, ReceivableAdjustmentEconomicNature.OPERATING_EXPENSE)
++                    }
++                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
++                        allowedNatures.forEach { nature ->
++                            FilterChip(
++                                selected = economicNature == nature,
++                                onClick = { economicNature = nature },
++                                label = { Text(receivableAdjustmentNatureTitle(nature)) },
++                            )
++                        }
++                    }
+                 }
+                 PersianDateField("تاریخ ثبت", businessDay) { businessDay = it; if (dueDay < it) dueDay = it }
+                 PersianDateField("سررسید", dueDay) { dueDay = it }
+@@ -557,7 +582,7 @@ private fun CustomerAccountEntryDialog(
+             Button(
+                 enabled = !busy && parsedAmount != null && parsedAmount > 0 && dueDay >= businessDay && reason.trim().length >= 3,
+                 modifier = Modifier.testTag(confirmTag),
+-                onClick = { onConfirm(parsedAmount ?: 0L, direction, businessDay, dueDay, reason) },
++                onClick = { onConfirm(parsedAmount ?: 0L, direction, economicNature.takeIf { adjustmentMode }, businessDay, dueDay, reason) },
+             ) { Text("ثبت با سند حسابداری") }
+         },
+         dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } },
+@@ -565,6 +590,12 @@ private fun CustomerAccountEntryDialog(
+ }
+ 
+ 
++private fun receivableAdjustmentNatureTitle(nature: ReceivableAdjustmentEconomicNature): String = when (nature) {
++    ReceivableAdjustmentEconomicNature.SALES_CORRECTION -> "اصلاح فروش"
++    ReceivableAdjustmentEconomicNature.OTHER_INCOME -> "سایر درآمد"
++    ReceivableAdjustmentEconomicNature.OPERATING_EXPENSE -> "هزینه عملیاتی"
++}
++
+ private fun customerStatusTitle(status: String): String = when (status) {
+     "ACTIVE" -> "فعال"
+     "ON_HOLD" -> "متوقف"
+diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/CrmViewModel.kt
+index 58f0d42..360926d 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/CrmViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/CrmViewModel.kt
+@@ -11,6 +11,7 @@ import ir.restaurant.management.domain.crm.CustomerDuplicateCandidate
+ import ir.restaurant.management.domain.crm.CustomerOpeningBalanceCommand
+ import ir.restaurant.management.domain.crm.CustomerReceivableAdjustmentCommand
+ import ir.restaurant.management.domain.crm.ReceivableAdjustmentDirection
++import ir.restaurant.management.domain.crm.ReceivableAdjustmentEconomicNature
+ import ir.restaurant.management.domain.crm.ReceivableAging
+ import ir.restaurant.management.domain.crm.ReceivableLedgerRecord
+ import ir.restaurant.management.domain.receivables.ReceivableAging as BranchReceivableAging
+@@ -144,13 +145,14 @@ class CrmViewModel(
+     fun postAdjustment(
+         amountRial: Long,
+         direction: ReceivableAdjustmentDirection,
++        economicNature: ReceivableAdjustmentEconomicNature,
+         businessEpochDay: Long,
+         dueEpochDay: Long?,
+         reason: String,
+     ) {
+         val customerId = selected.value ?: return
+         command("تعدیل حساب با سند حسابداری ثبت شد.") {
+-            crm.postAdjustment(CustomerReceivableAdjustmentCommand(customerId, businessEpochDay, amountRial, direction, dueEpochDay, reason))
++            crm.postAdjustment(CustomerReceivableAdjustmentCommand(customerId, businessEpochDay, amountRial, direction, economicNature, dueEpochDay, reason))
+             refreshAgingAfterCommand(customerId)
+         }
+     }
+diff --git a/app/src/test/java/ir/restaurant/management/phase2/Phase2BusinessContractTests.kt b/app/src/test/java/ir/restaurant/management/phase2/Phase2BusinessContractTests.kt
+index e47f14f..727f29e 100644
+--- a/app/src/test/java/ir/restaurant/management/phase2/Phase2BusinessContractTests.kt
++++ b/app/src/test/java/ir/restaurant/management/phase2/Phase2BusinessContractTests.kt
+@@ -15,8 +15,8 @@ class DailySalesPersonalCreditTest { @Test fun personalCreditRequiresParty(){ as
+ class DailySalesCorporateCreditTest { @Test fun corporateCreditRequiresParty(){ assertFailsWith<IllegalArgumentException>{ balanced(SalesSettlementType.CORPORATE_CREDIT) }; assertEquals(9,balanced(SalesSettlementType.CORPORATE_CREDIT,partyId=9).settlements.single().partyId) } }
+ class SettlementMismatchTest { @Test fun underSettlementBlocked(){ assertFailsWith<IllegalArgumentException>{ DailySalesPostingDraft(1,1,100,0,0,listOf(DailySalesSettlementDraft(SalesSettlementType.CASH,99))).validated() } } }
+ class OverSettlementTest { @Test fun overSettlementBlocked(){ assertFailsWith<IllegalArgumentException>{ DailySalesPostingDraft(1,1,100,0,0,listOf(DailySalesSettlementDraft(SalesSettlementType.CASH,101))).validated() } } }
+-class PersonalReceivableCollectionTest { @Test fun collectionMustBePositive(){ assertFailsWith<IllegalArgumentException>{ ReceivableCollectionDraft(1,0,ReceivableCollectionMethod.CASH,businessEpochDay=2).validated(100) } } }
+-class PartialCollectionTest { @Test fun partialCollectionPreservesDifference(){ val v=ReceivableCollectionDraft(1,30,ReceivableCollectionMethod.CASH,businessEpochDay=2).validated(100); assertEquals(70,100-v.amountRial) } }
++class PersonalReceivableCollectionTest { @Test fun collectionMustBePositive(){ assertFailsWith<IllegalArgumentException>{ ReceivableCollectionDraft(receivableId=1, amountRial=0, method=ReceivableCollectionMethod.CASH, businessEpochDay=2).validated(100) } } }
++class PartialCollectionTest { @Test fun partialCollectionPreservesDifference(){ val v=ReceivableCollectionDraft(receivableId=1, amountRial=30, method=ReceivableCollectionMethod.CASH, businessEpochDay=2).validated(100); assertEquals(70,100-v.amountRial) } }
+ class WasteSpikeRuleTest { @Test fun thresholdDefaultIsPositive(){ assertTrue(ManagementDefaults.WASTE_SPIKE_BASIS_POINTS>0) } }
+ class PurchasePriceSpikeRuleTest { @Test fun thresholdDefaultIsPositive(){ assertTrue(ManagementDefaults.PURCHASE_PRICE_INCREASE_BASIS_POINTS>0) } }
+ class CashVarianceRuleTest { @Test fun rialThresholdCannotBeNegative(){ assertTrue(ManagementDefaults.CASH_VARIANCE_RIAL>=0) } }
+diff --git a/app/src/test/java/ir/restaurant/management/ui/Phase2DashboardModelsTest.kt b/app/src/test/java/ir/restaurant/management/ui/Phase2DashboardModelsTest.kt
+index bbc6067..abca470 100644
+--- a/app/src/test/java/ir/restaurant/management/ui/Phase2DashboardModelsTest.kt
++++ b/app/src/test/java/ir/restaurant/management/ui/Phase2DashboardModelsTest.kt
+@@ -1,5 +1,6 @@
+ package ir.restaurant.management.ui
+ 
++import ir.restaurant.management.domain.accounting.SemanticAccountRole
+ import ir.restaurant.management.domain.accounting.AccountBalanceRecord
+ import ir.restaurant.management.domain.accounting.AccountType
+ import ir.restaurant.management.domain.accounting.JournalSummary
+@@ -45,7 +46,7 @@ class Phase2DashboardModelsTest {
+     @Test
+     fun treasury_summary_uses_observed_balances_and_real_ledger_kinds() {
+         val account = TreasuryAccount(
+-            TreasuryAccountId.parse("cash_main"), "صندوق اصلی", TreasuryAccountKind.CASH, TreasuryChannel.CASH, true,
++            TreasuryAccountId.parse("cash_main"), "صندوق اصلی", TreasuryAccountKind.CASH, TreasuryChannel.CASH, SemanticAccountRole.CASH, true,
+         )
+         val rows = listOf(
+             TreasuryLedgerRecord("r1", TreasuryTransactionKind.RECEIPT, 1L, "SALE", 1L, 100L, "POSTED", "دریافت", 1L, 1_000L),

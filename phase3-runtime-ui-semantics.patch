@@ -1,0 +1,109 @@
+diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+index 3db008a..8e7093b 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+@@ -131,7 +131,7 @@ internal fun CrmScreen(
+ 
+     Scaffold(bottomBar = { ErpBottomNavigation(AppScreen.CRM, onNavigateTopLevel) }) { pagePadding ->
+         LazyColumn(
+-            modifier = Modifier.fillMaxSize().padding(pagePadding).padding(16.dp),
++            modifier = Modifier.fillMaxSize().padding(pagePadding).padding(16.dp).testTag("crm_list"),
+             verticalArrangement = Arrangement.spacedBy(12.dp),
+         ) {
+         item {
+@@ -278,6 +278,8 @@ internal fun CrmScreen(
+                     }
+                 },
+                 emptyMessage = if (state.customers.isEmpty()) "هنوز طرف‌حسابی ثبت نشده است." else "طرف‌حساب مطابق فیلتر پیدا نشد.",
++                listTestTag = "crm_customer_list",
++                rowTestTag = { "crm_select_${it.id}" },
+                 onRowClick = { onSelect(it.id) },
+             )
+         }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt b/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt
+index 59b02fb..6688542 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt
+@@ -385,7 +385,7 @@ internal fun HrPayrollWorkspaceScreen(
+ private fun HrWorkspaceNavigation(selected: HrWorkspaceSection, onSelect: (HrWorkspaceSection) -> Unit) {
+     Surface(tonalElevation = 2.dp) {
+         LazyRow(
+-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
++            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).testTag("hr_workspace_navigation"),
+             horizontalArrangement = Arrangement.spacedBy(8.dp),
+         ) {
+             items(HrWorkspaceSection.entries, key = { it.name }) { item ->
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt
+index f2537a4..1a01f92 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt
+@@ -30,6 +30,7 @@ import androidx.compose.ui.input.key.key
+ import androidx.compose.ui.input.key.onPreviewKeyEvent
+ import androidx.compose.ui.input.key.type
+ import androidx.compose.ui.platform.LocalFocusManager
++import androidx.compose.ui.platform.testTag
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.text.style.TextAlign
+ import androidx.compose.ui.text.style.TextOverflow
+@@ -380,11 +381,13 @@ internal fun <T> AdaptiveManagementList(
+     commandBar: (@Composable () -> Unit)? = null,
+     summary: (@Composable () -> Unit)? = null,
+     onRowClick: ((T) -> Unit)? = null,
++    listTestTag: String? = null,
++    rowTestTag: ((T) -> String)? = null,
+     editAdapter: ManagementGridEditAdapter<T>? = null,
+ ) {
+     if (currentErpWindowClass() == ErpWindowClass.COMPACT) {
+         LazyColumn(
+-            modifier = modifier.fillMaxWidth().heightIn(max = 720.dp),
++            modifier = modifier.fillMaxWidth().heightIn(max = 720.dp).then(listTestTag?.let { Modifier.testTag(it) } ?: Modifier),
+             verticalArrangement = Arrangement.spacedBy(9.dp),
+         ) {
+             commandBar?.let { bar -> item(key = "management_mobile_command_bar") { bar() } }
+@@ -405,6 +408,7 @@ internal fun <T> AdaptiveManagementList(
+                         supporting = mobileSupporting(row),
+                         status = mobileStatus(row),
+                         onClick = onRowClick?.let { click -> { click(row) } },
++                        modifier = rowTestTag?.let { Modifier.testTag(it(row)) } ?: Modifier,
+                     )
+                 }
+             }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt b/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt
+index 27fe668..d9744bb 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt
+@@ -95,7 +95,7 @@ internal fun ProcurementControlPanel(
+     }
+     val context = LocalContext.current
+ 
+-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
++    Card(modifier = Modifier.testTag("procurement_control_panel"), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                 Column {
+diff --git a/app/src/main/java/ir/restaurant/management/ui/PurchaseOperationsScreens.kt b/app/src/main/java/ir/restaurant/management/ui/PurchaseOperationsScreens.kt
+index c2ed809..4f50dda 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/PurchaseOperationsScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/PurchaseOperationsScreens.kt
+@@ -134,7 +134,7 @@ fun PurchasesScreen(
+         bottomBar = { ErpBottomNavigation(AppScreen.OPERATIONS_HUB, onNavigate) },
+     ) { padding ->
+         LazyColumn(
+-            Modifier.fillMaxSize().padding(padding),
++            Modifier.fillMaxSize().padding(padding).testTag("purchase_list"),
+             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+             verticalArrangement = Arrangement.spacedBy(14.dp),
+         ) {
+diff --git a/app/src/main/java/ir/restaurant/management/ui/RecipeScreens.kt b/app/src/main/java/ir/restaurant/management/ui/RecipeScreens.kt
+index ff19d0f..d1fe576 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/RecipeScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/RecipeScreens.kt
+@@ -112,7 +112,7 @@ fun RecipeScreen(
+         },
+     ) { padding ->
+         LazyColumn(
+-            modifier = Modifier.fillMaxSize().padding(padding),
++            modifier = Modifier.fillMaxSize().padding(padding).testTag("recipe_list"),
+             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+             verticalArrangement = Arrangement.spacedBy(14.dp),
+         ) {

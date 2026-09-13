@@ -1,0 +1,12 @@
+diff --git a/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt b/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt
+index 25abb10..9e94dd1 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt
+@@ -5,6 +5,7 @@ package ir.restaurant.management.ui
+ import androidx.activity.compose.rememberLauncherForActivityResult
+ import androidx.activity.result.contract.ActivityResultContracts
+ import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.Row
+ import androidx.compose.foundation.layout.fillMaxSize

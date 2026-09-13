@@ -1,0 +1,90 @@
+name: Phase 2 Source Handoff
+
+on:
+  pull_request:
+    branches: [remediation/canonical-hardening]
+    paths:
+      - 'phase2-remediation/**'
+      - '.github/scripts/reconstruct-phase2-canonical.sh'
+      - '.github/workflows/phase2-canonical-targeted.yml'
+      - '.github/workflows/phase2-source-handoff.yml'
+      - 'docs/MASTER_REMEDIATION_MATRIX_PHASE2_APPENDIX.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase2-source-handoff-${{ github.event.pull_request.head.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-handoff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      SOURCE_BRANCH: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify exact PR head checkout
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "${actual}" = "${SOURCE_SHA}"
+      - name: Reconstruct exact Phase 2 candidate
+        run: bash .github/scripts/reconstruct-phase2-canonical.sh
+      - name: Bind handoff to exact source commit
+        run: |
+          set -euo pipefail
+          mkdir -p phase3-source/.github/workflows
+          cp .github/workflows/phase2-source-handoff.yml phase3-source/.github/workflows/phase2-source-handoff.yml
+          printf '%s\n' "SOURCE_COMMIT=${SOURCE_SHA}" > phase3-source/PHASE2-SOURCE-COMMIT.txt
+          printf '%s\n' "SOURCE_BRANCH=${SOURCE_BRANCH}" >> phase3-source/PHASE2-SOURCE-COMMIT.txt
+          grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 55' phase3-source/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          test -s phase3-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/55.json
+          test ! -e phase3-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+          test -s phase3-source/docs/MASTER_REMEDIATION_MATRIX.md
+      - name: Build and verify source ZIP
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_SHA:0:7}"
+          source_zip="restaurant-management-remediation-phase2-source-${short_sha}.zip"
+          rm -f "${source_zip}" phase2-source-handoff.txt
+          (
+            cd phase3-source
+            zip -qr "../${source_zip}" . \
+              -x '.git/*' '.gradle/*' 'build/*' 'app/build/*' 'local.properties' '*.apk' '*.aab' '*.zip'
+          )
+          unzip -tqq "${source_zip}"
+          unzip -l "${source_zip}" | grep -Fq 'app/src/main/java/'
+          unzip -l "${source_zip}" | grep -Fq 'app/schemas/ir.restaurant.management.data.db.AppDatabase/55.json'
+          unzip -l "${source_zip}" | grep -Fq 'docs/MASTER_REMEDIATION_MATRIX.md'
+          unzip -l "${source_zip}" | grep -Fq '.github/workflows/phase2-source-handoff.yml'
+          if unzip -Z1 "${source_zip}" | grep -E '(^|/)(\.git|\.gradle|build)(/|$)|(^|/)local\.properties$|\.(apk|aab)$|\.zip$'; then
+            echo '::error::Forbidden entry present in source handoff'
+            exit 1
+          fi
+          size="$(stat -c%s "${source_zip}")"
+          digest="$(sha256sum "${source_zip}" | awk '{print $1}')"
+          {
+            echo "SOURCE_FILE=${source_zip}"
+            echo "SOURCE_SIZE=${size}"
+            echo "SOURCE_SHA256=${digest}"
+            echo "SOURCE_COMMIT=${SOURCE_SHA}"
+            echo "SOURCE_BRANCH=${SOURCE_BRANCH}"
+            echo 'ZIP_HEALTH=PASS'
+            echo 'ROOM_VERSION=55'
+            echo 'SCHEMA_CHANGED=NO'
+            echo 'MIGRATION_ADDED=NO'
+          } | tee phase2-source-handoff.txt
+      - name: Upload Phase 2 source handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase2-source-${{ github.event.pull_request.head.sha }}
+          path: |
+            restaurant-management-remediation-phase2-source-*.zip
+            phase2-source-handoff.txt
+          if-no-files-found: error
+          retention-days: 14

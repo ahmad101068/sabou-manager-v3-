@@ -1,0 +1,202 @@
+name: Phase 3 Targeted Verification and Source Handoff
+
+on:
+  push:
+    branches:
+      - remediation/phase3-live-20260821
+    paths:
+      - 'phase3-remediation/**'
+      - '.github/scripts/reconstruct-phase3-candidate.sh'
+      - '.github/workflows/phase3-targeted.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase3-targeted-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase3-targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      BASELINE_SHA: 73ba5407f0b6e9182f23fee3a718fcebf385aab4
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify exact same-SHA checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+
+      - name: Reconstruct exact Phase-3 candidate
+        run: bash .github/scripts/reconstruct-phase3-candidate.sh phase3-source
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '8.13'
+
+      - name: Phase-3 static anti-regression gates
+        working-directory: phase3-source
+        run: |
+          set -euo pipefail
+          python3 scripts/verify-security.py
+          python3 scripts/verify-phase3-ui-foundation.py
+          if grep -R -n -E 'fallbackToDestructiveMigration|MAX\([^)]+\)[[:space:]]*\+[[:space:]]*1' app/src/main/java; then
+            echo '::error::Forbidden destructive migration or unsafe MAX()+1 allocation detected'
+            exit 1
+          fi
+          if grep -R -n -E 'branch(Id)?[[:space:]]*=[[:space:]]*1\b|warehouse(Id)?[[:space:]]*=[[:space:]]*1\b|location(Id)?[[:space:]]*=[[:space:]]*1\b' app/src/main/java; then
+            echo '::error::Hard-coded branch/warehouse/location scope detected'
+            exit 1
+          fi
+
+      - name: Compile Phase-3 production and targeted instrumentation sources
+        working-directory: phase3-source
+        run: gradle --no-daemon --console=plain :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+
+      - name: Verify Room 56 schema export
+        working-directory: phase3-source
+        run: |
+          set -euo pipefail
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/55.json
+          test -s app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+          python3 scripts/verify-room-schema.py
+          grep -Fq 'internal const val APP_DATABASE_SCHEMA_VERSION = 56' app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+          grep -Rq 'MIGRATION_55_56' app/src/main/java/ir/restaurant/management/data/db/migration
+
+      - name: Targeted Phase-3 JVM contracts and Phase-2 regression guards
+        working-directory: phase3-source
+        run: >-
+          gradle --no-daemon --console=plain :app:testDebugUnitTest
+          --tests 'ir.restaurant.management.ui.InventoryRouteMappingTest'
+          --tests 'ir.restaurant.management.domain.purchase.SupplierInvoiceNumberTest'
+          --tests 'ir.restaurant.management.domain.operations.OperationsModelsTest'
+          --tests 'ir.restaurant.management.domain.purchase.ProcurementModelsTest'
+          --tests 'ir.restaurant.management.domain.purchase.PurchaseManagementTest'
+          --tests 'ir.restaurant.management.domain.treasury.TreasuryModelsTest'
+          --tests 'ir.restaurant.management.phase2.*'
+
+      - name: Enable KVM acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Targeted Phase-3 integration and Phase-2 financial regression API 35
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          script: >-
+            cd "$GITHUB_WORKSPACE/phase3-source" &&
+            gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
+            "-Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.data.db.Migration55To56Test,ir.restaurant.management.data.repository.InventoryCountWorkflowIntegrationTest,ir.restaurant.management.data.repository.InventoryTransferWorkflowIntegrationTest,ir.restaurant.management.data.repository.GoodsReceiptTransactionIntegrationTest,ir.restaurant.management.data.repository.BranchPurchasePostingIntegrationTest,ir.restaurant.management.data.repository.EnterprisePermissionIntegrationTest,ir.restaurant.management.data.repository.TreasuryV2IntegrationTest,ir.restaurant.management.data.repository.Phase2CorrectionIntegrationTest,ir.restaurant.management.data.repository.CrmReceivablesIntegrationTest"
+
+      - name: Create Phase-3 source handoff and evidence
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_SHA:0:7}"
+          source_dir="$GITHUB_WORKSPACE/phase3-source"
+          zip_name="restaurant-management-remediation-phase3-source-${short_sha}.zip"
+          zip_path="$GITHUB_WORKSPACE/${zip_name}"
+          schema_path="$source_dir/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json"
+          schema_hash="$(sha256sum "$schema_path" | awk '{print $1}')"
+          changed_files="$GITHUB_WORKSPACE/PHASE-3-CHANGED-FILES.txt"
+          grep '^diff --git a/' "$GITHUB_WORKSPACE/.phase3-final.patch" \
+            | sed -E 's#^diff --git a/([^ ]+) b/.*#\1#' \
+            | sort -u > "$changed_files"
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE']) / 'phase3-source'
+          out = Path(os.environ['GITHUB_WORKSPACE']) / f"restaurant-management-remediation-phase3-source-{os.environ['SOURCE_SHA'][:7]}.zip"
+          excluded_dirs = {'.git', '.gradle', 'build'}
+          excluded_suffixes = {'.apk', '.aab'}
+          with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+              for p in sorted(root.rglob('*')):
+                  rel = p.relative_to(root)
+                  if p.is_dir():
+                      continue
+                  if any(part in excluded_dirs for part in rel.parts):
+                      continue
+                  if p.name == 'local.properties' or p.suffix.lower() in excluded_suffixes:
+                      continue
+                  z.write(p, rel.as_posix())
+          PY
+          zip_hash="$(sha256sum "$zip_path" | awk '{print $1}')"
+          cat > "$GITHUB_WORKSPACE/PHASE-3-REPORT.md" <<EOF
+          # PHASE-3-REPORT
+
+          - Baseline SHA: ${BASELINE_SHA}
+          - Final SHA / evidence SHA: ${SOURCE_SHA}
+          - Branch: ${GITHUB_REF_NAME}
+          - Scope completed: Branch/Warehouse scope; Inventory location/lot/count/transfer hardening; Procurement approval/scope/matching; Supplier master governance; canonical AP; functional refresh/navigation fixes.
+          - DB schema changed: YES (55 -> 56)
+          - Migration added: YES (MIGRATION_55_56)
+          - Room schema evidence: 56.json PASS
+          - Room 56 schema SHA-256: ${schema_hash}
+          - Compile: PASS (:app:compileDebugKotlin, :app:compileDebugAndroidTestKotlin)
+          - Targeted JVM tests: PASS
+          - Targeted API35 integration/migration tests: PASS
+          - Phase-2 targeted regression guards: PASS
+          - Full heavy suites: DEFERRED BY POLICY TO PHASE 8
+          - Known remaining Phase-3 blockers: NONE after targeted gates
+          - Source artifact: ${zip_name}
+          - Source artifact SHA-256: ${zip_hash}
+          - Patch SHA-256: b2127b281b924a21e0b5330d54d397b12956357a6941fa71a431a4d182f31bb3
+
+          ## Changed files
+          EOF
+          sed 's/^/- /' "$changed_files" >> "$GITHUB_WORKSPACE/PHASE-3-REPORT.md"
+          cat > "$GITHUB_WORKSPACE/PHASE-3-EVIDENCE.txt" <<EOF
+          BASELINE_SHA=${BASELINE_SHA}
+          SOURCE_COMMIT=${SOURCE_SHA}
+          HEAD_SHA=$(git rev-parse HEAD)
+          BRANCH=${GITHUB_REF_NAME}
+          ROOM_VERSION=56
+          SCHEMA_CHANGED=YES
+          MIGRATION_ADDED=YES
+          SCHEMA_SHA256=${schema_hash}
+          SOURCE_FILE=${zip_name}
+          SOURCE_SHA256=${zip_hash}
+          PATCH_SHA256=b2127b281b924a21e0b5330d54d397b12956357a6941fa71a431a4d182f31bb3
+          TARGETED_PHASE3=PASS
+          PHASE2_REGRESSION_GUARDS=PASS
+          FULL_HEAVY_SUITES=DEFERRED_TO_PHASE8
+          EOF
+          unzip -t "$zip_path"
+          echo "SOURCE_FILE=${zip_name}"
+          echo "SOURCE_SHA256=${zip_hash}"
+
+      - name: Upload Phase-3 evidence and source handoff
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3-targeted-${{ github.sha }}
+          path: |
+            PHASE-3-REPORT.md
+            PHASE-3-EVIDENCE.txt
+            PHASE-3-CHANGED-FILES.txt
+            restaurant-management-remediation-phase3-source-*.zip
+            phase3-source/app/schemas/ir.restaurant.management.data.db.AppDatabase/56.json
+            phase3-source/app/build/test-results/testDebugUnitTest/**
+            phase3-source/app/build/reports/tests/testDebugUnitTest/**
+            phase3-source/app/build/outputs/androidTest-results/connected/**
+            phase3-source/app/build/reports/androidTests/connected/**
+          if-no-files-found: warn
+          retention-days: 30

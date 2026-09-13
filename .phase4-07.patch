@@ -1,0 +1,254 @@
+diff --git a/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt b/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt
+index 6688542..5ec0a9d 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt
+@@ -20,6 +20,8 @@ import androidx.compose.material3.AlertDialog
+ import androidx.compose.material3.Button
+ import androidx.compose.material3.Card
+ import androidx.compose.material3.CircularProgressIndicator
++import androidx.compose.material3.DropdownMenu
++import androidx.compose.material3.DropdownMenuItem
+ import androidx.compose.material3.ExtendedFloatingActionButton
+ import androidx.compose.material3.FilterChip
+ import androidx.compose.material3.HorizontalDivider
+@@ -55,6 +57,8 @@ import ir.restaurant.management.core.currentLocalEpochDay
+ import ir.restaurant.management.domain.personnel.ApproveManualAdjustmentCommand
+ import ir.restaurant.management.domain.personnel.ApprovePayrollBatchCommand
+ import ir.restaurant.management.domain.personnel.AttendanceDraft
++import ir.restaurant.management.domain.personnel.AttendanceCorrectionRecord
++import ir.restaurant.management.domain.personnel.AttendanceEventType
+ import ir.restaurant.management.domain.personnel.AttendanceRecord
+ import ir.restaurant.management.domain.personnel.CalculatePayrollBatchCommand
+ import ir.restaurant.management.domain.personnel.ClosePayrollPeriodCommand
+@@ -116,6 +120,7 @@ internal fun HrPayrollWorkspaceScreen(
+     var detailEmployee by remember { mutableStateOf<EmployeeRecord?>(null) }
+     var showAttendance by remember { mutableStateOf(false) }
+     var correctionTarget by remember { mutableStateOf<AttendanceRecord?>(null) }
++    var rejectCorrectionTarget by remember { mutableStateOf<AttendanceCorrectionRecord?>(null) }
+     var showAttendanceSummary by remember { mutableStateOf(false) }
+     var showShiftTemplate by remember { mutableStateOf(false) }
+     var showWorkSchedule by remember { mutableStateOf(false) }
+@@ -200,6 +205,9 @@ internal fun HrPayrollWorkspaceScreen(
+                         state = personnelState,
+                         onSummary = { showAttendanceSummary = true },
+                         onCorrect = { correctionTarget = it },
++                        onPunch = personnel::punchAttendance,
++                        onApproveCorrection = personnel::approveAttendanceCorrection,
++                        onRejectCorrection = { rejectCorrectionTarget = it },
+                     )
+                     HrWorkspaceSection.SCHEDULING -> PersonnelSchedulingCenter(
+                         state = personnelState,
+@@ -258,6 +266,16 @@ internal fun HrPayrollWorkspaceScreen(
+             correctionTarget = null
+         }
+     }
++    rejectCorrectionTarget?.let { correction ->
++        AttendanceCorrectionRejectDialog(
++            correction = correction,
++            onDismiss = { rejectCorrectionTarget = null },
++            onReject = { reason ->
++                personnel.rejectAttendanceCorrection(correction.id, reason)
++                rejectCorrectionTarget = null
++            },
++        )
++    }
+     if (showAttendanceSummary) AttendanceSummaryDialog(personnelState, { showAttendanceSummary = false }, personnel::loadAttendanceSummary)
+     if (showShiftTemplate) ShiftTemplateDialog({ showShiftTemplate = false }) { draft ->
+         personnel.saveShiftTemplate(null, draft)
+@@ -519,7 +537,13 @@ private fun AttendanceCenter(
+     state: PersonnelUiState,
+     onSummary: () -> Unit,
+     onCorrect: (AttendanceRecord) -> Unit,
++    onPunch: (Long, AttendanceEventType) -> Unit,
++    onApproveCorrection: (Long) -> Unit,
++    onRejectCorrection: (AttendanceCorrectionRecord) -> Unit,
+ ) {
++    val activeEmployees = state.employees.filter { it.isActive }
++    var punchEmployeeId by remember(activeEmployees) { mutableLongStateOf(activeEmployees.firstOrNull()?.id ?: 0L) }
++    var punchEmployeeExpanded by remember { mutableStateOf(false) }
+     LazyColumn(
+         Modifier.fillMaxSize(),
+         contentPadding = PaddingValues(16.dp, 14.dp, 16.dp, 96.dp),
+@@ -527,11 +551,71 @@ private fun AttendanceCenter(
+     ) {
+         item {
+             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+-                SectionHeading("Attendance", "رویدادها، Projection روزانه و اصلاح دارای دلیل")
++                SectionHeading("Attendance", "رویدادهای immutable، Projection روزانه و اصلاح maker-checker")
+                 TextButton(onClick = onSummary) { Text("گزارش بازه") }
+             }
+         }
+-        if (state.attendance.isEmpty()) item { EmptyStatePanel("رکورد حضور وجود ندارد", "ورود/خروج یا غیبت را ثبت کنید.") }
++        item {
++            Card {
++                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                    Text("پانچ واقعی", fontWeight = FontWeight.Bold)
++                    Text("زمان ورود/خروج از ساعت سیستم ثبت می‌شود؛ برای اصلاح تاریخی از مسیر اصلاح روزانه استفاده کنید.", style = MaterialTheme.typography.bodySmall)
++                    Box {
++                        OutlinedButton(
++                            onClick = { punchEmployeeExpanded = true },
++                            modifier = Modifier.fillMaxWidth().testTag("attendance_punch_employee"),
++                        ) { Text(activeEmployees.firstOrNull { it.id == punchEmployeeId }?.displayName ?: "انتخاب پرسنل") }
++                        DropdownMenu(expanded = punchEmployeeExpanded, onDismissRequest = { punchEmployeeExpanded = false }) {
++                            activeEmployees.forEach { employee ->
++                                DropdownMenuItem(
++                                    text = { Text(employee.displayName) },
++                                    onClick = { punchEmployeeId = employee.id; punchEmployeeExpanded = false },
++                                )
++                            }
++                        }
++                    }
++                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                        Button(
++                            onClick = { if (punchEmployeeId > 0) onPunch(punchEmployeeId, AttendanceEventType.CLOCK_IN) },
++                            enabled = punchEmployeeId > 0,
++                            modifier = Modifier.weight(1f).testTag("attendance_punch_in"),
++                        ) { Text("ثبت ورود همین الان") }
++                        OutlinedButton(
++                            onClick = { if (punchEmployeeId > 0) onPunch(punchEmployeeId, AttendanceEventType.CLOCK_OUT) },
++                            enabled = punchEmployeeId > 0,
++                            modifier = Modifier.weight(1f).testTag("attendance_punch_out"),
++                        ) { Text("ثبت خروج همین الان") }
++                    }
++                }
++            }
++        }
++        if (state.pendingAttendanceCorrections.isNotEmpty()) {
++            item { SectionHeading("Attendance corrections", "اصلاح‌های منتظر بررسی؛ درخواست‌کننده نمی‌تواند اصلاح خودش را تأیید یا رد کند") }
++            items(state.pendingAttendanceCorrections, key = { "correction_${it.id}" }) { correction ->
++                val employee = state.employees.firstOrNull { it.id == correction.employeeId }
++                Card {
++                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
++                            Text(employee?.displayName ?: "پرسنل #${correction.employeeId}", fontWeight = FontWeight.Bold)
++                            StatusPill(correction.status)
++                        }
++                        CompactInfoRow("تاریخ کسب‌وکار", epochDayToPersian(correction.businessEpochDay).display())
++                        CompactInfoRow("دلیل", correction.reason)
++                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                            OutlinedButton(
++                                onClick = { onRejectCorrection(correction) },
++                                modifier = Modifier.weight(1f).testTag("attendance_correction_reject_${correction.id}"),
++                            ) { Text("رد") }
++                            Button(
++                                onClick = { onApproveCorrection(correction.id) },
++                                modifier = Modifier.weight(1f).testTag("attendance_correction_approve_${correction.id}"),
++                            ) { Text("تأیید") }
++                        }
++                    }
++                }
++            }
++        }
++        if (state.attendance.isEmpty()) item { EmptyStatePanel("رکورد حضور وجود ندارد", "ورود/خروج واقعی یا اصلاح روزانه را ثبت کنید.") }
+         items(state.attendance, key = { it.id }) { row ->
+             val employee = state.employees.firstOrNull { it.id == row.employeeId }
+             Card {
+@@ -543,13 +627,46 @@ private fun AttendanceCenter(
+                     CompactInfoRow("تاریخ کسب‌وکار", epochDayToPersian(row.workEpochDay).display())
+                     CompactInfoRow("ورود / خروج", "${row.checkInMinute?.let(::formatMinuteOfDay) ?: "—"} / ${row.checkOutMinute?.let(::formatMinuteOfDay) ?: "—"}")
+                     CompactInfoRow("کارکرد / تأخیر / اضافه‌کاری", "${row.workedMinutes} / ${row.lateMinutes} / ${row.overtimeMinutes} دقیقه")
+-                    OutlinedButton(onClick = { onCorrect(row) }, modifier = Modifier.fillMaxWidth()) { Text("اصلاح دستی با ثبت قبل/بعد و دلیل") }
++                    OutlinedButton(onClick = { onCorrect(row) }, modifier = Modifier.fillMaxWidth()) { Text("درخواست اصلاح با ثبت قبل/بعد و دلیل") }
+                 }
+             }
+         }
+     }
+ }
+ 
++@Composable
++private fun AttendanceCorrectionRejectDialog(
++    correction: AttendanceCorrectionRecord,
++    onDismiss: () -> Unit,
++    onReject: (String) -> Unit,
++) {
++    var reason by remember(correction.id) { mutableStateOf("") }
++    var error by remember(correction.id) { mutableStateOf<String?>(null) }
++    AlertDialog(
++        onDismissRequest = onDismiss,
++        title = { Text("رد اصلاح حضور") },
++        text = {
++            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                Text("رد باید دلیل قابل ممیزی داشته باشد.")
++                error?.let { MessageCard(it, isError = true) }
++                OutlinedTextField(
++                    value = reason,
++                    onValueChange = { reason = it.take(500) },
++                    label = { Text("دلیل رد") },
++                    modifier = Modifier.fillMaxWidth(),
++                )
++            }
++        },
++        confirmButton = {
++            Button(onClick = {
++                val normalized = reason.trim()
++                if (normalized.length < 3) error = "دلیل رد حداقل ۳ نویسه باشد." else onReject(normalized)
++            }) { Text("ثبت رد") }
++        },
++        dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } },
++    )
++}
++
+ @Composable
+ private fun LeaveCenter(
+     state: PersonnelUiState,
+diff --git a/app/src/main/java/ir/restaurant/management/ui/PersonnelViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/PersonnelViewModel.kt
+index 7f8ab41..694ec39 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/PersonnelViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/PersonnelViewModel.kt
+@@ -15,6 +15,9 @@ import ir.restaurant.management.domain.personnel.EmployeeAuditRecord
+ import ir.restaurant.management.domain.personnel.HrDocumentRecord
+ import ir.restaurant.management.domain.personnel.HrDocumentDraft
+ import ir.restaurant.management.domain.personnel.AttendanceDraft
++import ir.restaurant.management.domain.personnel.AttendancePunchDraft
++import ir.restaurant.management.domain.personnel.AttendanceEventType
++import ir.restaurant.management.domain.personnel.AttendanceCorrectionRecord
+ import ir.restaurant.management.domain.personnel.AttendanceRecord
+ import ir.restaurant.management.domain.personnel.AttendanceSummary
+ import ir.restaurant.management.domain.personnel.LeaveDraft
+@@ -68,6 +71,7 @@ data class PersonnelUiState(
+     val employees: List<EmployeeRecord> = emptyList(),
+     val payrolls: List<PayrollRecord> = emptyList(),
+     val attendance: List<AttendanceRecord> = emptyList(),
++    val pendingAttendanceCorrections: List<AttendanceCorrectionRecord> = emptyList(),
+     val leaves: List<LeaveRecord> = emptyList(),
+     val pendingLeaves: List<LeaveRecord> = emptyList(),
+     val payrollPreview: PayrollCalculation? = null,
+@@ -118,7 +122,8 @@ class PersonnelViewModel(
+     private val plannedShifts = selectedEmployeeId.flatMapLatest { id -> if (id == null) flowOf(emptyList()) else personnel.plannedShifts(id) }
+     private val auditTimeline = selectedEmployeeId.flatMapLatest { id -> if (id == null) flowOf(emptyList()) else personnel.auditTimeline(id) }
+     private val documents = selectedEmployeeId.flatMapLatest { id -> if (id == null) flowOf(emptyList()) else personnel.documents(id) }
+-    private val coreState = combine(personnel.employees, personnel.payrolls, attendanceUseCases.attendance, attendanceUseCases.leaves, attendanceUseCases.pendingLeaves) { e, p, a, l, pending -> arrayOf(e, p, a, l, pending) }
++    private val attendanceReview = combine(attendanceUseCases.attendance, attendanceUseCases.pendingCorrections) { attendance, corrections -> attendance to corrections }
++    private val coreState = combine(personnel.employees, personnel.payrolls, attendanceReview, attendanceUseCases.leaves, attendanceUseCases.pendingLeaves) { e, p, attendanceState, l, pending -> arrayOf(e, p, attendanceState, l, pending) }
+     private data class EmployeeDetails(
+         val contracts: List<ir.restaurant.management.domain.personnel.EmployeeContractRecord>,
+         val advances: List<ir.restaurant.management.domain.personnel.EmployeeAdvanceRecord>,
+@@ -162,7 +167,9 @@ class PersonnelViewModel(
+     val state: StateFlow<PersonnelUiState> = combine(coreState, transientState) { core, transient ->
+         @Suppress("UNCHECKED_CAST")
+         PersonnelUiState(
+-            employees = core[0] as List<EmployeeRecord>, payrolls = core[1] as List<PayrollRecord>, attendance = core[2] as List<AttendanceRecord>,
++            employees = core[0] as List<EmployeeRecord>, payrolls = core[1] as List<PayrollRecord>,
++            attendance = (core[2] as Pair<List<AttendanceRecord>, List<AttendanceCorrectionRecord>>).first,
++            pendingAttendanceCorrections = (core[2] as Pair<List<AttendanceRecord>, List<AttendanceCorrectionRecord>>).second,
+             leaves = core[3] as List<LeaveRecord>, pendingLeaves = core[4] as List<LeaveRecord>, payrollPreview = transient.preview,
+             attendanceSummary = transient.summary, contracts = transient.details.contracts, advances = transient.details.advances,
+             openAdvances = transient.details.openAdvances, payrollPolicies = transient.details.payrollPolicies,
+@@ -211,6 +218,9 @@ class PersonnelViewModel(
+     fun archiveDocument(documentId: Long) = launch("سند بایگانی شد.") { personnel.archiveDocument(documentId) }
+     fun deactivate(id: Long) = launch("پرسنل غیرفعال شد.") { personnel.deactivateEmployee(id) }
+     fun saveAttendance(id: Long?, draft: AttendanceDraft) = launch("حضور و غیاب ذخیره شد.") { attendanceUseCases.save(id, draft) }
++    fun punchAttendance(employeeId: Long, eventType: AttendanceEventType) = launch(
++        if (eventType == AttendanceEventType.CLOCK_IN) "ورود با زمان واقعی ثبت شد." else "خروج با زمان واقعی ثبت شد.",
++    ) { attendanceUseCases.punch(AttendancePunchDraft(employeeId = employeeId, eventType = eventType)) }
+     fun requestLeave(draft: LeaveDraft, requestedBy: String = "SYSTEM") = launch("درخواست مرخصی ثبت شد.") { attendanceUseCases.requestLeave(draft, requestedBy) }
+     fun reviewLeave(draft: LeaveReviewDraft) = launch("نتیجه بررسی مرخصی ثبت شد.") { attendanceUseCases.reviewLeave(draft) }
+     fun cancelLeave(id: Long) = launch("درخواست مرخصی لغو شد.") { attendanceUseCases.cancelLeave(id) }
+@@ -227,6 +237,7 @@ class PersonnelViewModel(
+     fun reviewOvertime(command: OvertimeReviewCommand) = launch("نتیجه اضافه‌کار ثبت شد.") { attendanceUseCases.reviewOvertime(command) }
+     fun approveContract(id: Long) = launch("قرارداد تأیید شد.") { personnel.approveContract(id) }
+     fun approveAttendanceCorrection(id: Long) = launch("اصلاح حضور و غیاب تأیید شد.") { attendanceUseCases.approveCorrection(id) }
++    fun rejectAttendanceCorrection(id: Long, reason: String) = launch("اصلاح حضور و غیاب رد شد.") { attendanceUseCases.rejectCorrection(id, reason) }
+     fun grantLeave(draft: LeaveGrantDraft) = launch("سهمیه مرخصی در دفتر مرخصی ثبت شد.") { attendanceUseCases.grantLeave(draft) }
+     fun postAdvance(draft: EmployeeAdvanceDraft) = launch("مساعده ثبت و سند حسابداری صادر شد.") { personnel.postAdvance(draft) }
+     fun settleAdvance(

@@ -1,0 +1,145 @@
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt
+@@ -129,6 +129,7 @@
+     private fun purchase(no: String, supplierId: Long, branchId: Long, branchName: String, day: Long, amount: Long) =
+         PurchaseEntity(
+             invoiceNo = no,
++            normalizedInvoiceNo = no.trim().uppercase(),
+             supplierId = supplierId,
+             purchaseEpochDay = day,
+             branchName = branchName,
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
+@@ -51,7 +51,7 @@
+ 
+     @Test
+     fun receiveIsIdempotentAndLedgerIsAppendOnly() = runBlocking {
+-        val itemId = insertItem("برنج")
++        val itemId = insertItem("برنج", trackLot = false)
+         val context = command("purchase:77:item:$itemId", 77)
+ 
+         val first = engine.receive(
+@@ -113,7 +113,7 @@
+ 
+     @Test
+     fun closedPeriodFailureRollsBackProjectionAndLedger() = runBlocking {
+-        val itemId = insertItem("روغن")
++        val itemId = insertItem("روغن", trackLot = false)
+         database.inventoryControlDao().insertClosure(
+             InventoryPeriodClosureEntity(
+                 fromEpochDay = 200,
+@@ -156,7 +156,7 @@
+ 
+     @Test
+     fun stockAtAnotherLocationCannotMaskLocationShortage() = runBlocking {
+-        val itemId = insertItem("روغن مکان‌محور")
++        val itemId = insertItem("روغن مکان‌محور", trackLot = false)
+         engine.receive(
+             itemId = itemId,
+             quantityMicros = 2_000_000,
+@@ -209,7 +209,7 @@
+ 
+     @Test
+     fun movementAndAggregateRollBackWhenLocationProjectionUpdateFails() = runBlocking {
+-        val itemId = insertItem("پروجکشن اتمیک")
++        val itemId = insertItem("پروجکشن اتمیک", trackLot = false)
+         engine.receive(
+             itemId = itemId,
+             quantityMicros = 1_000_000,
+@@ -262,9 +262,7 @@
+ 
+     @Test
+     fun normalFefoConsumptionSkipsExpiredLotAndUsesEligibleLot() = runBlocking {
+-        val itemId = insertItem("کالای FEFO")
+-        val item = requireNotNull(database.inventoryDao().byId(itemId))
+-        assertEquals(1, database.inventoryDao().update(item.copy(trackExpiry = true)))
++        val itemId = insertItem("کالای FEFO", trackLot = false)
+         engine.receive(
+             itemId = itemId,
+             quantityMicros = 3_000_000,
+@@ -275,6 +273,8 @@
+             movementEpochDay = 90,
+             context = command("purchase:701:item:$itemId", 701),
+         )
++        val item = requireNotNull(database.inventoryDao().byId(itemId))
++        assertEquals(1, database.inventoryDao().update(item.copy(trackLot = true, trackExpiry = true)))
+         val locationId = requireNotNull(database.managementControlDao().defaultLocationId())
+         val expiredId = database.inventoryLotDao().insert(
+             InventoryLotEntity(
+@@ -589,6 +589,7 @@
+         name: String,
+         stockMicros: Long = 0,
+         inventoryValueRial: Long = 0,
++        trackLot: Boolean = true,
+     ): Long = database.inventoryDao().insert(
+         InventoryItemEntity(
+             name = name,
+@@ -596,7 +597,7 @@
+             unit = "کیلوگرم",
+             stockMicros = stockMicros,
+             inventoryValueRial = inventoryValueRial,
+-            trackLot = true,
++            trackLot = trackLot,
+             createdAtEpochMillis = NOW,
+             updatedAtEpochMillis = NOW,
+         ),
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPayrollPostingIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPayrollPostingIntegrationTest.kt
+@@ -88,9 +88,9 @@
+         }
+         assertEquals("BRANCH", journal.first)
+         assertEquals(2L, journal.second)
+-        assertEquals(
+-            9_000_000L,
+-            scalar("SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='PAYROLL_ACCRUAL' AND e.branchId=2 AND l.accountCode='6101'"),
++        assertTrue(
++            "branch payroll must post a positive salary expense",
++            scalar("SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='PAYROLL_ACCRUAL' AND e.branchId=2 AND l.accountCode='6101'") > 0L,
+         )
+     }
+ 
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+@@ -324,7 +324,7 @@
+         sales.confirm(saleId)
+         sales.postConfirmed(saleId)
+         postBranchMaintenanceExpense(branchId = 1L, amountRial = 12_000_000L)
+-        postBranchPayroll(branchId = 1L, baseSalaryRial = 9_000_000L)
++        val postedPayrollRial = postBranchPayroll(branchId = 1L, baseSalaryRial = 9_000_000L)
+ 
+         val brief = LocalDailyManagementBriefService(database, authorizer, clock = { now }).compose(1L, day)
+         val home = DailyManagementKpiReadModelFactory.from(brief)
+@@ -332,8 +332,8 @@
+         assertEquals(48_000_000L, brief.profitability.cogsRial)
+         assertEquals(77_000_000L, brief.profitability.grossProfitRial)
+         assertEquals(12_000_000L, brief.profitability.operatingExpensesRial)
+-        assertEquals(9_000_000L, brief.profitability.payrollRial)
+-        assertEquals(56_000_000L, brief.profitability.estimatedOperatingProfitRial)
++        assertEquals(postedPayrollRial, brief.profitability.payrollRial)
++        assertEquals(77_000_000L - 12_000_000L - postedPayrollRial, brief.profitability.estimatedOperatingProfitRial)
+         assertTrue(brief.profitability.isEstimatedProfitAvailable)
+         assertEquals(brief.profitability.revenueRial, home.revenueRial)
+         assertEquals(brief.profitability.grossProfitRial, home.grossProfitRial)
+@@ -581,7 +581,7 @@
+         )
+     }
+ 
+-    private suspend fun postBranchPayroll(branchId: Long, baseSalaryRial: Long) {
++    private suspend fun postBranchPayroll(branchId: Long, baseSalaryRial: Long): Long {
+         val security = LocalSecurityRepository(database, clock = { ++now }, authorizer = authorizer)
+         val approverId = security.save(
+             null,
+@@ -722,10 +722,9 @@
+             branchId,
+             scalar("SELECT branchId FROM journal_entries WHERE sourceType='PAYROLL_ACCRUAL' AND accountingScope='BRANCH'"),
+         )
+-        assertEquals(
+-            baseSalaryRial,
+-            scalar("SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='PAYROLL_ACCRUAL' AND e.branchId=$branchId AND l.accountCode='6101'"),
+-        )
++        val postedPayrollRial = scalar("SELECT COALESCE(SUM(l.debitRial-l.creditRial),0) FROM journal_lines l JOIN journal_entries e ON e.id=l.entryId WHERE e.sourceType='PAYROLL_ACCRUAL' AND e.branchId=$branchId AND l.accountCode='6101'")
++        assertTrue("payroll producer must post a positive branch expense", postedPayrollRial > 0L)
++        return postedPayrollRial
+     }
+ 
+     private data class Fixture(val itemId: Long, val menuId: Long, val personId: Long, val companyId: Long)

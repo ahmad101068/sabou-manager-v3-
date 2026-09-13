@@ -1,0 +1,55 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt
+--- a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration57To58Test.kt
+@@ -23,12 +23,12 @@ class Migration57To58Test {
+         val substitutionDay = 20_100L
+         helper.createDatabase(DB_NAME, 57).use { db ->
+             db.execSQL(
+-                "INSERT INTO inventory_items(id,name,category,unit,purchaseUnit,purchaseToStockNumerator,purchaseToStockDenominator,recipeUnit,recipeToStockNumerator,recipeToStockDenominator,stockMicros,inventoryValueRial,alertEnabled,alertThresholdMicros,isActive,createdAtEpochMillis,updatedAtEpochMillis) " +
+-                    "VALUES(10,'ماده اصلی','مواد اولیه','گرم','گرم',1,1,'گرم',1,1,1000000,1000000,1,0,1,1,1)",
++                "INSERT INTO inventory_items(id,sku,name,category,unit,purchaseUnit,purchaseToStockNumerator,purchaseToStockDenominator,recipeUnit,recipeToStockNumerator,recipeToStockDenominator,stockMicros,inventoryValueRial,alertEnabled,alertThresholdMicros,isActive,createdAtEpochMillis,updatedAtEpochMillis) " +
++                    "VALUES(10,'PH5-MIG-10','ماده اصلی','مواد اولیه','گرم','گرم',1,1,'گرم',1,1,1000000,1000000,1,0,1,1,1)",
+             )
+             db.execSQL(
+-                "INSERT INTO inventory_items(id,name,category,unit,purchaseUnit,purchaseToStockNumerator,purchaseToStockDenominator,recipeUnit,recipeToStockNumerator,recipeToStockDenominator,stockMicros,inventoryValueRial,alertEnabled,alertThresholdMicros,isActive,createdAtEpochMillis,updatedAtEpochMillis) " +
+-                    "VALUES(11,'ماده جایگزین','مواد اولیه','گرم','گرم',1,1,'گرم',1,1,1000000,1000000,1,0,1,1,1)",
++                "INSERT INTO inventory_items(id,sku,name,category,unit,purchaseUnit,purchaseToStockNumerator,purchaseToStockDenominator,recipeUnit,recipeToStockNumerator,recipeToStockDenominator,stockMicros,inventoryValueRial,alertEnabled,alertThresholdMicros,isActive,createdAtEpochMillis,updatedAtEpochMillis) " +
++                    "VALUES(11,'PH5-MIG-11','ماده جایگزین','مواد اولیه','گرم','گرم',1,1,'گرم',1,1,1000000,1000000,1,0,1,1,1)",
+             )
+             db.execSQL("INSERT INTO menu_items(id,name,category,salePriceRial,isActive,createdAtEpochMillis,updatedAtEpochMillis) VALUES(20,'غذای مهاجرت','غذا',1000000,1,1,1)")
+             db.execSQL("INSERT INTO recipe_versions(id,menuItemId,revisionNo,effectiveFromEpochDay,createdBy,createdAtEpochMillis,status) VALUES(30,20,1,20000,'legacy',1,'ACTIVE')")
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/AssetLifecycleIntegrationTest.kt
+@@ -43,8 +43,7 @@ class AssetLifecycleIntegrationTest {
+         val security = LocalSecurityRepository(database, clock = { ++now }, authorizer = authorizer)
+         val ownerId = security.save(null, UserDraft("owner-assets", "مالک دارایی", "123456", UserRole.OWNER, "87654321"))
+         security.switchUser(ownerId, "123456")
+-        database.branchDao().insert(BranchEntity(id = 1L, globalId = "test:asset-branch:1", code = "A1", name = "شعبه یک", createdAtEpochMillis = now, updatedAtEpochMillis = now))
+-        database.branchDao().insert(BranchEntity(id = 2L, globalId = "test:asset-branch:2", code = "A2", name = "شعبه دو", createdAtEpochMillis = now, updatedAtEpochMillis = now))
++        database.branchDao().insert(BranchEntity(id = 102L, globalId = "test:asset-branch:102", code = "A102", name = "شعبه دو", createdAtEpochMillis = now, updatedAtEpochMillis = now))
+         repository = LocalAssetRepository(database, clock = { ++now }, syncRecorder = null, authorizer = authorizer)
+     }
+
+@@ -66,7 +65,7 @@ class AssetLifecycleIntegrationTest {
+                 toResponsiblePerson = "مسئول جدید",
+                 businessEpochDay = 20_010,
+                 reason = "انتقال بین شعب",
+-                toBranchId = 2L,
++                toBranchId = 102L,
+             ),
+         )
+
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/DailySalesReversalIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/DailySalesReversalIntegrationTest.kt
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/DailySalesReversalIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/DailySalesReversalIntegrationTest.kt
+@@ -40,9 +40,6 @@ class DailySalesReversalIntegrationTest {
+         authorizer = SessionAuthorizer(database)
+         LocalSecurityRepository(database, clock = { now }, authorizer = authorizer)
+             .save(null, UserDraft("owner", "مالک", "123456", UserRole.OWNER, "87654321"))
+-        database.branchDao().insert(
+-            BranchEntity(id = 1L, globalId = "test:branch:1", code = "B1", name = "شعبه ۱", createdAtEpochMillis = now, updatedAtEpochMillis = now),
+-        )
+         Unit
+     }
+

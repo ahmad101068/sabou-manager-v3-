@@ -1,0 +1,25 @@
+--- a/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
+@@ -11,6 +11,7 @@
+ import ir.restaurant.management.domain.brief.DailyManagementKpiReadModel
+ import ir.restaurant.management.domain.brief.DailyManagementKpiReadModelFactory
+ import ir.restaurant.management.domain.operations.AppUserRecord
++import ir.restaurant.management.domain.security.Permission
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.MutableStateFlow
+@@ -111,9 +112,13 @@
+         query,
+         state,
+         managementRefresh,
+-    ) { selected, snapshot, _ ->
++        dashboardContext,
++    ) { selected, _, _, context ->
+         val effectiveBranchId = selected.branchId
+         when {
++            context.user == null || !context.user.role.allows(Permission.DAILY_BRIEF_VIEW) -> HomeManagementOverviewRequest.Unavailable(
++                "شاخص‌های مدیریتی قطعی برای این نقش در دسترس نیست.",
++            )
+             selected.period != DashboardPeriod.TODAY -> HomeManagementOverviewRequest.Unavailable(
+                 "شاخص‌های مدیریتی قطعی برای صفحه اصلی در نمای امروز ارائه می‌شوند.",
+             )

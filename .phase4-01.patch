@@ -1,0 +1,180 @@
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt b/app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
+index 0a08a7d..a2019b0 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/PersonnelSchedulingService.kt
+@@ -11,6 +11,7 @@ import ir.restaurant.management.domain.personnel.PlannedShiftDraft
+ import ir.restaurant.management.domain.personnel.PlannedShiftRecord
+ import ir.restaurant.management.domain.personnel.PlannedShiftStatus
+ import ir.restaurant.management.domain.personnel.PlannedShiftTime
++import ir.restaurant.management.domain.personnel.PersonnelReferenceCode
+ import ir.restaurant.management.domain.personnel.EffectiveContractResolver
+ import ir.restaurant.management.domain.personnel.EmploymentContractStatus
+ import ir.restaurant.management.domain.personnel.EmploymentContractType
+@@ -57,9 +58,10 @@ internal class PersonnelSchedulingService(
+             val now = clock()
+             val existing = id?.let { dao.shiftTemplate(it) }
+             if (id != null) require(existing != null) { "شیفت پیدا نشد." }
++            val resolvedCode = valid.code.ifBlank { existing?.code ?: PersonnelReferenceCode.newShiftCode() }
+             val entity = ShiftTemplateEntity(
+                 id = id ?: 0,
+-                code = valid.code,
++                code = resolvedCode,
+                 name = valid.name,
+                 category = valid.category.storedValue,
+                 startMinute = valid.startMinute,
+@@ -112,9 +114,10 @@ internal class PersonnelSchedulingService(
+             val now = clock()
+             val existing = id?.let { dao.workSchedule(it) }
+             if (id != null) require(existing != null) { "برنامه کاری پیدا نشد." }
++            val resolvedCode = valid.code.ifBlank { existing?.code ?: PersonnelReferenceCode.newWorkScheduleCode() }
+             val entity = WorkScheduleEntity(
+                 id = id ?: 0,
+-                code = valid.code,
++                code = resolvedCode,
+                 name = valid.name,
+                 patternType = valid.patternType.storedValue,
+                 cycleLengthDays = valid.cycleLengthDays,
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt
+new file mode 100644
+index 0000000..ba66ffd
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCode.kt
+@@ -0,0 +1,12 @@
++package ir.restaurant.management.domain.personnel
++
++import ir.restaurant.management.core.GlobalId
++import java.util.Locale
++
++/** Concurrency-safe, non-sequential document codes for HR masters. */
++object PersonnelReferenceCode {
++    private fun suffix(): String = GlobalId.new().value.replace("-", "").take(12).uppercase(Locale.US)
++
++    fun newShiftCode(): String = "SHF-${suffix()}"
++    fun newWorkScheduleCode(): String = "WSC-${suffix()}"
++}
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/WorkforceSchedulingModels.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/WorkforceSchedulingModels.kt
+index 02aaace..d91d781 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/personnel/WorkforceSchedulingModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/WorkforceSchedulingModels.kt
+@@ -88,7 +88,9 @@ data class ShiftTemplateDraft(
+ 
+     fun validated(): ShiftTemplateDraft {
+         val normalizedCode = code.trim().uppercase().replace(' ', '_')
+-        require(normalizedCode.matches(Regex("[A-Z][A-Z0-9_-]{1,39}"))) { "کد شیفت معتبر نیست." }
++        if (normalizedCode.isNotEmpty()) {
++            require(normalizedCode.matches(Regex("[A-Z][A-Z0-9_-]{1,39}"))) { "کد شیفت معتبر نیست." }
++        }
+         require(name.trim().length in 2..80) { "نام شیفت معتبر نیست." }
+         require(startMinute in 0..1439 && endMinute in 0..1439) { "زمان شیفت معتبر نیست." }
+         require(startMinute != endMinute) { "شیفت نمی‌تواند طول صفر داشته باشد." }
+@@ -154,7 +156,9 @@ data class WorkScheduleDraft(
+ ) {
+     fun validated(): WorkScheduleDraft {
+         val normalizedCode = code.trim().uppercase().replace(' ', '_')
+-        require(normalizedCode.matches(Regex("[A-Z][A-Z0-9_-]{1,39}"))) { "کد برنامه کاری معتبر نیست." }
++        if (normalizedCode.isNotEmpty()) {
++            require(normalizedCode.matches(Regex("[A-Z][A-Z0-9_-]{1,39}"))) { "کد برنامه کاری معتبر نیست." }
++        }
+         require(name.trim().length in 2..100) { "نام برنامه کاری معتبر نیست." }
+         require(cycleLengthDays in 1..56) { "طول چرخه برنامه کاری معتبر نیست." }
+         require(effectiveFromEpochDay > 0) { "تاریخ شروع برنامه کاری معتبر نیست." }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/PersonnelSchedulingScreens.kt b/app/src/main/java/ir/restaurant/management/ui/PersonnelSchedulingScreens.kt
+index cc82e7a..95086f5 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/PersonnelSchedulingScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/PersonnelSchedulingScreens.kt
+@@ -144,7 +144,6 @@ internal fun PersonnelSchedulingCenter(
+ 
+ @Composable
+ internal fun ShiftTemplateDialog(onDismiss: () -> Unit, onSave: (ShiftTemplateDraft) -> Unit) {
+-    var code by remember { mutableStateOf("") }
+     var name by remember { mutableStateOf("") }
+     var category by remember { mutableStateOf(ShiftCategory.MORNING) }
+     var start by remember { mutableStateOf("") }
+@@ -161,7 +160,7 @@ internal fun ShiftTemplateDialog(onDismiss: () -> Unit, onSave: (ShiftTemplateDr
+         text = {
+             Column(Modifier.heightIn(max = 620.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                 error?.let { MessageCard(it, true) }
+-                OutlinedTextField(code, { code = it.uppercase().take(40) }, label = { Text("کد شیفت") }, modifier = Modifier.fillMaxWidth())
++                Text("کد شیفت هنگام ذخیره به‌صورت خودکار و یکتا تولید می‌شود.")
+                 OutlinedTextField(name, { name = it.take(80) }, label = { Text("نام شیفت") }, modifier = Modifier.fillMaxWidth())
+                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                     items(ShiftCategory.entries, key = { it.name }) { item ->
+@@ -181,7 +180,7 @@ internal fun ShiftTemplateDialog(onDismiss: () -> Unit, onSave: (ShiftTemplateDr
+             Button(onClick = {
+                 runCatching {
+                     ShiftTemplateDraft(
+-                        code = code,
++                        code = "",
+                         name = name,
+                         category = category,
+                         startMinute = parseClockMinute(start),
+@@ -202,7 +201,6 @@ internal fun ShiftTemplateDialog(onDismiss: () -> Unit, onSave: (ShiftTemplateDr
+ @Composable
+ internal fun WorkScheduleDialog(state: PersonnelUiState, onDismiss: () -> Unit, onSave: (WorkScheduleDraft) -> Unit) {
+     val activeShifts = state.shiftTemplates.filter { it.active }
+-    var code by remember { mutableStateOf("") }
+     var name by remember { mutableStateOf("") }
+     var from by remember { mutableLongStateOf(currentEpochDay()) }
+     var assignments by remember { mutableStateOf(List<Long?>(7) { activeShifts.firstOrNull()?.id }) }
+@@ -216,7 +214,7 @@ internal fun WorkScheduleDialog(state: PersonnelUiState, onDismiss: () -> Unit,
+             Column(Modifier.heightIn(max = 650.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                 error?.let { MessageCard(it, true) }
+                 if (activeShifts.isEmpty()) MessageCard("ابتدا حداقل یک شیفت فعال بسازید.", true)
+-                OutlinedTextField(code, { code = it.uppercase().take(40) }, label = { Text("کد برنامه") }, modifier = Modifier.fillMaxWidth())
++                Text("کد برنامه کاری هنگام ذخیره به‌صورت خودکار و یکتا تولید می‌شود.")
+                 OutlinedTextField(name, { name = it.take(100) }, label = { Text("نام برنامه کاری") }, modifier = Modifier.fillMaxWidth())
+                 PersianDateField("شروع اثر", from, { from = it })
+                 (0 until 7).forEach { index ->
+@@ -242,7 +240,7 @@ internal fun WorkScheduleDialog(state: PersonnelUiState, onDismiss: () -> Unit,
+             Button(enabled = activeShifts.isNotEmpty(), onClick = {
+                 runCatching {
+                     WorkScheduleDraft(
+-                        code = code,
++                        code = "",
+                         name = name,
+                         patternType = WorkSchedulePatternType.WEEKLY_FIXED,
+                         cycleLengthDays = 7,
+diff --git a/app/src/test/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCodeTest.kt b/app/src/test/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCodeTest.kt
+new file mode 100644
+index 0000000..f4134a6
+--- /dev/null
++++ b/app/src/test/java/ir/restaurant/management/domain/personnel/PersonnelReferenceCodeTest.kt
+@@ -0,0 +1,38 @@
++package ir.restaurant.management.domain.personnel
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertTrue
++
++class PersonnelReferenceCodeTest {
++    @Test
++    fun shiftCodesAreGeneratedWithoutSharedSequentialState() {
++        val codes = List(1_000) { PersonnelReferenceCode.newShiftCode() }
++        assertEquals(codes.size, codes.toSet().size)
++        assertTrue(codes.all { it.matches(Regex("SHF-[0-9A-F]{12}")) })
++    }
++
++    @Test
++    fun workScheduleCodesAreGeneratedWithoutSharedSequentialState() {
++        val codes = List(1_000) { PersonnelReferenceCode.newWorkScheduleCode() }
++        assertEquals(codes.size, codes.toSet().size)
++        assertTrue(codes.all { it.matches(Regex("WSC-[0-9A-F]{12}")) })
++    }
++
++    @Test
++    fun blankDraftCodesAreReservedForAutomaticAllocation() {
++        val shift = ShiftTemplateDraft(
++            code = "", name = "صبح", category = ShiftCategory.MORNING, startMinute = 480, endMinute = 960,
++        ).validated()
++        assertEquals("", shift.code)
++
++        val schedule = WorkScheduleDraft(
++            code = "", name = "هفتگی", patternType = WorkSchedulePatternType.WEEKLY_FIXED, cycleLengthDays = 7,
++            effectiveFromEpochDay = 20_000,
++            days = (0 until 7).map { day ->
++                WorkScheduleDayRule(day, day + 1, if (day == 6) null else 1L, day == 6)
++            },
++        ).validated()
++        assertEquals("", schedule.code)
++    }
++}

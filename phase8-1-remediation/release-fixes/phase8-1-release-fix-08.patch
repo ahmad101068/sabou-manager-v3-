@@ -1,0 +1,138 @@
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
+@@ -167,10 +167,13 @@
+             movementEpochDay = 100,
+             context = command("purchase:501:item:$itemId", 501),
+         )
++        val mainLocation = requireNotNull(database.inventoryLocationDao().byId(defaultLocationId))
+         val kitchenId = database.inventoryLocationDao().insert(
+             StorageLocationEntity(
+                 code = "KITCHEN-1",
+                 name = "آشپزخانه تست",
++                branchName = mainLocation.branchName,
++                branchId = requireNotNull(mainLocation.branchId),
+                 kind = "KITCHEN",
+                 createdAtEpochMillis = NOW,
+             ),
+--- a/app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase81ProductionClosureMigration.kt
+@@ -43,7 +43,7 @@
+                 val eventHash = AuditIntegrityCanonicalizer.hashEvent(row)
+                 db.execSQL(
+                     "UPDATE audit_logs SET businessEpochDay=?,integritySequence=?,previousEventHash=?,eventHash=? WHERE id=?",
+-                    arrayOf(row.businessEpochDay, sequence, previousHash, eventHash, row.id),
++                    arrayOf<Any?>(row.businessEpochDay, sequence, previousHash, eventHash, row.id),
+                 )
+                 previousHash = eventHash
+                 sequence++
+@@ -73,7 +73,7 @@
+         nextRevisionByBusinessDay.forEach { (businessEpochDay, nextValue) ->
+             db.execSQL(
+                 "INSERT OR IGNORE INTO document_sequences(sequenceKey,nextValue,updatedAtEpochMillis) VALUES (?,?,0)",
+-                arrayOf("SALES_CASH_REVISION:$businessEpochDay", nextValue),
++                arrayOf<Any?>("SALES_CASH_REVISION:$businessEpochDay", nextValue),
+             )
+         }
+         installAuditLogGuards(db)
+--- a/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
+@@ -12,6 +12,7 @@
+ import ir.restaurant.management.domain.brief.DailyManagementKpiReadModelFactory
+ import ir.restaurant.management.domain.operations.AppUserRecord
+ import ir.restaurant.management.domain.security.Permission
++import kotlinx.coroutines.ExperimentalCoroutinesApi
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.MutableStateFlow
+@@ -25,6 +26,7 @@
+ import kotlinx.coroutines.flow.onStart
+ import kotlinx.coroutines.flow.stateIn
+ 
++@OptIn(ExperimentalCoroutinesApi::class)
+ class DashboardViewModel(
+     private val repository: DashboardRepository,
+     private val dailyBriefService: DailyManagementBriefService,
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryWorkspaceViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryWorkspaceViewModel.kt
+@@ -46,6 +46,7 @@
+ import ir.restaurant.management.domain.inventory.WasteActionCommand
+ import ir.restaurant.management.domain.operations.AppUserRecord
+ import ir.restaurant.management.domain.operations.SecurityRepository
++import ir.restaurant.management.domain.security.Permission
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.StateFlow
+ import kotlinx.coroutines.flow.asStateFlow
+@@ -150,8 +151,12 @@
+     init {
+         viewModelScope.launch {
+             security.currentUser.collect { user ->
+-                mutableState.update { it.copy(currentUser = user) }
+-                if (user != null) refresh()
++                val canObserveInventory = user?.role?.allows(Permission.INVENTORY_VIEW) == true
++                mutableState.update {
++                    if (canObserveInventory) it.copy(currentUser = user)
++                    else InventoryWorkspaceUiState(currentUser = user, loading = false)
++                }
++                if (canObserveInventory) refresh() else refreshJob?.cancel()
+             }
+         }
+     }
+@@ -228,7 +233,8 @@
+     }
+ 
+     fun refresh() {
+-        if (mutableState.value.currentUser == null) return
++        val user = mutableState.value.currentUser ?: return
++        if (!user.role.allows(Permission.INVENTORY_VIEW)) return
+         refreshJob?.cancel()
+         refreshJob = viewModelScope.launch {
+             mutableState.update { it.copy(loading = true, message = null) }
+--- a/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
+@@ -298,7 +298,12 @@
+     } else {
+         AlertUiState()
+     }
+-    val personnelState by personnel.state.collectAsStateWithLifecycle()
++    val canObservePersonnel = securityState.currentUser?.role?.allows(Permission.PERSONNEL_VIEW) == true
++    val personnelState = if (canObservePersonnel) {
++        personnel.state.collectAsStateWithLifecycle().value
++    } else {
++        PersonnelUiState()
++    }
+     val canObservePayroll = securityState.currentUser?.role?.allows(Permission.PAYROLL_VIEW_ALL) == true
+     val hrPayrollState = if (canObservePayroll) {
+         personnel.hrState.collectAsStateWithLifecycle().value
+--- a/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
+@@ -19,10 +19,10 @@
+ import androidx.compose.material3.TextButton
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.outlined.AccountBalanceWallet
+-import androidx.compose.material.icons.outlined.CallReceived
+-import androidx.compose.material.icons.outlined.CallMade
+-import androidx.compose.material.icons.outlined.CompareArrows
+-import androidx.compose.material.icons.outlined.FactCheck
++import androidx.compose.material.icons.automirrored.outlined.CallReceived
++import androidx.compose.material.icons.automirrored.outlined.CallMade
++import androidx.compose.material.icons.automirrored.outlined.CompareArrows
++import androidx.compose.material.icons.automirrored.outlined.FactCheck
+ import androidx.compose.material.icons.outlined.Handshake
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.getValue
+@@ -123,11 +123,11 @@
+             SectionHeading("عملیات سریع", "هر عملیات از سرویس واقعی خزانه ثبت و در صورت لزوم سند حسابداری ایجاد می‌کند")
+             ErpQuickActionsGrid(
+                 listOf(
+-                    ErpActionItem("دریافت", Icons.Outlined.CallReceived, ErpPalette.GreenSoft, ErpPalette.Green, onClick = { mode = TreasuryFormMode.RECEIPT }),
+-                    ErpActionItem("پرداخت", Icons.Outlined.CallMade, ErpPalette.RedSoft, ErpPalette.Red, onClick = { mode = TreasuryFormMode.PAYMENT }),
+-                    ErpActionItem("انتقال", Icons.Outlined.CompareArrows, ErpPalette.IndigoSoft, ErpPalette.Indigo, onClick = { mode = TreasuryFormMode.TRANSFER }),
++                    ErpActionItem("دریافت", Icons.AutoMirrored.Outlined.CallReceived, ErpPalette.GreenSoft, ErpPalette.Green, onClick = { mode = TreasuryFormMode.RECEIPT }),
++                    ErpActionItem("پرداخت", Icons.AutoMirrored.Outlined.CallMade, ErpPalette.RedSoft, ErpPalette.Red, onClick = { mode = TreasuryFormMode.PAYMENT }),
++                    ErpActionItem("انتقال", Icons.AutoMirrored.Outlined.CompareArrows, ErpPalette.IndigoSoft, ErpPalette.Indigo, onClick = { mode = TreasuryFormMode.TRANSFER }),
+                     ErpActionItem("تسویه", Icons.Outlined.Handshake, ErpPalette.TealSoft, ErpPalette.Teal, onClick = { mode = TreasuryFormMode.SETTLEMENT }),
+-                    ErpActionItem("مغایرت", Icons.Outlined.FactCheck, ErpPalette.AmberSoft, ErpPalette.Amber, onClick = { mode = TreasuryFormMode.RECONCILIATION }),
++                    ErpActionItem("مغایرت", Icons.AutoMirrored.Outlined.FactCheck, ErpPalette.AmberSoft, ErpPalette.Amber, onClick = { mode = TreasuryFormMode.RECONCILIATION }),
+                 ),
+             )
+         }

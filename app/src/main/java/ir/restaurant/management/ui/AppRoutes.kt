@@ -1,0 +1,81 @@
+package ir.restaurant.management.ui
+
+enum class AppRouteGroup {
+    HOME,
+    OPERATIONS,
+    ACCOUNTING,
+    WORKFORCE,
+    MANAGEMENT,
+    ADMIN,
+    HUB,
+}
+
+enum class AppScreen(val group: AppRouteGroup) {
+    DASHBOARD(AppRouteGroup.HOME),
+    CONTROL_HUB(AppRouteGroup.HUB),
+    OPERATIONS_HUB(AppRouteGroup.HUB),
+    FINANCE_HUB(AppRouteGroup.HUB),
+    MORE(AppRouteGroup.HUB),
+    PURCHASES(AppRouteGroup.OPERATIONS),
+    NEW_PURCHASE(AppRouteGroup.OPERATIONS),
+    SUPPLIERS(AppRouteGroup.OPERATIONS),
+    INVENTORY(AppRouteGroup.OPERATIONS),
+    INVENTORY_COUNT(AppRouteGroup.OPERATIONS),
+    INVENTORY_TRANSFER(AppRouteGroup.OPERATIONS),
+    INVENTORY_WASTE(AppRouteGroup.OPERATIONS),
+    STOCK_MOVEMENTS(AppRouteGroup.OPERATIONS),
+    SALES(AppRouteGroup.OPERATIONS),
+    RECIPES(AppRouteGroup.OPERATIONS),
+    ACCOUNTING(AppRouteGroup.ACCOUNTING),
+    NEW_JOURNAL(AppRouteGroup.ACCOUNTING),
+    TREASURY(AppRouteGroup.ACCOUNTING),
+    CRM(AppRouteGroup.ACCOUNTING),
+    AUDIT_LOG(AppRouteGroup.MANAGEMENT),
+    SECURITY(AppRouteGroup.ADMIN),
+    PERSONNEL(AppRouteGroup.WORKFORCE),
+    ASSETS(AppRouteGroup.WORKFORCE),
+    ALERTS(AppRouteGroup.MANAGEMENT),
+    REPORTS(AppRouteGroup.MANAGEMENT),
+    GLOBAL_SEARCH(AppRouteGroup.MANAGEMENT),
+    SETTINGS(AppRouteGroup.ADMIN),
+    BRANCHES(AppRouteGroup.ADMIN),
+    MANAGEMENT_CONTROL(AppRouteGroup.MANAGEMENT),
+    MANAGEMENT_ISSUES(AppRouteGroup.MANAGEMENT),
+    MANAGEMENT_TASKS(AppRouteGroup.MANAGEMENT),
+    CHECKLISTS(AppRouteGroup.MANAGEMENT),
+    DAILY_BRIEF(AppRouteGroup.MANAGEMENT),
+}
+
+internal fun AppScreen.topLevelDestination(): AppScreen = when (this) {
+    AppScreen.DASHBOARD -> AppScreen.DASHBOARD
+    AppScreen.CONTROL_HUB,
+    AppScreen.MANAGEMENT_CONTROL,
+    AppScreen.MANAGEMENT_ISSUES,
+    AppScreen.MANAGEMENT_TASKS,
+    AppScreen.CHECKLISTS,
+    AppScreen.DAILY_BRIEF,
+    AppScreen.ALERTS,
+    -> AppScreen.CONTROL_HUB
+    AppScreen.OPERATIONS_HUB,
+    AppScreen.PURCHASES,
+    AppScreen.NEW_PURCHASE,
+    AppScreen.SUPPLIERS,
+    AppScreen.INVENTORY,
+    AppScreen.INVENTORY_COUNT,
+    AppScreen.INVENTORY_TRANSFER,
+    AppScreen.INVENTORY_WASTE,
+    AppScreen.STOCK_MOVEMENTS,
+    AppScreen.RECIPES,
+    AppScreen.PERSONNEL,
+    AppScreen.ASSETS,
+    -> AppScreen.OPERATIONS_HUB
+    AppScreen.FINANCE_HUB,
+    AppScreen.SALES,
+    AppScreen.ACCOUNTING,
+    AppScreen.NEW_JOURNAL,
+    AppScreen.TREASURY,
+    AppScreen.CRM,
+    AppScreen.REPORTS,
+    -> AppScreen.FINANCE_HUB
+    else -> AppScreen.MORE
+}

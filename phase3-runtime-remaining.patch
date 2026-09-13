@@ -1,0 +1,216 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+index ff6e479..f4de2b6 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+@@ -14,6 +14,7 @@ import ir.restaurant.management.data.db.MenuItemEntity
+ import ir.restaurant.management.data.db.RecipeVersionEntity
+ import ir.restaurant.management.data.db.RecipeVersionIngredientEntity
+ import ir.restaurant.management.data.db.StockMovementEntity
++import ir.restaurant.management.data.db.StorageLocationEntity
+ import ir.restaurant.management.data.security.SessionAuthorizer
+ import ir.restaurant.management.domain.control.ActualCostDataQuality
+ import ir.restaurant.management.domain.brief.DailyManagementKpiReadModelFactory
+@@ -68,6 +69,7 @@ class Phase2CorrectionIntegrationTest {
+     private lateinit var receivables: LocalReceivableService
+     private var now = 1_900_000_000_000L
+     private val day = 22_000L
++    private var branchLocationId = 0L
+ 
+     @Before
+     fun setUp() = runBlocking {
+@@ -78,6 +80,17 @@ class Phase2CorrectionIntegrationTest {
+         database.branchDao().insert(
+             BranchEntity(id = 1L, globalId = "test:branch:1", code = "B1", name = "شعبه ۱", createdAtEpochMillis = now, updatedAtEpochMillis = now),
+         )
++        branchLocationId = database.managementControlDao().insertLocation(
++            StorageLocationEntity(
++                code = "B1-TEST",
++                name = "انبار تست شعبه ۱",
++                branchName = "شعبه ۱",
++                branchId = 1L,
++                kind = "WAREHOUSE",
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
+         sales = LocalDailySalesRepository(database, authorizer, clock = { now })
+         receivables = LocalReceivableService(database, authorizer, clock = { now })
+     }
+@@ -214,7 +227,7 @@ class Phase2CorrectionIntegrationTest {
+                 idempotencyKey = "correction:waste:991",
+                 correlationId = "correction:waste:991",
+                 actorId = 1,
+-                locationId = requireNotNull(database.managementControlDao().defaultLocationId()),
++                locationId = branchLocationId,
+                 deviceId = "test",
+                 unitCostRial = 50_000_000L,
+                 reasonCode = "WASTE",
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+index e60656e..6ff7b8a 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+@@ -63,14 +63,17 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     @Test
+     fun ownerHome_hasFourPrimarySections_andNoAuditOrModuleDump() {
+         composeRule.onNodeWithTag("home_header").assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_summary"))
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_section"))
++        composeRule.waitUntil(10_000) {
++            composeRule.onAllNodesWithTag("home_kpi_summary").fetchSemanticsNodes().isNotEmpty() &&
++                composeRule.onAllNodesWithTag("home_kpi_sales").fetchSemanticsNodes().isNotEmpty()
++        }
+         composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
++        composeRule.onNodeWithTag("home_kpi_sales").assertIsDisplayed()
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_quick_actions"))
+         composeRule.onNodeWithTag("home_quick_actions").assertIsDisplayed()
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_attention_center"))
+         composeRule.onNodeWithTag("home_attention_center").assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_sales"))
+-        composeRule.onNodeWithTag("home_kpi_sales").assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithText("فعالیت‌های اخیر").fetchSemanticsNodes().isEmpty())
+         assertTrue(composeRule.onAllNodesWithTag("module_AUDIT_LOG_امنیت و حسابرسی").fetchSemanticsNodes().isEmpty())
+         composeRule.onNodeWithTag("nav_control_hub").assertIsDisplayed()
+@@ -105,10 +108,12 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     @Test
+     fun cashierHome_filtersSensitiveKpisAndActionsBeforeRendering() {
+         switchToRoleUser(CASHIER_USERNAME, CASHIER_PIN, UserRole.CASHIER)
+-        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_summary"))
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_section"))
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_kpi_sales").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity").fetchSemanticsNodes().isEmpty())
+         composeRule.onNodeWithTag("home_kpi_sales").assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_action_sale"))
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_quick_actions"))
+         composeRule.onNodeWithTag("home_action_sale").assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
+     }
+@@ -116,11 +121,12 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     @Test
+     fun inventoryHome_showsInventoryContext_withoutFinancialKpis() {
+         switchToRoleUser(INVENTORY_USERNAME, INVENTORY_PIN, UserRole.INVENTORY)
+-        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_summary"))
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_section"))
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_kpi_low_stock").fetchSemanticsNodes().isNotEmpty() }
+         composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
+         composeRule.onNodeWithText("کم‌موجودی").assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity").fetchSemanticsNodes().isEmpty())
+-        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_action_inventory"))
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_quick_actions"))
+         composeRule.onNodeWithTag("home_action_inventory").assertIsDisplayed()
+     }
+ 
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+index 511d859..f60e6e0 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+@@ -228,7 +228,14 @@ class EnterpriseCoreComposeE2ETest {
+         runBlocking { app.container.securityRepository.switchUser(fixture.managerId, TEST_MANAGER_PIN) }
+         composeRule.waitUntil(timeoutMillis = 10_000) {
+             runBlocking { app.container.securityRepository.currentUser.first()?.id == fixture.managerId } &&
+-                composeRule.onAllNodesWithTag("inventory_count_list").fetchSemanticsNodes().isNotEmpty()
++                composeRule.onAllNodesWithTag("inventory_overview_list").fetchSemanticsNodes().isNotEmpty()
++        }
++        // User identity changes intentionally recreate the protected ViewModelStore. Re-enter the
++        // Counts workspace as the manager instead of relying on stale owner-session UI state.
++        composeRule.onNodeWithTag("inventory_overview_list").performScrollToNode(hasTestTag("inventory_section_COUNTS"))
++        composeRule.onNodeWithTag("inventory_section_COUNTS").performClick()
++        composeRule.waitUntil(timeoutMillis = 10_000) {
++            composeRule.onAllNodesWithTag("inventory_count_list").fetchSemanticsNodes().isNotEmpty()
+         }
+         composeRule.onNodeWithTag("inventory_count_list").performScrollToNode(hasTestTag("inventory_count_approve_${fixture.sessionId}"))
+         composeRule.onNodeWithTag("inventory_count_approve_${fixture.sessionId}").performClick()
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
+index 29f8323..43f348b 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
+@@ -50,7 +50,7 @@ class StartupAuthenticationBoundaryComposeTest {
+         val cashier = prepareCashierAndLogout()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
+ 
+-        composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_switch_${cashier.id}"))
++        composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_user_${cashier.id}"))
+         composeRule.onNodeWithTag("security_switch_${cashier.id}").performClick()
+         composeRule.onNodeWithTag("security_login_pin").performTextReplacement(CASHIER_PIN)
+         composeRule.onNodeWithTag("security_login_confirm").performClick()
+@@ -67,7 +67,10 @@ class StartupAuthenticationBoundaryComposeTest {
+         composeRule.onNodeWithTag("more_hub").performScrollToNode(hasTestTag("module_SECURITY_کاربران"))
+         composeRule.onNodeWithTag("module_SECURITY_کاربران").performClick()
+         composeRule.onNodeWithTag("security_logout").performClick()
+-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.waitUntil(10_000) {
++            composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() &&
++                runBlocking { app.container.securityRepository.currentUser.first() == null }
++        }
+         assertTrue(composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isEmpty())
+         check(runBlocking { app.container.securityRepository.currentUser.first() } == null)
+     }
+@@ -77,7 +80,7 @@ class StartupAuthenticationBoundaryComposeTest {
+         val owner = prepareOwnerAndLogout()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
+ 
+-        composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_switch_${owner.id}"))
++        composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_user_${owner.id}"))
+         composeRule.onNodeWithTag("security_switch_${owner.id}").performClick()
+         composeRule.onNodeWithTag("security_login_pin").performTextReplacement(OWNER_PIN)
+         composeRule.onNodeWithTag("security_login_confirm").performClick()
+diff --git a/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt b/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt
+index 97ae6fc..e7f8844 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt
+@@ -121,7 +121,11 @@ internal fun DashboardScreen(
+                     onWarehouse = onWarehouse,
+                 )
+             }
+-            item { SalesHeroCard(home, managementOverview, onOpen) }
++            item {
++                Box(Modifier.fillMaxWidth().testTag("home_kpi_section")) {
++                    SalesHeroCard(home, managementOverview, onOpen)
++                }
++            }
+             item { HomeManagementOverview(managementOverview, onOpen) }
+             if (windowClass == ErpWindowClass.COMPACT) {
+                 item { HomeAttentionCenter(home.alerts, home.partialErrors, onOpen) }
+@@ -286,7 +290,7 @@ private fun SalesHeroCard(
+     val heroModifier = home.kpis.firstOrNull()?.let { Modifier.testTag("home_kpi_${it.id}") } ?: Modifier
+ 
+     Card(
+-        modifier = heroModifier.fillMaxWidth().testTag("home_kpi_summary").clickable(enabled = hero.destination != null) {
++        modifier = Modifier.fillMaxWidth().testTag("home_kpi_summary").clickable(enabled = hero.destination != null) {
+             hero.destination?.let(onOpen)
+         },
+         shape = RoundedCornerShape(28.dp),
+@@ -299,7 +303,7 @@ private fun SalesHeroCard(
+                 .padding(20.dp),
+             verticalArrangement = Arrangement.spacedBy(18.dp),
+         ) {
+-            Row(verticalAlignment = Alignment.Top) {
++            Row(modifier = heroModifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                     Text(hero.title, color = Color.White.copy(alpha = .82f), style = MaterialTheme.typography.labelLarge)
+                     Text(
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
+index a406a78..642f795 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
+@@ -291,7 +291,7 @@ private fun ManagementTasksScreen(
+     var showCreate by remember { mutableStateOf(false) }
+     var selected by remember { mutableStateOf<ManagementTaskRecord?>(null) }
+     WorkflowScaffold(
+-        "وظایف", "اقدام، مسئول، سررسید و چرخه تأیید", state, branches, workflow::selectBranch, onBack, navigateTopLevel,
++        "وظایف مدیریتی", "اقدام، مسئول، سررسید و چرخه تأیید", state, branches, workflow::selectBranch, onBack, navigateTopLevel,
+         actions = {
+             if (currentUser?.role?.allows(Permission.TASK_CREATE) == true) Button(onClick = { showCreate = true }, enabled = state.selectedBranchId != null) { Text("ایجاد وظیفه") }
+         },
+diff --git a/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt b/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt
+index 00f02c3..522f3d4 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt
+@@ -203,6 +203,7 @@ fun SecurityScreen(
+                 } else {
+                     items(state.users, key = { it.id }) { user ->
+                     Card(
++                        modifier = Modifier.fillMaxWidth().testTag("security_user_${user.id}"),
+                         shape = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                     ) {

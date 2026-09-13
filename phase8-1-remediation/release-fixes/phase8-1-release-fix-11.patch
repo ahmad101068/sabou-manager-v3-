@@ -1,0 +1,16 @@
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+@@ -1130,7 +1130,12 @@
+                 supplierId = null,
+             ),
+         )
+-        val locationId = app.container.inventoryRepository.defaultLocationId()
++        val branchId = ensureE2EBranchId()
++        val locationId = createE2EInventoryLocation(
++            label = "انبار $prefix",
++            codePrefix = prefix,
++            branchId = branchId,
++        )
+         app.container.inventoryCommandService.receive(
+             ReceiveInventoryCommand(
+                 itemId = inventoryItemId,

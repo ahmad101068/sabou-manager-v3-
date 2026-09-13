@@ -1,0 +1,1545 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt
+index 762b0a8..85aa6f3 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertReceivableIntegrationTest.kt
+@@ -4,6 +4,9 @@ import android.content.Context
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.security.SessionAuthorizer
++import ir.restaurant.management.domain.operations.UserDraft
++import ir.restaurant.management.domain.operations.UserRole
+ import ir.restaurant.management.data.db.CustomerEntity
+ import ir.restaurant.management.data.db.CustomerReceivableLedgerEntity
+ import ir.restaurant.management.data.db.SalesInvoiceEntity
+@@ -22,9 +25,14 @@ class AlertReceivableIntegrationTest {
+     private var now = 100_000L
+ 
+     @Before
+-    fun setUp() {
++    fun setUp() = runBlocking {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+-        alerts = LocalAlertRepository(database)
++        val authorizer = SessionAuthorizer(database)
++        LocalSecurityRepository(database, authorizer = authorizer, clock = { now }).save(
++            null,
++            UserDraft("alert-recv-owner", "مالک مطالبات", "123456", UserRole.OWNER, "87654321"),
++        )
++        alerts = LocalAlertRepository(database, authorizer)
+     }
+ 
+     @After
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
+index 88b8255..e0c63c2 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
+@@ -5,6 +5,11 @@ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.core.QuantityMicros
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.security.SessionAuthorizer
++import ir.restaurant.management.domain.operations.UserDraft
++import ir.restaurant.management.domain.operations.UserRole
++import ir.restaurant.management.domain.common.BusinessError
++import ir.restaurant.management.domain.common.BusinessRuleViolation
+ import ir.restaurant.management.data.db.InventoryItemEntity
+ import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.runBlocking
+@@ -23,9 +28,14 @@ class AlertStateIntegrationTest {
+     private val today = 24_000L
+ 
+     @Before
+-    fun setUp() {
++    fun setUp() = runBlocking {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+-        repository = LocalAlertRepository(database)
++        val authorizer = SessionAuthorizer(database)
++        LocalSecurityRepository(database, authorizer = authorizer, clock = { now }).save(
++            null,
++            UserDraft("alert-owner", "مالک هشدار", "123456", UserRole.OWNER, "87654321"),
++        )
++        repository = LocalAlertRepository(database, authorizer)
+     }
+ 
+     @After
+@@ -85,6 +95,25 @@ class AlertStateIntegrationTest {
+         assertEquals(0L, scalar("SELECT COUNT(*) FROM app_alerts WHERE id=${reopened.id}"))
+     }
+ 
++    @Test
++    fun alertRepositoryDeniesCashierAtDataBoundaryAndAuditsDenial() = runBlocking {
++        val authorizer = SessionAuthorizer(database)
++        val security = LocalSecurityRepository(database, authorizer = authorizer, clock = { now })
++        val cashierId = security.save(null, UserDraft("alert-cashier", "صندوقدار هشدار", "654321", UserRole.CASHIER))
++        security.switchUser(cashierId, "654321")
++        val denied = LocalAlertRepository(database, authorizer)
++        try {
++            denied.alerts().first()
++            throw AssertionError("کاربر فاقد مجوز نباید Alert feed را از Data boundary بخواند")
++        } catch (error: BusinessRuleViolation) {
++            assertTrue(error.error is BusinessError.PermissionDenied)
++        }
++        assertEquals(
++            1L,
++            scalar("SELECT COUNT(*) FROM audit_logs WHERE action='ACCESS_DENIED' AND actorId=$cashierId AND reason='PERMISSION_DENIED:ACCOUNTING'"),
++        )
++    }
++
+     private fun scalar(sql: String): Long = database.openHelper.writableDatabase.query(sql).use { cursor ->
+         check(cursor.moveToFirst())
+         cursor.getLong(0)
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/FixedInventoryTestAuthorizer.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/FixedInventoryTestAuthorizer.kt
+new file mode 100644
+index 0000000..04b29db
+--- /dev/null
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/FixedInventoryTestAuthorizer.kt
+@@ -0,0 +1,19 @@
++package ir.restaurant.management.data.repository
++
++import ir.restaurant.management.domain.security.AuthorizationService
++import ir.restaurant.management.domain.security.AuthorizedActor
++import ir.restaurant.management.domain.security.Permission
++import ir.restaurant.management.domain.security.UserRole
++
++internal class FixedInventoryTestAuthorizer(
++    private val actorId: Long = 42L,
++    private val role: UserRole = UserRole.OWNER,
++) : AuthorizationService {
++    private val actor = AuthorizedActor(actorId, "inventory-test", role)
++    override suspend fun actorIdentity(): AuthorizedActor = actor
++    override suspend fun can(permission: Permission): Boolean = role.allows(permission)
++    override suspend fun require(permission: Permission): AuthorizedActor {
++        check(role.allows(permission)) { "test role missing $permission" }
++        return actor
++    }
++}
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryCountWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryCountWorkflowIntegrationTest.kt
+index c23036d..ce84f30 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryCountWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryCountWorkflowIntegrationTest.kt
+@@ -67,7 +67,7 @@ class InventoryCountWorkflowIntegrationTest {
+                 updatedAtEpochMillis = now,
+             ),
+         )
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 10_000_000,
+             valueRial = 2_000_000,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
+index 749e6a5..6e74948 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
+@@ -41,7 +41,7 @@ class InventoryLedgerIntegrationTest {
+     @Before
+     fun setUp() {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+-        engine = LocalInventoryCommandEngine(database, clock = { NOW })
++        engine = LocalInventoryCommandEngine(database, clock = { NOW }, authorizer = FixedInventoryTestAuthorizer())
+     }
+ 
+     @After
+@@ -501,6 +501,84 @@ class InventoryLedgerIntegrationTest {
+         assertEquals(2_000_000L, database.inventoryLotDao().byId(lotId)?.quantityMicros)
+     }
+ 
++    @Test
++    fun directInventoryCommandRejectsUnauthorizedSessionAndAuditsDenial() = runBlocking {
++        val sessionAuthorizer = SessionAuthorizer(database)
++        val security = LocalSecurityRepository(database, clock = { NOW }, authorizer = sessionAuthorizer)
++        security.save(null, UserDraft("ledger-owner-sec", "مالک امنیت", "123456", UserRole.OWNER, "87654321"))
++        val cashierId = security.save(null, UserDraft("ledger-cash-sec", "صندوقدار امنیت", "654321", UserRole.CASHIER))
++        security.switchUser(cashierId, "654321")
++        val securedEngine = LocalInventoryCommandEngine(database, clock = { NOW }, authorizer = sessionAuthorizer)
++        val itemId = insertItem("کالای مرز امنیت")
++
++        try {
++            securedEngine.receive(
++                itemId = itemId,
++                quantityMicros = 1_000_000,
++                valueRial = 100_000,
++                movementType = InventoryMovementType.OPENING_BALANCE,
++                referenceType = InventoryReferenceType.MIGRATION,
++                referenceId = 9901,
++                movementEpochDay = 100,
++                context = InventoryCommandContext(
++                    idempotencyKey = "security-inventory:9901",
++                    correlationId = "security:inventory:9901",
++                    actorId = cashierId,
++                    deviceId = "instrumentation",
++                    locationId = null,
++                    reasonCode = InventoryReasonCode.OPENING_BALANCE,
++                    reason = "آزمون رد دسترسی مستقیم",
++                ),
++            )
++            fail("فراخوانی مستقیم موتور موجودی توسط کاربر فاقد مجوز باید رد شود")
++        } catch (error: BusinessRuleViolation) {
++            assertTrue(error.error is BusinessError.PermissionDenied)
++        }
++        assertEquals(0L, database.inventoryDao().byId(itemId)?.stockMicros)
++        assertEquals(
++            1L,
++            scalar("SELECT COUNT(*) FROM audit_logs WHERE action='ACCESS_DENIED' AND actorId=$cashierId AND reason LIKE 'PERMISSION_DENIED:%'"),
++        )
++    }
++
++    @Test
++    fun directInventoryCommandRejectsActorMismatchAndAuditsDenial() = runBlocking {
++        val sessionAuthorizer = SessionAuthorizer(database)
++        val security = LocalSecurityRepository(database, clock = { NOW }, authorizer = sessionAuthorizer)
++        val ownerId = security.save(null, UserDraft("ledger-owner-actor", "مالک تطبیق actor", "123456", UserRole.OWNER, "87654321"))
++        val securedEngine = LocalInventoryCommandEngine(database, clock = { NOW }, authorizer = sessionAuthorizer)
++        val itemId = insertItem("کالای تطبیق actor")
++
++        try {
++            securedEngine.receive(
++                itemId = itemId,
++                quantityMicros = 1_000_000,
++                valueRial = 100_000,
++                movementType = InventoryMovementType.OPENING_BALANCE,
++                referenceType = InventoryReferenceType.MIGRATION,
++                referenceId = 9902,
++                movementEpochDay = 100,
++                context = InventoryCommandContext(
++                    idempotencyKey = "security-inventory:9902",
++                    correlationId = "security:inventory:9902",
++                    actorId = ownerId + 999L,
++                    deviceId = "instrumentation",
++                    locationId = null,
++                    reasonCode = InventoryReasonCode.OPENING_BALANCE,
++                    reason = "آزمون عدم تطابق actor",
++                ),
++            )
++            fail("actor داخل فرمان موجودی باید با Session جاری یکسان باشد")
++        } catch (error: BusinessRuleViolation) {
++            assertTrue(error.error is BusinessError.PermissionDenied)
++        }
++        assertEquals(0L, database.inventoryDao().byId(itemId)?.stockMicros)
++        assertEquals(
++            1L,
++            scalar("SELECT COUNT(*) FROM audit_logs WHERE action='ACCESS_DENIED' AND actorId=$ownerId AND reason LIKE 'ACTOR_MISMATCH:%'"),
++        )
++    }
++
+     private suspend fun insertItem(
+         name: String,
+         stockMicros: Long = 0,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReadServiceIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReadServiceIntegrationTest.kt
+index 386b95f..14d9c79 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReadServiceIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReadServiceIntegrationTest.kt
+@@ -55,7 +55,7 @@ class InventoryReadServiceIntegrationTest {
+                 updatedAtEpochMillis = NOW,
+             ),
+         )
+-        LocalInventoryCommandEngine(database, clock = { NOW }).receive(
++        LocalInventoryCommandEngine(database, clock = { NOW }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 3_000_000,
+             valueRial = 900_000,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReplenishmentIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReplenishmentIntegrationTest.kt
+index c704c67..e9b0bc8 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReplenishmentIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryReplenishmentIntegrationTest.kt
+@@ -59,7 +59,7 @@ class InventoryReplenishmentIntegrationTest {
+                 updatedAtEpochMillis = now,
+             ),
+         )
+-        val engine = LocalInventoryCommandEngine(database, clock = { ++now })
++        val engine = LocalInventoryCommandEngine(database, clock = { ++now }, authorizer = authorizer)
+         engine.receive(
+             itemId = itemId,
+             quantityMicros = 4_000_000,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt
+index 4a21cea..9b9eb78 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt
+@@ -73,7 +73,7 @@ class InventoryTransferWorkflowIntegrationTest {
+                 updatedAtEpochMillis = now,
+             ),
+         )
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 5_000_000,
+             valueRial = 1_000_000,
+@@ -108,7 +108,7 @@ class InventoryTransferWorkflowIntegrationTest {
+ 
+     @Test
+     fun issueAndReceiptTrackInTransitPreserveValueAndCreateNoJournal() = runBlocking {
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = fixture.itemId,
+             quantityMicros = 5_000_000,
+             valueRial = 3_000_000,
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+index 6f6657b..847c2fb 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+@@ -65,7 +65,7 @@ class InventoryWasteWorkflowIntegrationTest {
+         val location = requireNotNull(database.inventoryLocationDao().byId(locationId))
+         database.inventoryLocationDao().update(location.copy(branchName = "ونک", branchId = 2L, updatedAtEpochMillis = ++now))
+         val itemId = insertItem("خامه منقضی", trackLot = true, trackExpiry = true)
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 3_000_000,
+             valueRial = 1_000_000,
+@@ -121,7 +121,7 @@ class InventoryWasteWorkflowIntegrationTest {
+     fun approvalRequiresPermissionAndDifferentActorThenCreatorCanPost() = runBlocking {
+         val locationId = requireNotNull(database.inventoryLocationDao().defaultLocationId())
+         val itemId = insertItem("روغن کنترل ضایعات")
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 1_000_000,
+             valueRial = 200_000,
+diff --git a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+index 132a81e..7637956 100644
+--- a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
++++ b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+@@ -13,12 +13,15 @@ import androidx.core.app.NotificationManagerCompat
+ import androidx.work.CoroutineWorker
+ import androidx.work.WorkerParameters
+ import ir.restaurant.management.core.currentLocalEpochDay
++import ir.restaurant.management.domain.security.Permission
++import ir.restaurant.management.domain.security.UserRole
+ import kotlinx.coroutines.flow.first
+ 
+ class AlertRefreshWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+     override suspend fun doWork(): Result = runCatching {
+         val app = applicationContext as RestaurantManagementApplication
+-        if (app.container.securityRepository.currentUser.first() == null) return Result.success()
++        val currentUser = app.container.securityRepository.currentUser.first() ?: return Result.success()
++        if (!UserRole.fromStoredValue(currentUser.role).allows(Permission.ACCOUNTING)) return Result.success()
+         val repository = app.container.alertRepository
+         repository.refresh(currentLocalEpochDay())
+         val actionable = repository.alerts().first().count {
+diff --git a/app/src/main/java/ir/restaurant/management/data/AppContainer.kt b/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
+index 9c7a858..4a9bfe9 100644
+--- a/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
++++ b/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
+@@ -294,7 +294,7 @@ class AppContainer(context: Context) {
+     }
+ 
+     val inventoryCommandService: InventoryCommandService by lazy {
+-        LocalInventoryCommandEngine(database)
++        LocalInventoryCommandEngine(database, authorizer = authorizer)
+     }
+ 
+     val inventoryCountService: InventoryCountService by lazy {
+@@ -407,7 +407,7 @@ class AppContainer(context: Context) {
+     val syncRecorder by lazy { SyncRecorder(database, deviceId) }
+     val assetRepository: AssetRepository by lazy { LocalAssetRepository(database, syncRecorder = syncRecorder, authorizer = authorizer) }
+     val assetUseCases: AssetUseCases by lazy { AssetUseCases(assetRepository) }
+-    val alertRepository: AlertRepository by lazy { LocalAlertRepository(database) }
++    val alertRepository: AlertRepository by lazy { LocalAlertRepository(database, authorizer) }
+     val managementControlRepository: ManagementControlRepository by lazy {
+         LocalManagementControlRepository(
+             database,
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+index 2433d20..9aa3031 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+@@ -229,6 +229,8 @@ abstract class AppDatabase : RoomDatabase() {
+                 require(integrityResults.size == 1 && integrityResults.single().equals("ok", ignoreCase = true)) {
+                     "اعتبارسنجی SQLite نسخه موقت ناموفق بود."
+                 }
++                DatabaseHealthValidator.validateForeignKeys(sqlite)
++                DatabaseHealthValidator.validateStartup(sqlite)
+                 val schemaVersion = sqlite.query("PRAGMA user_version").use { cursor ->
+                     check(cursor.moveToFirst())
+                     cursor.getInt(0)
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/DatabaseHealthValidator.kt b/app/src/main/java/ir/restaurant/management/data/db/DatabaseHealthValidator.kt
+new file mode 100644
+index 0000000..cd726b2
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/data/db/DatabaseHealthValidator.kt
+@@ -0,0 +1,47 @@
++package ir.restaurant.management.data.db
++
++import androidx.sqlite.db.SupportSQLiteDatabase
++
++internal object DatabaseHealthValidator {
++    fun validateStartup(sqlite: SupportSQLiteDatabase) {
++        val quick = sqlite.query("PRAGMA quick_check").use { cursor ->
++            buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
++        }
++        check(quick.size == 1 && quick.single().equals("ok", ignoreCase = true)) {
++            "DATABASE_QUICK_CHECK_FAILED:${quick.joinToString("|")}"
++        }
++        val version = sqlite.query("PRAGMA user_version").use { cursor ->
++            check(cursor.moveToFirst())
++            cursor.getInt(0)
++        }
++        check(version == APP_DATABASE_SCHEMA_VERSION) {
++            "DATABASE_SCHEMA_VERSION_MISMATCH:$version/$APP_DATABASE_SCHEMA_VERSION"
++        }
++        validateRequiredGuards(sqlite)
++    }
++
++    fun validateForeignKeys(sqlite: SupportSQLiteDatabase) {
++        sqlite.query("PRAGMA foreign_key_check").use { cursor ->
++            check(!cursor.moveToFirst()) { "DATABASE_FOREIGN_KEY_CHECK_FAILED" }
++        }
++    }
++
++    private fun validateRequiredGuards(sqlite: SupportSQLiteDatabase) {
++        val required = setOf(
++            "prevent_closed_sales_day_insert",
++            "prevent_closed_accounting_insert",
++            "validate_journal_line_insert",
++            "trg_recipe_versions_no_update",
++            "trg_audit_logs_no_update",
++            "trg_stock_movements_no_update",
++        )
++        val existing = sqlite.query(
++            "SELECT name FROM sqlite_master WHERE type='trigger' AND name IN (${required.joinToString(",") { "'${it}'" }})",
++        ).use { cursor ->
++            buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) }
++        }
++        check(existing == required) {
++            "DATABASE_REQUIRED_GUARDS_MISSING:${(required - existing).sorted().joinToString(",")}"
++        }
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
+index 5e4c751..4141ff9 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
+@@ -114,6 +114,9 @@ interface CustomerReceivableDao {
+     @Query("SELECT * FROM customer_receivable_ledger WHERE customerId=:customerId ORDER BY businessEpochDay,id")
+     suspend fun ledger(customerId: Long): List<CustomerReceivableLedgerEntity>
+ 
++    @Query("SELECT * FROM customer_receivable_ledger WHERE customerId IN (:customerIds) ORDER BY customerId,businessEpochDay,id")
++    suspend fun ledgerForCustomers(customerIds: List<Long>): List<CustomerReceivableLedgerEntity>
++
+     @Query("SELECT COALESCE(SUM(debitRial-creditRial),0) FROM customer_receivable_ledger WHERE customerId=:customerId")
+     suspend fun balanceRial(customerId: Long): Long
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt
+index 71be33b..a267fe7 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt
+@@ -46,6 +46,8 @@ internal object AccountSeedCallback : RoomDatabase.Callback() {
+         installStockTransferGuards(db)
+         installHrPayrollGuards(db)
+         installSalesHistoryGuards(db)
++        DatabaseHealthValidator.validateStartup(db)
++        DatabaseHealthValidator.validateForeignKeys(db)
+     }
+ 
+     fun seedMissingAccounts(db: SupportSQLiteDatabase) {
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
+index a711521..7304a46 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
+@@ -2,34 +2,39 @@ package ir.restaurant.management.data.repository
+ 
+ import androidx.room.withTransaction
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.AppAlertEntity
+ import ir.restaurant.management.data.db.GeneratedAlertRow
+ import ir.restaurant.management.domain.crm.ReceivableAgingCalculator
+ import ir.restaurant.management.domain.crm.ReceivableLedgerRecord
+ import ir.restaurant.management.domain.operations.AlertRepository
++import ir.restaurant.management.domain.operations.AppAlert
++import ir.restaurant.management.domain.security.AuthorizationService
++import ir.restaurant.management.domain.security.Permission
++import kotlinx.coroutines.flow.emitAll
++import kotlinx.coroutines.flow.flow
++import kotlinx.coroutines.flow.map
+ 
+-class LocalAlertRepository(private val db: AppDatabase) : AlertRepository {
+-    override fun alerts() = db.alertDao().observeVisible()
++class LocalAlertRepository(
++    private val db: AppDatabase,
++    private val authorizer: AuthorizationService,
++) : AlertRepository {
++    override fun alerts() = flow {
++        authorizer.require(Permission.ACCOUNTING)
++        emitAll(db.alertDao().observeVisible().map { rows -> rows.map { it.toDomain() } })
++    }
+ 
+-    override suspend fun refresh(todayEpochDay: Long) = db.withTransaction {
+-        require(todayEpochDay > 0)
+-        val now = System.currentTimeMillis()
+-        val horizon = todayEpochDay + 30
+-        val activeKeys = mutableSetOf<Pair<String, Long>>()
++    override suspend fun refresh(todayEpochDay: Long) {
++        authorizer.require(Permission.ACCOUNTING)
++        db.withTransaction {
++            require(todayEpochDay > 0)
++            val now = System.currentTimeMillis()
++            val horizon = todayEpochDay + 30
++            val activeKeys = mutableSetOf<Pair<String, Long>>()
+ 
+-        suspend fun upsert(sourceType: String, rows: List<GeneratedAlertRow>) {
+-            rows.forEach { row ->
+-                activeKeys += sourceType to row.sourceId
+-                val updated = db.alertDao().updateGenerated(
+-                    sourceType = sourceType,
+-                    sourceId = row.sourceId,
+-                    title = row.title,
+-                    message = row.message,
+-                    severity = row.severity,
+-                    dueEpochDay = row.dueEpochDay,
+-                    now = now,
+-                )
+-                if (updated == 0) {
+-                    db.alertDao().insertGeneratedIfAbsent(
++            suspend fun upsert(sourceType: String, rows: List<GeneratedAlertRow>) {
++                rows.forEach { row ->
++                    activeKeys += sourceType to row.sourceId
++                    val updated = db.alertDao().updateGenerated(
+                         sourceType = sourceType,
+                         sourceId = row.sourceId,
+                         title = row.title,
+@@ -38,33 +43,48 @@ class LocalAlertRepository(private val db: AppDatabase) : AlertRepository {
+                         dueEpochDay = row.dueEpochDay,
+                         now = now,
+                     )
++                    if (updated == 0) {
++                        db.alertDao().insertGeneratedIfAbsent(
++                            sourceType = sourceType,
++                            sourceId = row.sourceId,
++                            title = row.title,
++                            message = row.message,
++                            severity = row.severity,
++                            dueEpochDay = row.dueEpochDay,
++                            now = now,
++                        )
++                    }
+                 }
+             }
+-        }
+ 
+-        upsert("PURCHASE_PAYABLE", db.alertDao().overduePurchases(todayEpochDay))
+-        upsert("LOW_STOCK", db.alertDao().lowStock())
+-        upsert("LOT_EXPIRING", db.alertDao().expiringLots(todayEpochDay, horizon))
+-        upsert("LOT_EXPIRED", db.alertDao().expiredLots(todayEpochDay))
+-        upsert("CUSTOMER_RECEIVABLE", overdueReceivables(todayEpochDay))
+-        upsert("CONTRACT_EXPIRY", db.alertDao().expiringContracts(todayEpochDay, horizon))
+-        upsert("UNPAID_PAYROLL", db.alertDao().unpaidPayroll())
+-        upsert("ASSET_MAINTENANCE", db.alertDao().dueAssetMaintenance(todayEpochDay, horizon))
+-        upsert("ATTENDANCE_ANOMALY", db.alertDao().attendanceAnomalies())
+-        upsert("PURCHASE_DELIVERY_OVERDUE", db.alertDao().overdueDeliveries(todayEpochDay))
+-        upsert("INVENTORY_DISCREPANCY", db.alertDao().inventoryDiscrepancies())
++            upsert("PURCHASE_PAYABLE", db.alertDao().overduePurchases(todayEpochDay))
++            upsert("LOW_STOCK", db.alertDao().lowStock())
++            upsert("LOT_EXPIRING", db.alertDao().expiringLots(todayEpochDay, horizon))
++            upsert("LOT_EXPIRED", db.alertDao().expiredLots(todayEpochDay))
++            upsert("CUSTOMER_RECEIVABLE", overdueReceivables(todayEpochDay))
++            upsert("CONTRACT_EXPIRY", db.alertDao().expiringContracts(todayEpochDay, horizon))
++            upsert("UNPAID_PAYROLL", db.alertDao().unpaidPayroll())
++            upsert("ASSET_MAINTENANCE", db.alertDao().dueAssetMaintenance(todayEpochDay, horizon))
++            upsert("ATTENDANCE_ANOMALY", db.alertDao().attendanceAnomalies())
++            upsert("PURCHASE_DELIVERY_OVERDUE", db.alertDao().overdueDeliveries(todayEpochDay))
++            upsert("INVENTORY_DISCREPANCY", db.alertDao().inventoryDiscrepancies())
+ 
+-        db.alertDao().generatedKeys().forEach { key ->
+-            if ((key.sourceType to key.sourceId) !in activeKeys) {
+-                db.alertDao().resolveGenerated(key.sourceType, key.sourceId, now)
++            db.alertDao().generatedKeys().forEach { key ->
++                if ((key.sourceType to key.sourceId) !in activeKeys) {
++                    db.alertDao().resolveGenerated(key.sourceType, key.sourceId, now)
++                }
+             }
+         }
+     }
+ 
+-
+-    private suspend fun overdueReceivables(todayEpochDay: Long): List<GeneratedAlertRow> =
+-        db.alertDao().overdueReceivableCandidates(todayEpochDay).mapNotNull { candidate ->
+-            val ledger = db.customerReceivableDao().ledger(candidate.customerId).map { row ->
++    private suspend fun overdueReceivables(todayEpochDay: Long): List<GeneratedAlertRow> {
++        val candidates = db.alertDao().overdueReceivableCandidates(todayEpochDay)
++        if (candidates.isEmpty()) return emptyList()
++        val ledgersByCustomer = db.customerReceivableDao()
++            .ledgerForCustomers(candidates.map { it.customerId })
++            .groupBy { it.customerId }
++        return candidates.mapNotNull { candidate ->
++            val ledger = ledgersByCustomer[candidate.customerId].orEmpty().map { row ->
+                 ReceivableLedgerRecord(
+                     row.id, row.customerId, row.businessEpochDay, row.entryType, row.debitRial, row.creditRial,
+                     row.sourceType, row.sourceId, row.reference, row.dueEpochDay,
+@@ -85,24 +105,45 @@ class LocalAlertRepository(private val db: AppDatabase) : AlertRepository {
+                 )
+             }
+         }
++    }
+ 
+     override suspend fun markRead(id: Long) {
++        authorizer.require(Permission.ACCOUNTING)
+         require(db.alertDao().markRead(id, System.currentTimeMillis()) == 1) { "هشدار پیدا نشد." }
+     }
+ 
+     override suspend fun markActioned(id: Long) {
++        authorizer.require(Permission.ACCOUNTING)
+         require(db.alertDao().markActioned(id, System.currentTimeMillis()) == 1) { "هشدار قابل اقدام پیدا نشد." }
+     }
+ 
+     override suspend fun resolve(id: Long) {
++        authorizer.require(Permission.ACCOUNTING)
+         require(db.alertDao().resolve(id, System.currentTimeMillis()) == 1) { "هشدار قابل حل پیدا نشد." }
+     }
+ 
+     override suspend fun dismiss(id: Long) {
++        authorizer.require(Permission.ACCOUNTING)
+         require(db.alertDao().dismiss(id, System.currentTimeMillis()) == 1) { "هشدار پیدا نشد." }
+     }
+ 
+     override suspend fun clearDismissed() {
++        authorizer.require(Permission.ACCOUNTING)
+         db.alertDao().clearDismissed()
+     }
++
++    private fun AppAlertEntity.toDomain() = AppAlert(
++        id = id,
++        sourceType = sourceType,
++        sourceId = sourceId,
++        title = title,
++        message = message,
++        severity = severity,
++        dueEpochDay = dueEpochDay,
++        isRead = isRead,
++        isDismissed = isDismissed,
++        createdAtEpochMillis = createdAtEpochMillis,
++        updatedAtEpochMillis = updatedAtEpochMillis,
++        status = status,
++    )
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+index 91312e4..8ab4797 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+@@ -63,7 +63,7 @@ class LocalDailySalesRepository(
+     private val sensitiveActionGate: SensitiveActionGate = SensitiveActionGate(),
+ ) : DailySalesRepository {
+     private val accountingPosting = LocalAccountingPostingEngine(database, clock = clock)
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock)
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock, authorizer = authorizer)
+     private val auditWriter = LocalAuditEventWriter(database)
+     private val branchResolver = CanonicalBranchResolver(database)
+     override val dayClosures: Flow<List<SalesDayClosureRecord>> = combine(
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+index 8784f99..5f819f8 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+@@ -30,6 +30,9 @@ import ir.restaurant.management.domain.inventory.LotAllocationCandidate
+ import ir.restaurant.management.domain.inventory.LotAllocationPurpose
+ import ir.restaurant.management.domain.inventory.LotAllocationRequest
+ import ir.restaurant.management.domain.inventory.WeightedAverageInventoryValuationService
++import ir.restaurant.management.domain.security.AuthorizationService
++import ir.restaurant.management.domain.security.Permission
++import ir.restaurant.management.data.security.AccessDeniedException
+ 
+ /**
+  * Authoritative command boundary for inventory quantity/value mutations.
+@@ -42,6 +45,7 @@ import ir.restaurant.management.domain.inventory.WeightedAverageInventoryValuati
+ class LocalInventoryCommandEngine(
+     private val database: AppDatabase,
+     private val clock: () -> Long = System::currentTimeMillis,
++    private val authorizer: AuthorizationService,
+ ) : InventoryCommandService {
+     enum class LotIssuePolicy { NONE, FEFO_ALL, FEFO_ALLOCATED_ONLY }
+     private val lotMovements = InventoryLotMovementService(database)
+@@ -85,6 +89,7 @@ class LocalInventoryCommandEngine(
+     )
+ 
+     override suspend fun reverse(command: ReverseInventoryCommand): InventoryLedgerResult {
++        requireActorMatch(command.context, InventoryReferenceType.LEGACY_UNKNOWN, Permission.INVENTORY)
+         val original = database.stockMovementDao().byId(command.originalMovementId)
+             ?: throw BusinessError.EntityNotFound("STOCK_MOVEMENT", command.originalMovementId).asViolation()
+         return restoreIssuedMovement(
+@@ -108,7 +113,9 @@ class LocalInventoryCommandEngine(
+         notes: String? = null,
+         lot: InventoryReceiptLot? = null,
+         enforceLotPolicy: Boolean = false,
+-    ): InventoryLedgerResult = inventoryTransaction(movementEpochDay) {
++    ): InventoryLedgerResult = authorizedInventoryTransaction(
++        movementEpochDay, context, referenceType, permissionsFor(referenceType, movementType),
++    ) {
+         requireCommandIdentity(movementType, referenceType, referenceId)
+         businessRequire(quantityMicros > 0) {
+             BusinessError.InvalidInput("quantityMicros", "مقدار ورود موجودی باید مثبت باشد.")
+@@ -193,7 +200,9 @@ class LocalInventoryCommandEngine(
+         notes: String? = null,
+         lotPolicy: LotIssuePolicy = LotIssuePolicy.FEFO_ALLOCATED_ONLY,
+         requestedLotId: Long? = null,
+-    ): InventoryLedgerResult = inventoryTransaction(movementEpochDay) {
++    ): InventoryLedgerResult = authorizedInventoryTransaction(
++        movementEpochDay, context, referenceType, permissionsFor(referenceType, movementType),
++    ) {
+         requireCommandIdentity(movementType, referenceType, referenceId)
+         businessRequire(quantityMicros > 0) {
+             BusinessError.InvalidInput("quantityMicros", "مقدار خروج موجودی باید مثبت باشد.")
+@@ -285,7 +294,9 @@ class LocalInventoryCommandEngine(
+         movementEpochDay: Long,
+         context: InventoryCommandContext,
+         notes: String? = null,
+-    ): InventoryLedgerResult = inventoryTransaction(movementEpochDay) {
++    ): InventoryLedgerResult = authorizedInventoryTransaction(
++        movementEpochDay, context, InventoryReferenceType.INVENTORY_COUNT, Permission.INVENTORY_COUNT_POST,
++    ) {
+         businessRequire(countedQuantityMicros >= 0) {
+             BusinessError.InvalidInput("countedQuantityMicros", "موجودی شمارش‌شده نمی‌تواند منفی باشد.")
+         }
+@@ -368,7 +379,9 @@ class LocalInventoryCommandEngine(
+         transferId: Long,
+         businessEpochDay: Long,
+         context: InventoryCommandContext,
+-    ) = inventoryTransaction(businessEpochDay) {
++    ) = authorizedInventoryTransaction(
++        businessEpochDay, context, InventoryReferenceType.STOCK_TRANSFER, setOf(Permission.INVENTORY_TRANSFER_ISSUE),
++    ) {
+         val transferDao = database.inventoryTransferDao()
+         val transfer = transferDao.transfer(transferId)
+             ?: throw BusinessError.EntityNotFound("INVENTORY_TRANSFER", transferId).asViolation()
+@@ -478,7 +491,9 @@ class LocalInventoryCommandEngine(
+         receivedQuantityByLineId: Map<Long, Long>,
+         businessEpochDay: Long,
+         context: InventoryCommandContext,
+-    ) = inventoryTransaction(businessEpochDay) {
++    ) = authorizedInventoryTransaction(
++        businessEpochDay, context, InventoryReferenceType.STOCK_TRANSFER, setOf(Permission.INVENTORY_TRANSFER_RECEIVE),
++    ) {
+         val transferDao = database.inventoryTransferDao()
+         val transfer = transferDao.transfer(transferId)
+             ?: throw BusinessError.EntityNotFound("INVENTORY_TRANSFER", transferId).asViolation()
+@@ -581,7 +596,12 @@ class LocalInventoryCommandEngine(
+         reversalEpochDay: Long,
+         context: InventoryCommandContext,
+         notes: String? = null,
+-    ): InventoryLedgerResult = inventoryTransaction(reversalEpochDay) {
++    ): InventoryLedgerResult = authorizedInventoryTransaction(
++        reversalEpochDay,
++        context,
++        InventoryReferenceType.fromStoredValue(movement.referenceType),
++        setOf(permissionForReversal(movement)),
++    ) {
+         businessRequire(movement.quantityDeltaMicros < 0 && movement.valueDeltaRial <= 0) {
+             BusinessError.InvalidBusinessState("STOCK_MOVEMENT", movement.movementType)
+         }
+@@ -669,7 +689,7 @@ class LocalInventoryCommandEngine(
+      * Restores only the lot-allocation projection for a partial commercial return. The caller must
+      * create the corresponding positive stock movement via [receive] in the same Room transaction.
+      */
+-    suspend fun restoreTrackedLotQuantity(
++    private suspend fun restoreTrackedLotQuantity(
+         originalMovementId: Long,
+         quantityMicros: Long,
+     ) {
+@@ -720,6 +740,139 @@ class LocalInventoryCommandEngine(
+         check(remaining == 0L) { "بازگردانی لات فروش کامل نشد." }
+     }
+ 
++    private suspend fun <T> authorizedInventoryTransaction(
++        movementEpochDay: Long,
++        context: InventoryCommandContext,
++        referenceType: InventoryReferenceType,
++        permissions: Set<Permission>,
++        block: suspend () -> T,
++    ): T {
++        authorizeCommand(context, referenceType, permissions)
++        return inventoryTransaction(movementEpochDay, block)
++    }
++
++    private suspend fun authorizeCommand(
++        context: InventoryCommandContext,
++        referenceType: InventoryReferenceType,
++        permissions: Set<Permission>,
++    ) {
++        require(permissions.isNotEmpty()) { "inventory_command_permission_missing" }
++        permissions.forEach { authorizer.require(it) }
++        requireActorMatch(context, referenceType, permissions.first())
++    }
++
++    private suspend fun requireActorMatch(
++        context: InventoryCommandContext,
++        referenceType: InventoryReferenceType,
++        permission: Permission,
++    ) {
++        val valid = context.validated()
++        val actor = authorizer.actorIdentity()
++        if (actor.id != valid.actorId) {
++            LocalAuditEventWriter(database).appendAuthorized(
++                authorizer = authorizer,
++                action = "ACCESS_DENIED",
++                entityType = "INVENTORY_COMMAND",
++                entityId = null,
++                description = "رد عملیات موجودی به علت عدم تطابق actor",
++                occurredAtEpochMillis = clock(),
++                reason = "ACTOR_MISMATCH:session=${actor.id};context=${valid.actorId};source=${referenceType.storedValue}",
++                correlationId = valid.correlationId,
++                referenceType = null,
++                referenceId = null,
++                deviceId = valid.deviceId,
++            )
++            throw AccessDeniedException(permission)
++        }
++    }
++
++    private fun permissionsFor(
++        referenceType: InventoryReferenceType,
++        movementType: InventoryMovementType,
++    ): Set<Permission> = buildSet {
++        add(referencePermission(referenceType, movementType))
++        add(movementPermission(movementType))
++    }
++
++    private fun referencePermission(
++        referenceType: InventoryReferenceType,
++        movementType: InventoryMovementType,
++    ): Permission = when (referenceType) {
++        InventoryReferenceType.PURCHASE,
++        InventoryReferenceType.GOODS_RECEIPT,
++        InventoryReferenceType.PURCHASE_RETURN -> Permission.PURCHASES
++        InventoryReferenceType.DAILY_SALES -> if (movementType == InventoryMovementType.DAILY_SALES_REVERSAL) {
++            Permission.DAILY_SALES_VOID
++        } else {
++            Permission.DAILY_SALES_POST
++        }
++        InventoryReferenceType.SALES_INVOICE -> Permission.DAILY_SALES_POST
++        InventoryReferenceType.SALES_RETURN,
++        InventoryReferenceType.SALES_VOID -> Permission.DAILY_SALES_VOID
++        InventoryReferenceType.INVENTORY_COUNT -> Permission.INVENTORY_COUNT_POST
++        InventoryReferenceType.WASTE -> Permission.INVENTORY_WASTE_CREATE
++        InventoryReferenceType.STOCK_TRANSFER -> if (movementType == InventoryMovementType.TRANSFER_IN) {
++            Permission.INVENTORY_TRANSFER_RECEIVE
++        } else {
++            Permission.INVENTORY_TRANSFER_ISSUE
++        }
++        InventoryReferenceType.INVENTORY_ADJUSTMENT -> Permission.INVENTORY_ADJUST
++        InventoryReferenceType.RECIPE -> Permission.RECIPES
++        InventoryReferenceType.PRODUCTION -> Permission.INVENTORY_ADJUST
++        InventoryReferenceType.MIGRATION -> Permission.RESTORE
++        InventoryReferenceType.LEGACY_UNKNOWN -> Permission.INVENTORY_ADJUST
++    }
++
++    private fun movementPermission(movementType: InventoryMovementType): Permission = when (movementType) {
++        InventoryMovementType.PURCHASE,
++        InventoryMovementType.PURCHASE_REVERSAL,
++        InventoryMovementType.GOODS_RECEIPT,
++        InventoryMovementType.PURCHASE_RETURN -> Permission.PURCHASES
++        InventoryMovementType.DAILY_SALES_CONSUMPTION,
++        InventoryMovementType.SALES_INVOICE_CONSUMPTION -> Permission.DAILY_SALES_POST
++        InventoryMovementType.DAILY_SALES_REVERSAL,
++        InventoryMovementType.SALES_RETURN,
++        InventoryMovementType.SALES_VOID -> Permission.DAILY_SALES_VOID
++        InventoryMovementType.RECIPE_CONSUMPTION -> Permission.RECIPES
++        InventoryMovementType.PRODUCTION_OUTPUT,
++        InventoryMovementType.INVENTORY_ADJUSTMENT -> Permission.INVENTORY_ADJUST
++        InventoryMovementType.INVENTORY_COUNT,
++        InventoryMovementType.COUNT_VARIANCE -> Permission.INVENTORY_COUNT_POST
++        InventoryMovementType.WASTE -> Permission.INVENTORY_WASTE_CREATE
++        InventoryMovementType.TRANSFER_IN -> Permission.INVENTORY_TRANSFER_RECEIVE
++        InventoryMovementType.TRANSFER_OUT -> Permission.INVENTORY_TRANSFER_ISSUE
++        InventoryMovementType.OPENING_BALANCE -> Permission.RESTORE
++        InventoryMovementType.REVERSAL -> Permission.INVENTORY_ADJUST
++        InventoryMovementType.LEGACY_SALE_CONSUMPTION,
++        InventoryMovementType.LEGACY_UNKNOWN -> Permission.INVENTORY_ADJUST
++    }
++
++    private fun permissionForReversal(movement: StockMovementEntity): Permission = when (
++        InventoryReferenceType.fromStoredValue(movement.referenceType)
++    ) {
++        InventoryReferenceType.DAILY_SALES,
++        InventoryReferenceType.SALES_INVOICE,
++        InventoryReferenceType.SALES_RETURN,
++        InventoryReferenceType.SALES_VOID -> Permission.DAILY_SALES_VOID
++        InventoryReferenceType.PURCHASE,
++        InventoryReferenceType.GOODS_RECEIPT,
++        InventoryReferenceType.PURCHASE_RETURN -> Permission.PURCHASES
++        InventoryReferenceType.INVENTORY_COUNT -> Permission.INVENTORY_COUNT_POST
++        InventoryReferenceType.WASTE -> Permission.INVENTORY_WASTE_CREATE
++        InventoryReferenceType.STOCK_TRANSFER -> if (
++            InventoryMovementType.fromStoredValue(movement.movementType) == InventoryMovementType.TRANSFER_IN
++        ) {
++            Permission.INVENTORY_TRANSFER_RECEIVE
++        } else {
++            Permission.INVENTORY_TRANSFER_ISSUE
++        }
++        InventoryReferenceType.INVENTORY_ADJUSTMENT -> Permission.INVENTORY_ADJUST
++        InventoryReferenceType.RECIPE -> Permission.RECIPES
++        InventoryReferenceType.PRODUCTION -> Permission.INVENTORY_ADJUST
++        InventoryReferenceType.MIGRATION -> Permission.RESTORE
++        InventoryReferenceType.LEGACY_UNKNOWN -> Permission.INVENTORY_ADJUST
++    }
++
+     private suspend fun resolveContext(
+         context: InventoryCommandContext,
+         locationOverride: Long? = null,
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCountService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCountService.kt
+index d3532cb..4fa4ef1 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCountService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCountService.kt
+@@ -324,7 +324,7 @@ class LocalInventoryCountService(
+                 throw BusinessError.InvalidBusinessState("INVENTORY_COUNT_SESSION", "LINES_NOT_FINALIZED").asViolation()
+             }
+             val now = clock()
+-            val inventoryCommands = LocalInventoryCommandEngine(database, clock = { now })
++            val inventoryCommands = LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer)
+             lines.forEach { line ->
+                 val finalQuantity = requireNotNull(line.finalCountQuantityMicros)
+                 val finalValue = requireNotNull(line.finalCountValueRial)
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryTransferService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryTransferService.kt
+index b6c6708..4a32b9e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryTransferService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryTransferService.kt
+@@ -34,7 +34,7 @@ class LocalInventoryTransferService(
+     private val syncRecorder: SyncRecorder? = null,
+ ) : InventoryTransferService {
+     private val audit = LocalAuditEventWriter(database)
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock)
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock, authorizer)
+     private val numbering = LocalDocumentNumberAllocator(database, clock)
+ 
+     override suspend fun search(query: InventoryTransferSearch): List<InventoryTransferDocument> {
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt
+index 123d2fd..bca9691 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt
+@@ -46,7 +46,7 @@ class LocalInventoryWasteService(
+     private val syncRecorder: SyncRecorder? = null,
+ ) : InventoryWasteService {
+     private val audit = LocalAuditEventWriter(database)
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock)
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock, authorizer)
+     private val branchResolver = CanonicalBranchResolver(database)
+ 
+     override suspend fun search(query: InventoryWasteSearch): List<InventoryWasteDocument> {
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+index d1fd831..bb8ac01 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+@@ -358,7 +358,7 @@ class LocalOperationsRepository(
+                 current.stockMicros != valid.countedQuantityMicros ||
+                 current.inventoryValueRial != valid.countedValueRial
+             ) {
+-                LocalInventoryCommandEngine(database, clock = { now }).adjustToCount(
++                LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).adjustToCount(
+                     itemId = current.id,
+                     countedQuantityMicros = valid.countedQuantityMicros,
+                     countedValueRial = valid.countedValueRial,
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
+index 1253fa5..1f5e04e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
+@@ -46,7 +46,7 @@ class LocalPurchaseRepository(
+     private val syncRecorder: SyncRecorder? = null,
+     private val authorizer: SessionAuthorizer,
+ ) : PurchaseRepository {
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock)
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock, authorizer = authorizer)
+     private val accountingPosting = LocalAccountingPostingEngine(database, clock = clock)
+     private val auditWriter = LocalAuditEventWriter(database)
+     private val numbering = LocalDocumentNumberAllocator(database, clock)
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/ProcurementReceivingService.kt b/app/src/main/java/ir/restaurant/management/data/repository/ProcurementReceivingService.kt
+index cc77321..2e8822d 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/ProcurementReceivingService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/ProcurementReceivingService.kt
+@@ -38,7 +38,7 @@ internal class ProcurementReceivingService(
+     private val clock: () -> Long,
+     private val syncRecorder: SyncRecorder?,
+ ) {
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock)
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock, authorizer = authorizer)
+     private val numbering = LocalDocumentNumberAllocator(database, clock)
+     private val auditWriter = LocalAuditEventWriter(database)
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+index 3963d83..1fa7f88 100644
+--- a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
++++ b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+@@ -1,6 +1,8 @@
+ package ir.restaurant.management.data.security
+ 
++import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.AuditLogEntity
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.BusinessRuleViolation
+ import ir.restaurant.management.domain.security.AuthorizationService
+@@ -39,7 +41,23 @@ class SessionAuthorizer(private val database: AppDatabase) : AuthorizationServic
+     override suspend fun require(permission: Permission): AuthorizedActor {
+         val actor = actorIdentity()
+         val role = actor.role
+-        if (!role.allows(permission)) throw AccessDeniedException(permission)
++        if (!role.allows(permission)) {
++            database.auditLogDao().insert(
++                AuditLogEntity(
++                    action = "ACCESS_DENIED",
++                    entityType = "SECURITY",
++                    entityId = actor.id,
++                    description = "رد دسترسی به مجوز ${permission.name}",
++                    actor = actor.displayName,
++                    createdAtEpochMillis = System.currentTimeMillis(),
++                    globalId = GlobalId.new().value,
++                    actorId = actor.id,
++                    reason = "PERMISSION_DENIED:${permission.name}",
++                    correlationId = "security:denied:${actor.id}:${permission.name}:${System.nanoTime()}",
++                ),
++            )
++            throw AccessDeniedException(permission)
++        }
+         return actor
+     }
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt b/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
+index b7dd8a6..86c6b9c 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
+@@ -1,10 +1,24 @@
+ package ir.restaurant.management.domain.operations
+ 
+-import ir.restaurant.management.data.db.AppAlertEntity
+ import kotlinx.coroutines.flow.Flow
+ 
++data class AppAlert(
++    val id: Long,
++    val sourceType: String,
++    val sourceId: Long,
++    val title: String,
++    val message: String,
++    val severity: String,
++    val dueEpochDay: Long?,
++    val isRead: Boolean,
++    val isDismissed: Boolean,
++    val createdAtEpochMillis: Long,
++    val updatedAtEpochMillis: Long,
++    val status: String,
++)
++
+ interface AlertRepository {
+-    fun alerts(): Flow<List<AppAlertEntity>>
++    fun alerts(): Flow<List<AppAlert>>
+     suspend fun refresh(todayEpochDay: Long)
+     suspend fun markRead(id: Long)
+     suspend fun markActioned(id: Long)
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+index 701342f..b67818c 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+@@ -3,7 +3,7 @@ package ir.restaurant.management.ui
+ import androidx.lifecycle.ViewModel
+ import androidx.lifecycle.ViewModelProvider
+ import androidx.lifecycle.viewModelScope
+-import ir.restaurant.management.data.db.AppAlertEntity
++import ir.restaurant.management.domain.operations.AppAlert
+ import ir.restaurant.management.domain.operations.AlertRepository
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.SharingStarted
+@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.stateIn
+ import kotlinx.coroutines.launch
+ 
+ data class AlertUiState(
+-    val alerts: List<AppAlertEntity> = emptyList(),
++    val alerts: List<AppAlert> = emptyList(),
+     val message: String? = null,
+     val refreshing: Boolean = false,
+ )
+diff --git a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+index 7637956..7b72e9a 100644
+--- a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
++++ b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+@@ -14,14 +14,13 @@ import androidx.work.CoroutineWorker
+ import androidx.work.WorkerParameters
+ import ir.restaurant.management.core.currentLocalEpochDay
+ import ir.restaurant.management.domain.security.Permission
+-import ir.restaurant.management.domain.security.UserRole
+ import kotlinx.coroutines.flow.first
+ 
+ class AlertRefreshWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+     override suspend fun doWork(): Result = runCatching {
+         val app = applicationContext as RestaurantManagementApplication
+         val currentUser = app.container.securityRepository.currentUser.first() ?: return Result.success()
+-        if (!UserRole.fromStoredValue(currentUser.role).allows(Permission.ACCOUNTING)) return Result.success()
++        if (!currentUser.role.allows(Permission.ACCOUNTING)) return Result.success()
+         val repository = app.container.alertRepository
+         repository.refresh(currentLocalEpochDay())
+         val actionable = repository.alerts().first().count {
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+index 5f819f8..54c773e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+@@ -137,7 +137,7 @@ class LocalInventoryCommandEngine(
+             unitCostRial = unitCost,
+             notes = notes,
+         )
+-        replayOrConflict(expected)?.let { return@inventoryTransaction it }
++        replayOrConflict(expected)?.let { return@authorizedInventoryTransaction it }
+ 
+         val item = database.inventoryDao().activeById(itemId)
+             ?: throw BusinessError.EntityNotFound("INVENTORY_ITEM", itemId).asViolation()
+@@ -224,7 +224,7 @@ class LocalInventoryCommandEngine(
+             unitCostRial = unitCost,
+             notes = notes,
+         )
+-        replayOrConflict(expected)?.let { return@inventoryTransaction it }
++        replayOrConflict(expected)?.let { return@authorizedInventoryTransaction it }
+ 
+         val item = database.inventoryDao().activeById(itemId)
+             ?: throw BusinessError.EntityNotFound("INVENTORY_ITEM", itemId).asViolation()
+@@ -295,7 +295,7 @@ class LocalInventoryCommandEngine(
+         context: InventoryCommandContext,
+         notes: String? = null,
+     ): InventoryLedgerResult = authorizedInventoryTransaction(
+-        movementEpochDay, context, InventoryReferenceType.INVENTORY_COUNT, Permission.INVENTORY_COUNT_POST,
++        movementEpochDay, context, InventoryReferenceType.INVENTORY_COUNT, setOf(Permission.INVENTORY_COUNT_POST),
+     ) {
+         businessRequire(countedQuantityMicros >= 0) {
+             BusinessError.InvalidInput("countedQuantityMicros", "موجودی شمارش‌شده نمی‌تواند منفی باشد.")
+@@ -329,7 +329,7 @@ class LocalInventoryCommandEngine(
+             unitCostRial = unitCost,
+             notes = notes,
+         )
+-        replayOrConflict(expected)?.let { return@inventoryTransaction it }
++        replayOrConflict(expected)?.let { return@authorizedInventoryTransaction it }
+ 
+         val now = clock()
+         val nextAggregateStock = SignedLongMath.add(item.stockMicros, quantityDelta)
+@@ -629,7 +629,7 @@ class LocalInventoryCommandEngine(
+             notes = notes,
+             reversalOfMovementId = movement.id,
+         )
+-        replayOrConflict(expected)?.let { return@inventoryTransaction it }
++        replayOrConflict(expected)?.let { return@authorizedInventoryTransaction it }
+         database.stockMovementDao().reversalOf(movement.id)?.let {
+             throw BusinessError.IdempotencyConflict(resolved.idempotencyKey).asViolation()
+         }
+diff --git a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+index 1fa7f88..f0514c5 100644
+--- a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
++++ b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+@@ -1,8 +1,10 @@
+ package ir.restaurant.management.data.security
+ 
+-import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.data.db.AppDatabase
+-import ir.restaurant.management.data.db.AuditLogEntity
++import ir.restaurant.management.data.repository.LocalAuditEventWriter
++import ir.restaurant.management.domain.audit.AuditAction
++import ir.restaurant.management.domain.audit.AuditEntityType
++import ir.restaurant.management.domain.audit.AuditEventDraft
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.BusinessRuleViolation
+ import ir.restaurant.management.domain.security.AuthorizationService
+@@ -42,18 +44,24 @@ class SessionAuthorizer(private val database: AppDatabase) : AuthorizationServic
+         val actor = actorIdentity()
+         val role = actor.role
+         if (!role.allows(permission)) {
+-            database.auditLogDao().insert(
+-                AuditLogEntity(
+-                    action = "ACCESS_DENIED",
+-                    entityType = "SECURITY",
++            val now = System.currentTimeMillis()
++            LocalAuditEventWriter(database).append(
++                AuditEventDraft(
++                    action = AuditAction.of("ACCESS_DENIED"),
++                    entityType = AuditEntityType.of("SECURITY"),
+                     entityId = actor.id,
+-                    description = "رد دسترسی به مجوز ${permission.name}",
+-                    actor = actor.displayName,
+-                    createdAtEpochMillis = System.currentTimeMillis(),
+-                    globalId = GlobalId.new().value,
+                     actorId = actor.id,
++                    actorDisplayName = actor.displayName,
++                    occurredAtEpochMillis = now,
++                    businessEpochDay = null,
++                    deviceId = "local-android",
++                    referenceType = "SECURITY",
++                    referenceId = actor.id,
+                     reason = "PERMISSION_DENIED:${permission.name}",
++                    beforeSnapshot = null,
++                    afterSnapshot = null,
+                     correlationId = "security:denied:${actor.id}:${permission.name}:${System.nanoTime()}",
++                    description = "رد دسترسی به مجوز ${permission.name}",
+                 ),
+             )
+             throw AccessDeniedException(permission)
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+index b67818c..5e5f5b5 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+@@ -25,7 +25,6 @@ class AlertViewModel(private val repository: AlertRepository) : ViewModel() {
+         AlertUiState(alerts, text, busy)
+     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AlertUiState())
+ 
+-    init { refresh() }
+ 
+     fun refresh() = viewModelScope.launch {
+         refreshing.value = true
+diff --git a/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt b/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
+index d0cdcbf..44d31a8 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
+@@ -281,7 +281,12 @@ private fun AuthenticatedRestaurantManagementApp(
+     val treasuryState by treasury.state.collectAsStateWithLifecycle()
+     val crmState by crm.state.collectAsStateWithLifecycle()
+     val recipeState by recipes.state.collectAsStateWithLifecycle()
+-    val alertState by alerts.state.collectAsStateWithLifecycle()
++    val canObserveAlerts = securityState.currentUser?.role?.allows(Permission.ACCOUNTING) == true
++    val alertState = if (canObserveAlerts) {
++        alerts.state.collectAsStateWithLifecycle().value
++    } else {
++        AlertUiState()
++    }
+     val personnelState by personnel.state.collectAsStateWithLifecycle()
+     val canObservePayroll = securityState.currentUser?.role?.allows(Permission.PAYROLL_VIEW_ALL) == true
+     val hrPayrollState = if (canObservePayroll) {
+@@ -305,6 +310,9 @@ private fun AuthenticatedRestaurantManagementApp(
+     LaunchedEffect(securityState.currentUser, organizationName) {
+         dashboard.setContext(securityState.currentUser, organizationName)
+     }
++    LaunchedEffect(canObserveAlerts) {
++        if (canObserveAlerts) alerts.refresh()
++    }
+     AutoClearMessage(operationsState.message, operations::clearMessage)
+     AutoClearMessage(inventoryState.message, inventory::clearMessage)
+     AutoClearMessage(accountingState.message, accounting::clearMessage)
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt
+new file mode 100644
+index 0000000..d56f40c
+--- /dev/null
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt
+@@ -0,0 +1,295 @@
++package ir.restaurant.management.data.repository
++
++import android.content.Context
++import androidx.room.withTransaction
++import androidx.test.core.app.ApplicationProvider
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.EmployeeEntity
++import ir.restaurant.management.data.db.MenuItemEntity
++import ir.restaurant.management.data.db.PayrollBatchEntity
++import ir.restaurant.management.data.db.PayrollPayslipEntity
++import ir.restaurant.management.data.db.PayrollPeriodEntity
++import ir.restaurant.management.data.db.RecipeVersionEntity
++import ir.restaurant.management.data.db.SalesCashReconciliationEntity
++import ir.restaurant.management.domain.common.DocumentNumberType
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.async
++import kotlinx.coroutines.awaitAll
++import kotlinx.coroutines.coroutineScope
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.runBlocking
++import org.junit.After
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertTrue
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@RunWith(AndroidJUnit4::class)
++class NumberAllocationConcurrencyIntegrationTest {
++    private lateinit var database: AppDatabase
++    private var now = 1_950_000_000_000L
++
++    @Before
++    fun setUp() {
++        database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
++    }
++
++    @After
++    fun tearDown() {
++        database.close()
++    }
++
++    @Test
++    fun recipe_allocation_increments_correctly_and_parallel_allocations_are_unique() = runBlocking {
++        val dao = database.recipeDao()
++        val menuId = dao.insertMenuItem(
++            MenuItemEntity(
++                name = "غذای تست هم‌زمانی",
++                category = "TEST",
++                salePriceRial = 1,
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++
++        val first = allocateRecipeRevision(menuId, 1)
++        assertEquals(1, first)
++
++        val allocated = parallel(PARALLEL_WRITERS) { ordinal ->
++            allocateRecipeRevision(menuId, ordinal + 2)
++        }
++
++        assertEquals(PARALLEL_WRITERS, allocated.distinct().size)
++        assertEquals((2..PARALLEL_WRITERS + 1).toSet(), allocated.toSet())
++        val persisted = dao.observeVersions(menuId).first().map { it.revisionNo }.toSet()
++        assertEquals((1..PARALLEL_WRITERS + 1).toSet(), persisted)
++    }
++
++    @Test
++    fun management_control_parallel_allocations_are_unique_and_persist_correctly() = runBlocking {
++        val day = 22_500L
++        val dao = database.managementControlDao()
++
++        val allocated = parallel(PARALLEL_WRITERS) { ordinal ->
++            database.withTransaction {
++                val revision = dao.nextCashReconciliationRevision(day)
++                dao.insertCashReconciliation(
++                    SalesCashReconciliationEntity(
++                        businessEpochDay = day,
++                        revisionNo = revision,
++                        expectedCashRial = 0,
++                        expectedCardRial = 0,
++                        expectedTransferRial = 0,
++                        actualCashRial = 0,
++                        actualCardRial = 0,
++                        actualTransferRial = 0,
++                        status = "MATCHED",
++                        note = "concurrency-$ordinal",
++                        reconciledBy = "TEST",
++                        createdAtEpochMillis = now + ordinal,
++                    ),
++                )
++                revision
++            }
++        }
++
++        assertEquals(PARALLEL_WRITERS, allocated.distinct().size)
++        assertEquals((1..PARALLEL_WRITERS).toSet(), allocated.toSet())
++        assertEquals(PARALLEL_WRITERS.toLong(), scalar("SELECT COUNT(*) FROM sales_cash_reconciliations WHERE businessEpochDay=$day"))
++        assertEquals(PARALLEL_WRITERS.toLong(), scalar("SELECT COUNT(DISTINCT revisionNo) FROM sales_cash_reconciliations WHERE businessEpochDay=$day"))
++    }
++
++    @Test
++    fun personnel_document_allocator_is_unique_and_failed_transaction_does_not_consume_sequence() = runBlocking {
++        val allocator = LocalDocumentNumberAllocator(database, clock = { ++now })
++
++        val allocated = parallel(PARALLEL_WRITERS) {
++            database.withTransaction { allocator.next(DocumentNumberType.EMPLOYEE) }
++        }
++        assertEquals(PARALLEL_WRITERS, allocated.distinct().size)
++        assertEquals(
++            (1..PARALLEL_WRITERS).map { "EMP-${it.toString().padStart(8, '0')}" }.toSet(),
++            allocated.toSet(),
++        )
++
++        try {
++            database.withTransaction {
++                allocator.next(DocumentNumberType.EMPLOYEE)
++                error("force rollback")
++            }
++        } catch (expected: IllegalStateException) {
++            assertEquals("force rollback", expected.message)
++        }
++
++        val afterRollback = database.withTransaction { allocator.next(DocumentNumberType.EMPLOYEE) }
++        assertEquals("EMP-${(PARALLEL_WRITERS + 1).toString().padStart(8, '0')}", afterRollback)
++        assertEquals(
++            (PARALLEL_WRITERS + 2).toLong(),
++            scalar("SELECT nextValue FROM document_sequences WHERE sequenceKey='employee'"),
++        )
++    }
++
++    @Test
++    fun payroll_revision_parallel_allocations_are_unique_and_persist_correctly() = runBlocking {
++        val personnelDao = database.personnelDao()
++        val payrollDao = database.hrPayrollDao()
++        val employeeId = personnelDao.insertEmployee(
++            EmployeeEntity(
++                name = "کارمند تست هم‌زمانی",
++                employeeCode = "EMP-CONCURRENCY",
++                jobTitle = "TEST",
++                monthlySalaryRial = 1_000_000,
++                leaveBalanceMicros = 0,
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        val periodId = payrollDao.insertPayrollPeriod(
++            PayrollPeriodEntity(
++                periodKey = "CONCURRENCY-PERIOD",
++                startEpochDay = 22_500,
++                endEpochDay = 22_500,
++                paymentDueEpochDay = 22_500,
++                status = "OPEN",
++                openedByActorId = null,
++                openedAtEpochMillis = now,
++                closedAtEpochMillis = null,
++                reopenedAtEpochMillis = null,
++                rowVersion = 1,
++                source = "TEST",
++            ),
++        )
++        val batchIds = (1..PARALLEL_WRITERS).map { ordinal ->
++            payrollDao.insertPayrollBatch(
++                PayrollBatchEntity(
++                    documentNumber = "PAY-CONCURRENCY-$ordinal",
++                    idempotencyKey = "pay-concurrency-$ordinal",
++                    periodId = periodId,
++                    scope = "ALL",
++                    branchName = null,
++                    branchId = null,
++                    department = null,
++                    status = "CALCULATED",
++                    createdByActorId = null,
++                    calculatedByActorId = null,
++                    calculatedAtEpochMillis = now,
++                    reviewedByActorId = null,
++                    reviewedAtEpochMillis = null,
++                    approvedByActorId = null,
++                    approvedAtEpochMillis = null,
++                    correlationId = "pay-concurrency-$ordinal",
++                    notes = "",
++                    rowVersion = 1,
++                    accrualJournalEntryId = null,
++                    reversalJournalEntryId = null,
++                    source = "TEST",
++                ),
++            )
++        }
++
++        val allocated = parallel(PARALLEL_WRITERS) { zeroBased ->
++            val ordinal = zeroBased + 1
++            database.withTransaction {
++                // This mirrors the active PayrollBatchPreparationService allocation contract:
++                // read the latest persisted revision, derive its successor, and persist before commit.
++                val latest = payrollDao.latestPayslipForEmployeePeriod(employeeId, periodId)
++                val revision = (latest?.revisionNo ?: 0) + 1
++                payrollDao.insertPayrollPayslip(
++                    PayrollPayslipEntity(
++                        globalId = "pay-concurrency-global-$ordinal",
++                        batchId = batchIds[zeroBased],
++                        periodId = periodId,
++                        employeeId = employeeId,
++                        employeeCodeSnapshot = "EMP-CONCURRENCY",
++                        employeeNameSnapshot = "کارمند تست هم‌زمانی",
++                        revisionNo = revision,
++                        replacesPayslipId = latest?.id,
++                        legacyPayrollRunId = null,
++                        contractId = null,
++                        status = "CALCULATED",
++                        grossPayRial = 1_000_000,
++                        totalDeductionsRial = 0,
++                        netPayRial = 1_000_000,
++                        paidAmountRial = 0,
++                        remainingAmountRial = 1_000_000,
++                        componentDetailComplete = true,
++                        calculatedAtEpochMillis = now + ordinal,
++                        approvedAtEpochMillis = null,
++                        paidAtEpochMillis = null,
++                        correlationId = "pay-concurrency-slip-$ordinal",
++                        source = "TEST",
++                        rowVersion = 1,
++                        accrualJournalEntryId = null,
++                        reversalJournalEntryId = null,
++                        reversalReason = null,
++                        reversalEpochDay = null,
++                        reversedAtEpochMillis = null,
++                    ),
++                )
++                revision
++            }
++        }
++
++        assertEquals(PARALLEL_WRITERS, allocated.distinct().size)
++        assertEquals((1..PARALLEL_WRITERS).toSet(), allocated.toSet())
++        assertEquals(PARALLEL_WRITERS.toLong(), scalar("SELECT COUNT(*) FROM payroll_payslips WHERE employeeId=$employeeId AND periodId=$periodId"))
++        assertEquals(PARALLEL_WRITERS.toLong(), scalar("SELECT COUNT(DISTINCT revisionNo) FROM payroll_payslips WHERE employeeId=$employeeId AND periodId=$periodId"))
++    }
++
++    @Test
++    fun sync_revision_parallel_records_are_unique_and_persist_correctly() = runBlocking {
++        val recorder = SyncRecorder(database, "concurrency-device")
++        val entityId = 77L
++
++        parallel(PARALLEL_WRITERS) { ordinal ->
++            recorder.record(
++                entityType = "CONCURRENCY_PROBE",
++                entityId = entityId,
++                changeType = "UPDATE",
++                occurredAt = now + ordinal + 1,
++            )
++            ordinal
++        }
++
++        val rows = database.syncDao().observeAll().first().filter {
++            it.entityType == "CONCURRENCY_PROBE" && it.entityId == entityId
++        }
++        assertEquals(PARALLEL_WRITERS, rows.size)
++        assertEquals(PARALLEL_WRITERS, rows.map { it.revision }.distinct().size)
++        assertEquals((1L..PARALLEL_WRITERS.toLong()).toSet(), rows.map { it.revision }.toSet())
++        assertEquals(PARALLEL_WRITERS.toLong(), scalar("SELECT COUNT(*) FROM audit_logs WHERE entityType='CONCURRENCY_PROBE'"))
++    }
++
++    private suspend fun allocateRecipeRevision(menuId: Long, ordinal: Int): Int = database.withTransaction {
++        val dao = database.recipeDao()
++        val revision = dao.nextRevisionNo(menuId)
++        dao.insertVersion(
++            RecipeVersionEntity(
++                menuItemId = menuId,
++                revisionNo = revision,
++                effectiveFromEpochDay = 22_500L + ordinal,
++                createdBy = "TEST",
++                createdAtEpochMillis = now + ordinal,
++                status = "DRAFT",
++            ),
++        )
++        revision
++    }
++
++    private suspend fun <T> parallel(count: Int, block: suspend (Int) -> T): List<T> = coroutineScope {
++        (0 until count).map { ordinal ->
++            async(Dispatchers.Default) { block(ordinal) }
++        }.awaitAll()
++    }
++
++    private fun scalar(sql: String): Long = database.openHelper.writableDatabase.query(sql).use { cursor ->
++        assertTrue("query returned no rows: $sql", cursor.moveToFirst())
++        cursor.getLong(0)
++    }
++
++    private companion object {
++        const val PARALLEL_WRITERS = 20
++    }
++}
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt
+index d56f40c..3933b93 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/NumberAllocationConcurrencyIntegrationTest.kt
+@@ -5,6 +5,8 @@ import androidx.room.withTransaction
+ import androidx.test.core.app.ApplicationProvider
+ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.AppSessionEntity
++import ir.restaurant.management.data.db.AppUserEntity
+ import ir.restaurant.management.data.db.EmployeeEntity
+ import ir.restaurant.management.data.db.MenuItemEntity
+ import ir.restaurant.management.data.db.PayrollBatchEntity
+@@ -240,6 +242,19 @@ class NumberAllocationConcurrencyIntegrationTest {
+ 
+     @Test
+     fun sync_revision_parallel_records_are_unique_and_persist_correctly() = runBlocking {
++        val actorId = database.securityDao().insert(
++            AppUserEntity(
++                username = "sync-concurrency-test",
++                displayName = "Sync Concurrency Test Actor",
++                pinHash = "not-used-by-concurrency-test",
++                role = "OWNER",
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        database.securityDao().setSession(
++            AppSessionEntity(currentUserId = actorId, updatedAtEpochMillis = now),
++        )
+         val recorder = SyncRecorder(database, "concurrency-device")
+         val entityId = 77L
+ 
+@@ -260,6 +275,10 @@ class NumberAllocationConcurrencyIntegrationTest {
+         assertEquals(PARALLEL_WRITERS, rows.map { it.revision }.distinct().size)
+         assertEquals((1L..PARALLEL_WRITERS.toLong()).toSet(), rows.map { it.revision }.toSet())
+         assertEquals(PARALLEL_WRITERS.toLong(), scalar("SELECT COUNT(*) FROM audit_logs WHERE entityType='CONCURRENCY_PROBE'"))
++        assertEquals(
++            PARALLEL_WRITERS.toLong(),
++            scalar("SELECT COUNT(*) FROM audit_logs WHERE entityType='CONCURRENCY_PROBE' AND actorId=$actorId"),
++        )
+     }
+ 
+     private suspend fun allocateRecipeRevision(menuId: Long, ordinal: Int): Int = database.withTransaction {

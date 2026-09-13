@@ -1,0 +1,105 @@
+-        val aggregated=consumptions.groupBy { it.item.id }.map { (_,rows) ->
+-            val item=rows.first().item
+-            val quantity=rows.fold(0L) { total,row -> SignedLongMath.add(total,row.quantity) }
+-            val cost=rows.fold(0L) { total,row -> SignedLongMath.add(total,row.cost) }
+-            require(item.stockMicros>=quantity) { "موجودی ${item.name} برای فروش ثبت‌شده کافی نیست." }
+-            Triple(item,quantity,cost)
++
++        val lineIngredientCosts = LongArray(lineSeeds.size)
++        val preparedConsumptions = consumptionNeeds
++            .groupBy { it.item.id }
++            .toSortedMap()
++            .map { (_, rows) ->
++                val item = rows.first().item
++                val quantity = rows.fold(0L) { total, row -> SignedLongMath.add(total, row.quantity) }
++                val balance = database.inventoryBalanceDao().byKey(item.id, sourceLocationId)
++                val hasAnyLocationBalance = database.inventoryBalanceDao().countForItem(item.id) > 0
++                val balanceQuantity = balance?.onHandMicros ?: if (hasAnyLocationBalance) 0L else item.stockMicros
++                val balanceValue = balance?.inventoryValueRial ?: if (hasAnyLocationBalance) 0L else item.inventoryValueRial
++                val available = if (balance == null) {
++                    balanceQuantity
++                } else {
++                    SignedLongMath.subtract(
++                        SignedLongMath.subtract(
++                            SignedLongMath.subtract(balance.onHandMicros, balance.reservedMicros),
++                            balance.damagedMicros,
++                        ),
++                        balance.quarantinedMicros,
++                    ).coerceAtLeast(0L)
++                }
++                require(available >= quantity) {
++                    "موجودی ${item.name} در محل مصرف فروش روزانه کافی نیست."
++                }
++                val cost = WeightedAverageInventoryValuationService.issueValue(
++                    balanceQuantityMicros = balanceQuantity,
++                    balanceValueRial = balanceValue,
++                    issueQuantityMicros = quantity,
++                )
++
++                // Allocate only for line-level reporting. Ledger/COGS keeps the exact item-level value.
++                // The final row receives the deterministic rounding remainder so line sum == ledger value.
++                val orderedRows = rows.sortedBy { it.lineIndex }
++                var allocatedCost = 0L
++                orderedRows.forEachIndexed { index, row ->
++                    val share = if (index == orderedRows.lastIndex) {
++                        SignedLongMath.subtract(cost, allocatedCost)
++                    } else {
++                        mulDiv(cost, row.quantity, quantity)
++                    }
++                    lineIngredientCosts[row.lineIndex] = SignedLongMath.add(lineIngredientCosts[row.lineIndex], share)
++                    allocatedCost = SignedLongMath.add(allocatedCost, share)
++                }
++                check(allocatedCost == cost) { "تخصیص بهای مواد فروش روزانه با بهای دفتر موجودی تطابق ندارد." }
++                PreparedConsumption(item, quantity, cost, sourceLocationId)
++            }
++
++        val preparedLines = lineSeeds.mapIndexed { index, seed ->
++            val lineCost = lineIngredientCosts[index]
++            val fullCost = FullCostCalculator.calculate(
++                FullCostCalculator.Input(
++                    lineCost,
++                    seed.recipeYieldMicros,
++                    seed.preparationWasteBasisPoints,
++                    seed.cookingWasteBasisPoints,
++                    seed.packagingCost,
++                    seed.directLaborCost,
++                    seed.allocatedOverhead,
++                    seed.gross ?: 0L,
++                ),
++            )
++            PreparedLine(
++                seed.menuId,
++                seed.recipeVersionId,
++                seed.name,
++                seed.quantity,
++                seed.gross,
++                lineCost,
++                fullCost.foodCostRial,
++                seed.packagingCost,
++                seed.directLaborCost,
++                seed.allocatedOverhead,
++            )
++        }
++        val totalCost = preparedConsumptions.fold(0L) { total, row -> SignedLongMath.add(total, row.cost) }
++        check(preparedLines.fold(0L) { total, line -> SignedLongMath.add(total, line.cost) } == totalCost) {
++            "جمع بهای ردیف‌های فروش روزانه با بهای خروج موجودی تطابق ندارد."
+         }
+-        val totalCost=preparedLines.fold(0L) { total,line -> SignedLongMath.add(total,line.cost) }
+-        return PreparedDailySale(gross,netSales,revenue,amountToSettle,effectiveSettlements,cashSnapshot,cardSnapshot,transferSnapshot,preparedLines,aggregated,totalCost)
++        return PreparedDailySale(
++            gross,
++            netSales,
++            revenue,
++            amountToSettle,
++            effectiveSettlements,
++            cashSnapshot,
++            cardSnapshot,
++            transferSnapshot,
++            preparedLines,
++            preparedConsumptions,
++            totalCost,
++            sourceLocationId,
++        )
+     }
+ 
+     private suspend fun persistDraftDetails(summaryId: Long, prepared: PreparedDailySale, now: Long) {

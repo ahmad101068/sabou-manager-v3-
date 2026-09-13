@@ -1,0 +1,38 @@
+--- a/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceCalculationEngine.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/AttendanceCalculationEngine.kt
+@@ -1,7 +1,5 @@
+ package ir.restaurant.management.domain.personnel
+ 
+-import ir.restaurant.management.core.BusinessCalendar
+-
+ /** Single source of truth for shift-aware attendance calculations. */
+ object AttendanceCalculationEngine {
+     data class ShiftInput(
+@@ -43,12 +41,11 @@
+         val valid = shift.validated()
+         require(businessEpochDay > 0)
+         require(checkInMinute in 0..1439 && checkOutMinute in 0..1439)
+-        val dayStart = BusinessCalendar.startOfDayEpochMillis(businessEpochDay)
++        val dayStart = Math.multiplyExact(businessEpochDay, 86_400_000L)
+         val checkIn = Math.addExact(dayStart, checkInMinute * 60_000L)
+-        val nextDayStart = BusinessCalendar.startOfDayEpochMillis(Math.addExact(businessEpochDay, 1L))
+-        val shiftCrossesMidnight = valid.plannedEndEpochMillis >= nextDayStart
++        val shiftCrossesMidnight = valid.plannedEndEpochMillis >= dayStart + 86_400_000L
+         val checkOutDayStart = if (shiftCrossesMidnight && checkOutMinute <= checkInMinute) {
+-            nextDayStart
++            Math.addExact(dayStart, 86_400_000L)
+         } else dayStart
+         val checkOut = Math.addExact(checkOutDayStart, checkOutMinute * 60_000L)
+         require(checkOut > checkIn) { "زمان خروج باید بعد از ورود واقعی باشد." }
+--- a/app/src/test/java/ir/restaurant/management/ui/InputParsersTest.kt
++++ b/app/src/test/java/ir/restaurant/management/ui/InputParsersTest.kt
+@@ -50,7 +50,8 @@
+ 
+     @Test
+     fun treasuryRialInput_backspaceAndOversizeRemainSafe() {
+-        assertEquals("۵۰۰٬۰۰۰", formatRialMoneyInput("۵٬۰۰۰٬۰۰۰".dropLast(2)))
++        assertEquals("۵۰۰٬۰۰۰", formatRialMoneyInput("۵٬۰۰۰٬۰۰۰".dropLast(1)))
++        assertEquals("۵۰٬۰۰۰", formatRialMoneyInput("۵٬۰۰۰٬۰۰۰".dropLast(2)))
+         assertNull(parseMoneyInputOrNull("۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹۹"))
+         assertEquals("۹٬۰۰۰٬۰۰۰٬۰۰۰٬۰۰۰٬۰۰۰", formatRialMoneyInput("90000000000000000"))
+     }

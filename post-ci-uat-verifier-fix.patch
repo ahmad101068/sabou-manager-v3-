@@ -1,0 +1,189 @@
+diff --git a/scripts/verify-phase3-ui-foundation.py b/scripts/verify-phase3-ui-foundation.py
+index f1d0644..e7d4af6 100755
+--- a/scripts/verify-phase3-ui-foundation.py
++++ b/scripts/verify-phase3-ui-foundation.py
+@@ -16,7 +16,7 @@ require(Path('app/src/main/java/ir/restaurant/management/ui/ResponsiveErpLayout.
+ require(Path('app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt'), ['ManagementDataGrid','MobileSmartRow','AdaptiveManagementList','GridSummaryFooter'])
+ require(Path('app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt'), ['MANAGEMENT_ISSUES','MANAGEMENT_TASKS','CHECKLISTS','DAILY_BRIEF','CanonicalBranchSelector','AdaptiveManagementList','ChecklistItemDialog'])
+ require(Path('app/src/main/java/ir/restaurant/management/ui/NavigationHubScreens.kt'), ['خانه' if False else 'مسائل مدیریتی','وظایف','چک‌لیست‌ها','گزارش روزانه مدیریت','فروش روزانه','مطالبات'])
+-require(Path('app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt'), ['home_management_overview','Revenue','Gross Profit','Food Cost %','Estimated Operating Profit','New Receivables','Collections','Critical Issues','Overdue Tasks'])
++require(Path('app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt'), ['home_management_overview','HomeRevenueTrendCard','home_no_branch_state','درآمد','سود ناخالص','درصد بهای مواد غذایی','سود عملیاتی تخمینی','مطالبات جدید','وصول مطالبات','مسائل بحرانی','وظایف معوق'])
+ 
+ dashboard=(ROOT/'app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt').read_text(encoding='utf-8')
+ for forbidden in ['val revenue =', 'val grossProfit =', 'val foodCostPercent =', 'از گزارش روزانه', 'از مرکز وظایف', 'بعداً تکمیل می‌شود']:
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt
+index 903b49f..123d2fd 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt
+@@ -116,15 +116,12 @@ class LocalInventoryWasteService(
+             } else if (valid.reason == WasteReason.EXPIRED) {
+                 throw BusinessError.InvalidLot(null, "EXPIRED_WASTE_REQUIRES_LOT").asViolation()
+             }
+-            val totalCost = if (lot != null) {
+-                MoneyRial.of(lot.unitCostRial).times(QuantityMicros.positive(valid.quantityMicros)).value
+-            } else {
+-                ir.restaurant.management.domain.inventory.WeightedAverageInventoryValuationService.issueValue(
+-                    balance.onHandMicros,
+-                    balance.inventoryValueRial,
+-                    valid.quantityMicros,
+-                )
+-            }
++            // Lot/expiry identifies the physical stock consumed; carrying value remains location weighted-average.
++            val totalCost = ir.restaurant.management.domain.inventory.WeightedAverageInventoryValuationService.issueValue(
++                balance.onHandMicros,
++                balance.inventoryValueRial,
++                valid.quantityMicros,
++            )
+             if (totalCost > balance.inventoryValueRial) {
+                 throw BusinessError.InsufficientInventoryValue(
+                     item.id,
+@@ -133,7 +130,7 @@ class LocalInventoryWasteService(
+                     balance.inventoryValueRial,
+                 ).asViolation()
+             }
+-            val unitCost = lot?.unitCostRial ?: if (totalCost == 0L) {
++            val unitCost = if (totalCost == 0L) {
+                 0L
+             } else {
+                 FixedPointRatio.multiplyDivide(totalCost, QuantityMicros.SCALE, valid.quantityMicros)
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+index 012bc56..8784f99 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCommandEngine.kt
+@@ -406,16 +406,13 @@ class LocalInventoryCommandEngine(
+                     BusinessError.InsufficientStock(item.id, item.name, quantity, sourceLot.quantityMicros)
+                 }
+             }
+-            val value = if (sourceLot != null) {
+-                WeightedAverageInventoryValuationService.transferValue(sourceLot.unitCostRial, quantity)
+-            } else {
+-                WeightedAverageInventoryValuationService.issueValue(
+-                    sourceBalance.onHandMicros,
+-                    sourceBalance.inventoryValueRial,
+-                    quantity,
+-                )
+-            }
+-            val unitCost = sourceLot?.unitCostRial ?: unitCost(value, quantity)
++            // Lot identity constrains physical traceability; carrying value always follows source-location weighted-average.
++            val value = WeightedAverageInventoryValuationService.issueValue(
++                sourceBalance.onHandMicros,
++                sourceBalance.inventoryValueRial,
++                quantity,
++            )
++            val unitCost = unitCost(value, quantity)
+             businessRequire(availableMicros(sourceBalance) >= quantity) {
+                 BusinessError.InsufficientStock(item.id, item.name, quantity, availableMicros(sourceBalance))
+             }
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+index 7ef4e62..6f6657b 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryWasteWorkflowIntegrationTest.kt
+@@ -60,15 +60,15 @@ class InventoryWasteWorkflowIntegrationTest {
+     }
+ 
+     @Test
+-    fun expiredLotWasteUsesExactLotCostAndPostsAllEffectsAtomically() = runBlocking {
++    fun expiredLotWasteUsesWeightedAverageAndDrainsResidualValueAtomically() = runBlocking {
+         val locationId = requireNotNull(database.inventoryLocationDao().defaultLocationId())
+         val location = requireNotNull(database.inventoryLocationDao().byId(locationId))
+         database.inventoryLocationDao().update(location.copy(branchName = "ونک", branchId = 2L, updatedAtEpochMillis = ++now))
+         val itemId = insertItem("خامه منقضی", trackLot = true, trackExpiry = true)
+         LocalInventoryCommandEngine(database, clock = { now }).receive(
+             itemId = itemId,
+-            quantityMicros = 2_000_000,
+-            valueRial = 400_000,
++            quantityMicros = 3_000_000,
++            valueRial = 1_000_000,
+             movementType = InventoryMovementType.OPENING_BALANCE,
+             referenceType = InventoryReferenceType.MIGRATION,
+             referenceId = 71,
+@@ -85,7 +85,7 @@ class InventoryWasteWorkflowIntegrationTest {
+                 itemId = itemId,
+                 locationId = locationId,
+                 lotId = lot.id,
+-                quantityMicros = 500_000,
++                quantityMicros = 3_000_000,
+                 reason = WasteReason.EXPIRED,
+                 businessEpochDay = 100,
+                 reasonDetail = "انقضای لات در سردخانه",
+@@ -96,10 +96,15 @@ class InventoryWasteWorkflowIntegrationTest {
+         )
+ 
+         assertEquals(WasteStatus.POSTED, posted.status)
+-        assertEquals(200_000L, posted.unitCostRial)
+-        assertEquals(100_000L, posted.totalCostRial)
+-        assertEquals(1_500_000L, database.inventoryLotDao().byId(lot.id)?.quantityMicros)
+-        assertEquals(1_500_000L, database.inventoryBalanceDao().byKey(itemId, locationId)?.onHandMicros)
++        assertEquals(333_333L, posted.unitCostRial)
++        assertEquals(1_000_000L, posted.totalCostRial)
++        assertEquals(0L, database.inventoryLotDao().byId(lot.id)?.quantityMicros)
++        val depletedBalance = requireNotNull(database.inventoryBalanceDao().byKey(itemId, locationId))
++        assertEquals(0L, depletedBalance.onHandMicros)
++        assertEquals(0L, depletedBalance.inventoryValueRial)
++        val depletedItem = requireNotNull(database.inventoryDao().byId(itemId))
++        assertEquals(0L, depletedItem.stockMicros)
++        assertEquals(0L, depletedItem.inventoryValueRial)
+         assertEquals(1L, scalar("SELECT COUNT(*) FROM stock_movements WHERE movementType='WASTE' AND referenceId=${posted.id}"))
+         assertEquals(1L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='WASTE' AND sourceId=${posted.id}"))
+         database.openHelper.writableDatabase.query(
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt
+index 088993a..4a21cea 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryTransferWorkflowIntegrationTest.kt
+@@ -108,6 +108,27 @@ class InventoryTransferWorkflowIntegrationTest {
+ 
+     @Test
+     fun issueAndReceiptTrackInTransitPreserveValueAndCreateNoJournal() = runBlocking {
++        LocalInventoryCommandEngine(database, clock = { now }).receive(
++            itemId = fixture.itemId,
++            quantityMicros = 5_000_000,
++            valueRial = 3_000_000,
++            movementType = InventoryMovementType.PURCHASE,
++            referenceType = InventoryReferenceType.PURCHASE,
++            referenceId = 82,
++            movementEpochDay = BUSINESS_DAY,
++            context = InventoryCommandContext.local(
++                referenceType = InventoryReferenceType.PURCHASE,
++                referenceId = 82,
++                suffix = "transfer-second-lot:${fixture.itemId}",
++                actorId = fixture.ownerId,
++                reasonCode = InventoryReasonCode.PURCHASE_RECEIPT,
++                reason = "دریافت لات دوم برای اثبات میانگین موزون",
++                correlationId = "transfer-test:second-lot:${fixture.itemId}",
++                locationId = fixture.sourceLocationId,
++            ),
++            lot = InventoryReceiptLot(lotNumber = "LOT-TRANSFER-82", expiryEpochDay = BUSINESS_DAY + 120),
++            enforceLotPolicy = true,
++        )
+         val transfer = createAndApprove(2_000_000)
+         val issueCommand = action(transfer.id, "خروج کنترل‌شده")
+         val issued = service.issue(issueCommand)
+@@ -115,11 +136,16 @@ class InventoryTransferWorkflowIntegrationTest {
+ 
+         assertEquals(InventoryTransferStatus.IN_TRANSIT, issued.status)
+         assertEquals(issued.id, replayedIssue.id)
+-        assertEquals(3_000_000L, balance(fixture.sourceLocationId).first)
++        assertEquals(8_000_000L, balance(fixture.sourceLocationId).first)
+         assertEquals(0L, balance(fixture.destinationLocationId).first)
+         assertEquals(2_000_000L, balance(fixture.destinationLocationId).second)
+         assertEquals(3_000_000L, database.inventoryLotDao().byId(fixture.sourceLotId)?.quantityMicros)
+-        assertEquals(5_000_000L, database.inventoryDao().byId(fixture.itemId)?.stockMicros)
++        val issuedLine = issued.lines.single()
++        assertEquals(400_000L, issuedLine.unitCostRial)
++        assertEquals(800_000L, issuedLine.valueRial)
++        assertEquals(3_200_000L, database.inventoryBalanceDao().byKey(fixture.itemId, fixture.sourceLocationId)?.inventoryValueRial)
++        assertEquals(10_000_000L, database.inventoryDao().byId(fixture.itemId)?.stockMicros)
++        assertEquals(4_000_000L, database.inventoryDao().byId(fixture.itemId)?.inventoryValueRial)
+         assertEquals(1L, scalar("SELECT COUNT(*) FROM stock_movements WHERE movementType='TRANSFER_OUT' AND referenceId=${transfer.id}"))
+         assertEquals(0L, scalar("SELECT COUNT(*) FROM stock_movements WHERE movementType='TRANSFER_IN' AND referenceId=${transfer.id}"))
+         assertEquals(0L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='STOCK_TRANSFER' AND sourceId=${transfer.id}"))
+@@ -140,6 +166,9 @@ class InventoryTransferWorkflowIntegrationTest {
+         assertEquals(completed.id, replayedReceipt.id)
+         assertEquals(2_000_000L, balance(fixture.destinationLocationId).first)
+         assertEquals(0L, balance(fixture.destinationLocationId).second)
++        assertEquals(800_000L, database.inventoryBalanceDao().byKey(fixture.itemId, fixture.destinationLocationId)?.inventoryValueRial)
++        assertEquals(10_000_000L, database.inventoryDao().byId(fixture.itemId)?.stockMicros)
++        assertEquals(4_000_000L, database.inventoryDao().byId(fixture.itemId)?.inventoryValueRial)
+         assertEquals(
+             2_000_000L,
+             database.inventoryLotDao().byNaturalKey(

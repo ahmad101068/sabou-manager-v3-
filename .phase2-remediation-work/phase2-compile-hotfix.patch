@@ -1,0 +1,17 @@
+diff --git a/app/src/main/java/ir/restaurant/management/domain/treasury/TreasuryModels.kt b/app/src/main/java/ir/restaurant/management/domain/treasury/TreasuryModels.kt
+index 5138e44..4b1a224 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/treasury/TreasuryModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/treasury/TreasuryModels.kt
+@@ -294,9 +294,10 @@ fun TreasuryCommand.validated(): TreasuryCommand {
+     require(businessEpochDay > 0) { "treasury_business_date_invalid" }
+     require(sourceId > 0) { "treasury_source_id_invalid" }
+     require(reason.trim().length in 3..500) { "treasury_reason_invalid" }
++    val scopedBranchId = branchId
+     when (accountingScope) {
+-        AccountingScope.BRANCH -> require(branchId != null && branchId > 0) { "treasury_branch_scope_missing" }
+-        AccountingScope.ORGANIZATION -> require(branchId == null) { "treasury_organization_scope_has_branch" }
++        AccountingScope.BRANCH -> require(scopedBranchId != null && scopedBranchId > 0) { "treasury_branch_scope_missing" }
++        AccountingScope.ORGANIZATION -> require(scopedBranchId == null) { "treasury_organization_scope_has_branch" }
+         AccountingScope.UNASSIGNED_LEGACY -> error("treasury_new_command_cannot_be_unassigned_legacy")
+     }
+     when (this) {
