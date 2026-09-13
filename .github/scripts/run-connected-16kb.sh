@@ -19,14 +19,15 @@ cd "$GITHUB_WORKSPACE/phase3-source"
 run_suite() {
   set +e
   gradle --no-daemon --no-build-cache :app:connectedDebugAndroidTest
-  local status=$?
+  local suite_status=$?
   set -e
-  return "$status"
+  return "$suite_status"
 }
 
 status=0
-if ! run_suite; then
-  status=$?
+run_suite || status=$?
+
+if [[ "$status" -ne 0 ]]; then
   adb shell pm list instrumentation > "$EVIDENCE_DIR/16kb-instrumentation.txt" 2>&1 || true
   adb shell getprop > "$EVIDENCE_DIR/16kb-getprop.txt" 2>&1 || true
   adb logcat -d -v threadtime > "$EVIDENCE_DIR/16kb-logcat.txt" 2>&1 || true
@@ -37,10 +38,12 @@ if ! run_suite; then
     adb shell am force-stop androidx.test.services || true
     adb logcat -c || true
     sleep 3
-    if run_suite; then
-      status=0
-    else
-      status=$?
+
+    retry_status=0
+    run_suite || retry_status=$?
+    status=$retry_status
+
+    if [[ "$status" -ne 0 ]]; then
       adb shell pm list instrumentation > "$EVIDENCE_DIR/16kb-instrumentation-retry.txt" 2>&1 || true
       adb shell getprop > "$EVIDENCE_DIR/16kb-getprop-retry.txt" 2>&1 || true
       adb logcat -d -v threadtime > "$EVIDENCE_DIR/16kb-logcat-retry.txt" 2>&1 || true
