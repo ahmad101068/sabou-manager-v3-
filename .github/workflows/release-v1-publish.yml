@@ -1,0 +1,54 @@
+name: Publish v1.0.0 Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.repository == 'ahmad101068/sabou-manager-v3-'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out merged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify canonical v1.0.0 identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'versionCode = 209' app/build.gradle.kts
+          grep -q 'versionName = "1.0.0"' app/build.gradle.kts
+          grep -q 'version = 60' app/src/main/java/com/restaurant/management/data/local/AppDatabase.kt
+
+      - name: Publish tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='v1.0.0'
+          TARGET="${GITHUB_SHA}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "${TAG} already exists; leaving it unchanged."
+          else
+            git tag -a "${TAG}" "${TARGET}" -m 'Sabou Manager v1.0.0'
+            git push origin "${TAG}"
+          fi
+
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "GitHub Release ${TAG} already exists; nothing to do."
+          else
+            gh release create "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title 'Sabou Manager v1.0.0' \
+              --generate-notes \
+              --verify-tag
+          fi

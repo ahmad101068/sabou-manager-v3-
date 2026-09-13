@@ -1,0 +1,128 @@
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt b/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt
+index c28647e..bae0366 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt
+@@ -297,6 +297,7 @@ interface ProcurementDao {
+         SELECT r.id, r.requestNo, r.department, r.requiredEpochDay, r.status,
+                r.requestedBy, r.approvedBy, r.note, r.createdAtEpochMillis,
+                r.requiredApprovalLevel,r.completedApprovalLevel,r.firstApprovedBy,r.secondApprovedBy,r.committedBudgetId,r.committedBudgetRial,
++               r.branchId, r.destinationLocationId,
+                COUNT(rl.id) AS lineCount
+         FROM purchase_requisitions r
+         LEFT JOIN purchase_requisition_lines rl ON rl.requisitionId = r.id
+@@ -312,7 +313,7 @@ interface ProcurementDao {
+     @Query(
+         """
+         SELECT po.id, po.orderNo, po.supplierId, po.supplierNameSnapshot AS supplierName,
+-               po.requisitionId, po.orderEpochDay, po.expectedEpochDay,
++               po.requisitionId, po.branchId, po.destinationLocationId, po.orderEpochDay, po.expectedEpochDay,
+                po.sentAtEpochMillis, po.sentBy, po.dispatchChannel,
+                po.acknowledgedAtEpochMillis, po.supplierConfirmationNo, po.confirmedExpectedEpochDay,
+                po.status,
+@@ -410,6 +411,8 @@ data class ProcurementRequisitionRow(
+     val secondApprovedBy: String?,
+     val committedBudgetId: Long?,
+     val committedBudgetRial: Long,
++    val branchId: Long?,
++    val destinationLocationId: Long?,
+     val lineCount: Int,
+ )
+ 
+@@ -419,6 +422,8 @@ data class ProcurementOrderRow(
+     val supplierId: Long,
+     val supplierName: String,
+     val requisitionId: Long,
++    val branchId: Long?,
++    val destinationLocationId: Long?,
+     val orderEpochDay: Long,
+     val expectedEpochDay: Long,
+     val sentAtEpochMillis: Long?,
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+index 7db50e0..c17a3b1 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+@@ -772,6 +772,7 @@ private fun SupplierEntity.toRecord() = SupplierRecord(
+     address = address,
+     paymentTermsDays = paymentTermsDays,
+     notes = notes,
++    isActive = isActive,
+ )
+ 
+ private fun supplierNameKey(value: String): String = value
+@@ -779,7 +780,7 @@ private fun supplierNameKey(value: String): String = value
+     .lowercase()
+     .replace('ي', 'ی')
+     .replace('ك', 'ک')
+-    .replace(Regex("\s+"), " ")
++    .replace(Regex("\\s+"), " ")
+ 
+ private fun InventoryItemDraft.toMasterDraft(fallbackSku: String) = InventoryItemMasterDraft(
+     sku = sku.ifBlank { fallbackSku },
+diff --git a/app/src/main/java/ir/restaurant/management/domain/operations/OperationsModels.kt b/app/src/main/java/ir/restaurant/management/domain/operations/OperationsModels.kt
+index c18e845..e85571a 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/operations/OperationsModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/operations/OperationsModels.kt
+@@ -30,6 +30,7 @@ data class SupplierRecord(
+     val address: String,
+     val paymentTermsDays: Int,
+     val notes: String,
++    val isActive: Boolean = true,
+ )
+ 
+ data class SupplierMergeDraft(
+diff --git a/app/src/main/java/ir/restaurant/management/ui/OperationsViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/OperationsViewModel.kt
+index 6961879..ce6cb0f 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/OperationsViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/OperationsViewModel.kt
+@@ -98,6 +98,14 @@ data class OperationsUiState(
+     val message: String? = null,
+ )
+ 
++private data class InventoryCoreContent(
++    val suppliers: List<SupplierRecord>,
++    val locations: List<InventoryLocationRecord>,
++    val items: List<InventoryItemRecord>,
++    val lowStock: List<InventoryItemRecord>,
++    val counts: List<InventoryCountRecord>,
++)
++
+ @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+ class OperationsViewModel(
+     private val operationsRepository: OperationsRepository,
+@@ -126,17 +134,31 @@ class OperationsViewModel(
+         .distinctUntilChanged()
+         .flatMapLatest { query -> operationsRepository.auditLogs(query).map { logs -> query to logs } }
+ 
+-    private val inventoryContent = combine(
++    private val inventoryCoreContent = combine(
+         operationsRepository.suppliers,
+         operationsRepository.inventoryLocations,
+         operationsRepository.inventoryItems,
+         operationsRepository.lowStockItems,
+         operationsRepository.inventoryCounts,
+-        auditContent,
+-    ) { suppliers, locations, items, lowStock, counts, audit ->
++    ) { suppliers, locations, items, lowStock, counts ->
++        InventoryCoreContent(
++            suppliers = suppliers,
++            locations = locations,
++            items = items,
++            lowStock = lowStock,
++            counts = counts,
++        )
++    }
++
++    private val inventoryContent = combine(inventoryCoreContent, auditContent) { inventory, audit ->
+         OperationsUiState(
+-            suppliers = suppliers, inventoryLocations = locations, inventoryItems = items, lowStockItems = lowStock,
+-            inventoryCounts = counts, auditQuery = audit.first, auditLogs = audit.second,
++            suppliers = inventory.suppliers,
++            inventoryLocations = inventory.locations,
++            inventoryItems = inventory.items,
++            lowStockItems = inventory.lowStock,
++            inventoryCounts = inventory.counts,
++            auditQuery = audit.first,
++            auditLogs = audit.second,
+         )
+     }
+ 

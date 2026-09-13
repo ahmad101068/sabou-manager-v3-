@@ -1,0 +1,148 @@
++        referenceType: InventoryReferenceType,
++        permission: Permission,
++    ) {
++        val valid = context.validated()
++        val actor = authorizer.actorIdentity()
++        if (actor.id != valid.actorId) {
++            LocalAuditEventWriter(database).appendAuthorized(
++                authorizer = authorizer,
++                action = "ACCESS_DENIED",
++                entityType = "INVENTORY_COMMAND",
++                entityId = null,
++                description = "رد عملیات موجودی به علت عدم تطابق actor",
++                occurredAtEpochMillis = clock(),
++                reason = "ACTOR_MISMATCH:session=${actor.id};context=${valid.actorId};source=${referenceType.storedValue}",
++                correlationId = valid.correlationId,
++                referenceType = null,
++                referenceId = null,
++                deviceId = valid.deviceId,
++            )
++            throw AccessDeniedException(permission)
++        }
++    }
++
++    private fun permissionsFor(
++        referenceType: InventoryReferenceType,
++        movementType: InventoryMovementType,
++    ): Set<Permission> = buildSet {
++        add(referencePermission(referenceType, movementType))
++        add(movementPermission(movementType))
++    }
++
++    private fun referencePermission(
++        referenceType: InventoryReferenceType,
++        movementType: InventoryMovementType,
++    ): Permission = when (referenceType) {
++        InventoryReferenceType.PURCHASE,
++        InventoryReferenceType.GOODS_RECEIPT,
++        InventoryReferenceType.PURCHASE_RETURN -> Permission.PURCHASES
++        InventoryReferenceType.DAILY_SALES -> if (movementType == InventoryMovementType.DAILY_SALES_REVERSAL) {
++            Permission.DAILY_SALES_VOID
++        } else {
++            Permission.DAILY_SALES_POST
++        }
++        InventoryReferenceType.SALES_INVOICE -> Permission.DAILY_SALES_POST
++        InventoryReferenceType.SALES_RETURN,
++        InventoryReferenceType.SALES_VOID -> Permission.DAILY_SALES_VOID
++        InventoryReferenceType.INVENTORY_COUNT -> Permission.INVENTORY_COUNT_POST
++        InventoryReferenceType.WASTE -> Permission.INVENTORY_WASTE_CREATE
++        InventoryReferenceType.STOCK_TRANSFER -> if (movementType == InventoryMovementType.TRANSFER_IN) {
++            Permission.INVENTORY_TRANSFER_RECEIVE
++        } else {
++            Permission.INVENTORY_TRANSFER_ISSUE
++        }
++        InventoryReferenceType.INVENTORY_ADJUSTMENT -> Permission.INVENTORY_ADJUST
++        InventoryReferenceType.RECIPE -> Permission.RECIPES
++        InventoryReferenceType.PRODUCTION -> Permission.INVENTORY_ADJUST
++        InventoryReferenceType.MIGRATION -> Permission.RESTORE
++        InventoryReferenceType.LEGACY_UNKNOWN -> Permission.INVENTORY_ADJUST
++    }
++
++    private fun movementPermission(movementType: InventoryMovementType): Permission = when (movementType) {
++        InventoryMovementType.PURCHASE,
++        InventoryMovementType.PURCHASE_REVERSAL,
++        InventoryMovementType.GOODS_RECEIPT,
++        InventoryMovementType.PURCHASE_RETURN -> Permission.PURCHASES
++        InventoryMovementType.DAILY_SALES_CONSUMPTION,
++        InventoryMovementType.SALES_INVOICE_CONSUMPTION -> Permission.DAILY_SALES_POST
++        InventoryMovementType.DAILY_SALES_REVERSAL,
++        InventoryMovementType.SALES_RETURN,
++        InventoryMovementType.SALES_VOID -> Permission.DAILY_SALES_VOID
++        InventoryMovementType.RECIPE_CONSUMPTION -> Permission.RECIPES
++        InventoryMovementType.PRODUCTION_OUTPUT,
++        InventoryMovementType.INVENTORY_ADJUSTMENT -> Permission.INVENTORY_ADJUST
++        InventoryMovementType.INVENTORY_COUNT,
++        InventoryMovementType.COUNT_VARIANCE -> Permission.INVENTORY_COUNT_POST
++        InventoryMovementType.WASTE -> Permission.INVENTORY_WASTE_CREATE
++        InventoryMovementType.TRANSFER_IN -> Permission.INVENTORY_TRANSFER_RECEIVE
++        InventoryMovementType.TRANSFER_OUT -> Permission.INVENTORY_TRANSFER_ISSUE
++        InventoryMovementType.OPENING_BALANCE -> Permission.RESTORE
++        InventoryMovementType.REVERSAL -> Permission.INVENTORY_ADJUST
++        InventoryMovementType.LEGACY_SALE_CONSUMPTION,
++        InventoryMovementType.LEGACY_UNKNOWN -> Permission.INVENTORY_ADJUST
++    }
++
++    private fun permissionForReversal(movement: StockMovementEntity): Permission = when (
++        InventoryReferenceType.fromStoredValue(movement.referenceType)
++    ) {
++        InventoryReferenceType.DAILY_SALES,
++        InventoryReferenceType.SALES_INVOICE,
++        InventoryReferenceType.SALES_RETURN,
++        InventoryReferenceType.SALES_VOID -> Permission.DAILY_SALES_VOID
++        InventoryReferenceType.PURCHASE,
++        InventoryReferenceType.GOODS_RECEIPT,
++        InventoryReferenceType.PURCHASE_RETURN -> Permission.PURCHASES
++        InventoryReferenceType.INVENTORY_COUNT -> Permission.INVENTORY_COUNT_POST
++        InventoryReferenceType.WASTE -> Permission.INVENTORY_WASTE_CREATE
++        InventoryReferenceType.STOCK_TRANSFER -> if (
++            InventoryMovementType.fromStoredValue(movement.movementType) == InventoryMovementType.TRANSFER_IN
++        ) {
++            Permission.INVENTORY_TRANSFER_RECEIVE
++        } else {
++            Permission.INVENTORY_TRANSFER_ISSUE
++        }
++        InventoryReferenceType.INVENTORY_ADJUSTMENT -> Permission.INVENTORY_ADJUST
++        InventoryReferenceType.RECIPE -> Permission.RECIPES
++        InventoryReferenceType.PRODUCTION -> Permission.INVENTORY_ADJUST
++        InventoryReferenceType.MIGRATION -> Permission.RESTORE
++        InventoryReferenceType.LEGACY_UNKNOWN -> Permission.INVENTORY_ADJUST
++    }
++
+     private suspend fun resolveContext(
+         context: InventoryCommandContext,
+         locationOverride: Long? = null,
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCountService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCountService.kt
+index d3532cb..4fa4ef1 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCountService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryCountService.kt
+@@ -324,7 +324,7 @@ class LocalInventoryCountService(
+                 throw BusinessError.InvalidBusinessState("INVENTORY_COUNT_SESSION", "LINES_NOT_FINALIZED").asViolation()
+             }
+             val now = clock()
+-            val inventoryCommands = LocalInventoryCommandEngine(database, clock = { now })
++            val inventoryCommands = LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer)
+             lines.forEach { line ->
+                 val finalQuantity = requireNotNull(line.finalCountQuantityMicros)
+                 val finalValue = requireNotNull(line.finalCountValueRial)
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryTransferService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryTransferService.kt
+index b6c6708..4a32b9e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryTransferService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryTransferService.kt
+@@ -34,7 +34,7 @@ class LocalInventoryTransferService(
+     private val syncRecorder: SyncRecorder? = null,
+ ) : InventoryTransferService {
+     private val audit = LocalAuditEventWriter(database)
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock)
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock, authorizer)
+     private val numbering = LocalDocumentNumberAllocator(database, clock)
+ 
+     override suspend fun search(query: InventoryTransferSearch): List<InventoryTransferDocument> {
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt
+index 123d2fd..bca9691 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalInventoryWasteService.kt
+@@ -46,7 +46,7 @@ class LocalInventoryWasteService(
+     private val syncRecorder: SyncRecorder? = null,
+ ) : InventoryWasteService {
+     private val audit = LocalAuditEventWriter(database)
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock)

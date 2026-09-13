@@ -1,0 +1,420 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+index dfea3fe..9d43498 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+@@ -9,6 +9,7 @@ import ir.restaurant.management.data.db.BranchEntity
+ import ir.restaurant.management.data.db.CustomerEntity
+ import ir.restaurant.management.data.db.CustomerReceivableLedgerEntity
+ import ir.restaurant.management.data.db.InventoryItemEntity
++import ir.restaurant.management.data.db.InventoryBalanceEntity
+ import ir.restaurant.management.data.db.InventoryLotEntity
+ import ir.restaurant.management.data.db.MenuItemEntity
+ import ir.restaurant.management.data.db.RecipeVersionEntity
+@@ -305,6 +306,167 @@ class Phase2CorrectionIntegrationTest {
+         }
+     }
+ 
++    @Test
++    fun dailySalesWeightedAverageAggregatesIngredientBeforeRoundingAndClearsResidualValue() = runBlocking {
++        val itemId = database.inventoryDao().insert(
++            InventoryItemEntity(
++                name = "ماده باقیمانده میانگین موزون",
++                category = "مواد اولیه",
++                unit = "واحد",
++                stockMicros = 3_000_000L,
++                inventoryValueRial = 1_000_000L,
++                trackLot = false,
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        val menuOne = database.recipeDao().insertMenuItem(
++            MenuItemEntity(name = "منوی یک واحدی", salePriceRial = 500L, createdAtEpochMillis = now, updatedAtEpochMillis = now),
++        )
++        val recipeOne = database.recipeDao().insertVersion(
++            RecipeVersionEntity(
++                menuItemId = menuOne,
++                revisionNo = 1,
++                effectiveFromEpochDay = 1,
++                createdBy = "TEST",
++                createdAtEpochMillis = now,
++            ),
++        )
++        database.recipeDao().insertVersionIngredients(
++            listOf(RecipeVersionIngredientEntity(recipeOne, itemId, 1_000_000L)),
++        )
++        val menuTwo = database.recipeDao().insertMenuItem(
++            MenuItemEntity(name = "منوی دو واحدی", salePriceRial = 500L, createdAtEpochMillis = now, updatedAtEpochMillis = now),
++        )
++        val recipeTwo = database.recipeDao().insertVersion(
++            RecipeVersionEntity(
++                menuItemId = menuTwo,
++                revisionNo = 1,
++                effectiveFromEpochDay = 1,
++                createdBy = "TEST",
++                createdAtEpochMillis = now,
++            ),
++        )
++        database.recipeDao().insertVersionIngredients(
++            listOf(RecipeVersionIngredientEntity(recipeTwo, itemId, 2_000_000L)),
++        )
++
++        val saleId = sales.post(
++            DailySalesDraft(
++                businessEpochDay = day,
++                discountRial = 0,
++                serviceRial = 0,
++                taxRial = 0,
++                cashRial = 0,
++                cardRial = 0,
++                transferRial = 0,
++                lines = listOf(
++                    DailyMenuSaleDraft(menuOne, 1_000_000L, 500L),
++                    DailyMenuSaleDraft(menuTwo, 1_000_000L, 500L),
++                ),
++                branchId = 1L,
++                settlements = listOf(DailySalesSettlementDraft(SalesSettlementType.CASH, 1_000L)),
++            ),
++        )
++
++        val movement = database.stockMovementDao().dailySalesConsumptions(saleId).single()
++        assertEquals(-3_000_000L, movement.quantityDeltaMicros)
++        assertEquals(-1_000_000L, movement.valueDeltaRial)
++        assertEquals(1_000_000L, database.dailySalesDao().summary(saleId)?.theoreticalCostRial)
++        assertEquals(1_000_000L, database.dailySalesDao().lines(saleId).sumOf { it.theoreticalCostRial })
++        assertEquals(333_333L, database.dailySalesDao().lines(saleId)[0].theoreticalCostRial)
++        assertEquals(666_667L, database.dailySalesDao().lines(saleId)[1].theoreticalCostRial)
++        assertEquals(0L, database.inventoryDao().byId(itemId)?.stockMicros)
++        assertEquals(0L, database.inventoryDao().byId(itemId)?.inventoryValueRial)
++        val sourceLocationId = requireNotNull(database.managementControlDao().defaultLocationId())
++        assertEquals(0L, database.inventoryBalanceDao().byKey(itemId, sourceLocationId)?.onHandMicros)
++        assertEquals(0L, database.inventoryBalanceDao().byKey(itemId, sourceLocationId)?.inventoryValueRial)
++        assertEquals(
++            1_000_000L,
++            scalar(
++                "SELECT COALESCE(SUM(l.debitRial),0) FROM journal_lines l " +
++                    "JOIN journal_entries e ON e.id=l.entryId " +
++                    "WHERE e.sourceType='DAILY_SALES_COGS' AND e.sourceId=$saleId AND l.accountCode='5101'",
++            ),
++        )
++    }
++
++    @Test
++    fun dailySalesWeightedAverageUsesExactSourceLocationInsteadOfAggregateItemAverage() = runBlocking {
++        val sourceLocationId = requireNotNull(database.managementControlDao().defaultLocationId())
++        val itemId = database.inventoryDao().insert(
++            InventoryItemEntity(
++                name = "ماده چندمحله",
++                category = "مواد اولیه",
++                unit = "واحد",
++                stockMicros = 10_000_000L,
++                inventoryValueRial = 1_100_000L,
++                trackLot = false,
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        database.inventoryBalanceDao().initialize(
++            InventoryBalanceEntity(
++                itemId = itemId,
++                locationId = sourceLocationId,
++                onHandMicros = 2_000_000L,
++                inventoryValueRial = 200_000L,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        database.inventoryBalanceDao().initialize(
++            InventoryBalanceEntity(
++                itemId = itemId,
++                locationId = branchLocationId,
++                onHandMicros = 8_000_000L,
++                inventoryValueRial = 900_000L,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        val menuId = database.recipeDao().insertMenuItem(
++            MenuItemEntity(name = "منوی چندمحله", salePriceRial = 500L, createdAtEpochMillis = now, updatedAtEpochMillis = now),
++        )
++        val recipeId = database.recipeDao().insertVersion(
++            RecipeVersionEntity(
++                menuItemId = menuId,
++                revisionNo = 1,
++                effectiveFromEpochDay = 1,
++                createdBy = "TEST",
++                createdAtEpochMillis = now,
++            ),
++        )
++        database.recipeDao().insertVersionIngredients(
++            listOf(RecipeVersionIngredientEntity(recipeId, itemId, 1_000_000L)),
++        )
++
++        val saleId = sales.post(
++            DailySalesDraft(
++                businessEpochDay = day,
++                discountRial = 0,
++                serviceRial = 0,
++                taxRial = 0,
++                cashRial = 0,
++                cardRial = 0,
++                transferRial = 0,
++                lines = listOf(DailyMenuSaleDraft(menuId, 1_000_000L, 500L)),
++                branchId = 1L,
++                settlements = listOf(DailySalesSettlementDraft(SalesSettlementType.CASH, 500L)),
++            ),
++        )
++
++        val movement = database.stockMovementDao().dailySalesConsumptions(saleId).single()
++        assertEquals(sourceLocationId, movement.locationId)
++        assertEquals(-100_000L, movement.valueDeltaRial)
++        assertEquals(100_000L, database.dailySalesDao().summary(saleId)?.theoreticalCostRial)
++        assertEquals(1_000_000L, database.inventoryBalanceDao().byKey(itemId, sourceLocationId)?.onHandMicros)
++        assertEquals(100_000L, database.inventoryBalanceDao().byKey(itemId, sourceLocationId)?.inventoryValueRial)
++        assertEquals(8_000_000L, database.inventoryBalanceDao().byKey(itemId, branchLocationId)?.onHandMicros)
++        assertEquals(900_000L, database.inventoryBalanceDao().byKey(itemId, branchLocationId)?.inventoryValueRial)
++        assertEquals(9_000_000L, database.inventoryDao().byId(itemId)?.stockMicros)
++        assertEquals(1_000_000L, database.inventoryDao().byId(itemId)?.inventoryValueRial)
++    }
++
+     private suspend fun postBranchMaintenanceExpense(branchId: Long, amountRial: Long) {
+         val repository = LocalAssetRepository(database, clock = { ++now }, authorizer = authorizer)
+         val assetId = repository.save(
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+index e0f78da..91312e4 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+@@ -47,6 +47,7 @@ import ir.restaurant.management.domain.inventory.InventoryCommandContext
+ import ir.restaurant.management.domain.inventory.InventoryMovementType
+ import ir.restaurant.management.domain.inventory.InventoryReasonCode
+ import ir.restaurant.management.domain.inventory.InventoryReferenceType
++import ir.restaurant.management.domain.inventory.WeightedAverageInventoryValuationService
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.asViolation
+ import java.math.BigInteger
+@@ -76,7 +77,30 @@ class LocalDailySalesRepository(
+         }
+     }
+ 
+-    private data class Consumption(val item: InventoryItemEntity, val quantity: Long, val cost: Long)
++    private data class ConsumptionNeed(
++        val item: InventoryItemEntity,
++        val lineIndex: Int,
++        val quantity: Long,
++    )
++    private data class PreparedConsumption(
++        val item: InventoryItemEntity,
++        val quantity: Long,
++        val cost: Long,
++        val locationId: Long,
++    )
++    private data class PreparedLineSeed(
++        val menuId: Long,
++        val recipeVersionId: Long,
++        val name: String,
++        val quantity: Long,
++        val gross: Long?,
++        val packagingCost: Long,
++        val directLaborCost: Long,
++        val allocatedOverhead: Long,
++        val recipeYieldMicros: Long,
++        val preparationWasteBasisPoints: Int,
++        val cookingWasteBasisPoints: Int,
++    )
+     private data class PreparedLine(
+         val menuId: Long,
+         val recipeVersionId: Long,
+@@ -99,8 +123,9 @@ class LocalDailySalesRepository(
+         val cardSnapshot: Long,
+         val transferSnapshot: Long,
+         val lines: List<PreparedLine>,
+-        val consumptions: List<Triple<InventoryItemEntity, Long, Long>>,
++        val consumptions: List<PreparedConsumption>,
+         val totalCost: Long,
++        val sourceLocationId: Long,
+     )
+ 
+     override suspend fun post(draft: DailySalesDraft): Long {
+@@ -233,11 +258,12 @@ class LocalDailySalesRepository(
+             })
+             check(database.dailySalesDao().updateConfirmedCost(summary.id, prepared.totalCost, actor.id, now) == 1) { "به‌روزرسانی بهای فروش تأییدشده انجام نشد." }
+ 
+-            prepared.consumptions.forEach { (item, quantity, cost) ->
++            prepared.consumptions.forEach { consumption ->
++                val item = consumption.item
+                 inventoryCommands.issue(
+                     itemId = item.id,
+-                    quantityMicros = quantity,
+-                    valueRial = cost,
++                    quantityMicros = consumption.quantity,
++                    valueRial = consumption.cost,
+                     movementType = InventoryMovementType.DAILY_SALES_CONSUMPTION,
+                     referenceType = InventoryReferenceType.DAILY_SALES,
+                     referenceId = summary.id,
+@@ -250,6 +276,7 @@ class LocalDailySalesRepository(
+                         reasonCode = InventoryReasonCode.SALES_CONSUMPTION,
+                         reason = "مصرف رسپی فروش روزانه",
+                         correlationId = "daily_sales:${summary.id}",
++                        locationId = consumption.locationId,
+                     ),
+                     notes = "مصرف رسپی فروش روزانه",
+                     lotPolicy = LocalInventoryCommandEngine.LotIssuePolicy.FEFO_ALL,
+@@ -374,36 +401,138 @@ class LocalDailySalesRepository(
+         val cardSnapshot = effectiveSettlements.filter { it.type == SalesSettlementType.CARD }.fold(0L) { a,b -> SignedLongMath.add(a,b.amountRial) }
+         val transferSnapshot = effectiveSettlements.filter { it.type == SalesSettlementType.BANK_TRANSFER }.fold(0L) { a,b -> SignedLongMath.add(a,b.amountRial) }
+ 
+-        val consumptions = mutableListOf<Consumption>()
+-        val preparedLines = draft.lines.map { line ->
++        // Daily Sales has no separate inventory-location field. Resolve the same canonical default
++        // location that the inventory command engine would use, then pin it into every issue context.
++        // This prevents costing from an aggregate item average while physically issuing another location.
++        val sourceLocationId = database.managementControlDao().defaultLocationId()
++            ?: error("محل پیش‌فرض موجودی برای مصرف فروش روزانه تعریف نشده است.")
++        val sourceLocation = database.managementControlDao().activeLocation(sourceLocationId)
++            ?: error("محل پیش‌فرض موجودی برای مصرف فروش روزانه فعال نیست.")
++        require(sourceLocation.branchId == null || sourceLocation.branchId == draft.branchId) {
++            "محل پیش‌فرض موجودی به شعبه دیگری تعلق دارد؛ محل مصرف فروش روزانه را اصلاح کنید."
++        }
++
++        val consumptionNeeds = mutableListOf<ConsumptionNeed>()
++        val lineSeeds = draft.lines.mapIndexed { lineIndex, line ->
+             val menu = database.recipeDao().activeMenuItem(line.menuItemId) ?: error("آیتم منوی انتخاب‌شده فعال نیست.")
+             val recipeVersion = database.recipeDao().effectiveVersion(menu.id, draft.businessEpochDay) ?: error("برای «${menu.name}» در تاریخ فروش، نسخه مؤثر رسپی وجود ندارد.")
+             val ingredients = database.recipeDao().versionIngredients(recipeVersion.id)
+             require(ingredients.isNotEmpty()) { "برای «${menu.name}» رسپی کامل ثبت نشده است." }
+-            var lineCost=0L
+             ingredients.forEach { ingredient ->
+-                val item=database.inventoryDao().activeById(ingredient.inventoryItemId) ?: error("یکی از مواد اولیه «${menu.name}» فعال نیست.")
+-                val needed=mulDiv(ingredient.quantityMicrosPerUnit,line.quantityMicros,1_000_000L)
+-                require(needed>0) { "مصرف محاسبه‌شده برای ${item.name} نامعتبر است." }
+-                val cost=if(item.stockMicros==0L) 0L else mulDiv(item.inventoryValueRial,needed,item.stockMicros)
+-                consumptions += Consumption(item,needed,cost)
+-                lineCost=SignedLongMath.add(lineCost,cost)
++                val item = database.inventoryDao().activeById(ingredient.inventoryItemId)
++                    ?: error("یکی از مواد اولیه «${menu.name}» فعال نیست.")
++                val needed = mulDiv(ingredient.quantityMicrosPerUnit, line.quantityMicros, 1_000_000L)
++                require(needed > 0) { "مصرف محاسبه‌شده برای ${item.name} نامعتبر است." }
++                consumptionNeeds += ConsumptionNeed(item, lineIndex, needed)
+             }
+-            val packaging=mulDiv(recipeVersion.packagingCostRial,line.quantityMicros,1_000_000L)
+-            val labor=mulDiv(recipeVersion.directLaborCostRial,line.quantityMicros,1_000_000L)
+-            val overhead=mulDiv(recipeVersion.allocatedOverheadRial,line.quantityMicros,1_000_000L)
+-            val fullCost=FullCostCalculator.calculate(FullCostCalculator.Input(lineCost,recipeVersion.yieldMicros,recipeVersion.preparationWasteBasisPoints,recipeVersion.cookingWasteBasisPoints,packaging,labor,overhead,line.grossSalesRial ?: 0L))
+-            PreparedLine(menu.id,recipeVersion.id,menu.name,line.quantityMicros,line.grossSalesRial,lineCost,fullCost.foodCostRial,packaging,labor,overhead)
++            PreparedLineSeed(
++                menuId = menu.id,
++                recipeVersionId = recipeVersion.id,
++                name = menu.name,
++                quantity = line.quantityMicros,
++                gross = line.grossSalesRial,
++                packagingCost = mulDiv(recipeVersion.packagingCostRial, line.quantityMicros, 1_000_000L),
++                directLaborCost = mulDiv(recipeVersion.directLaborCostRial, line.quantityMicros, 1_000_000L),
++                allocatedOverhead = mulDiv(recipeVersion.allocatedOverheadRial, line.quantityMicros, 1_000_000L),
++                recipeYieldMicros = recipeVersion.yieldMicros,
++                preparationWasteBasisPoints = recipeVersion.preparationWasteBasisPoints,
++                cookingWasteBasisPoints = recipeVersion.cookingWasteBasisPoints,
++            )
+         }
+-        val aggregated=consumptions.groupBy { it.item.id }.map { (_,rows) ->
+-            val item=rows.first().item
+-            val quantity=rows.fold(0L) { total,row -> SignedLongMath.add(total,row.quantity) }
+-            val cost=rows.fold(0L) { total,row -> SignedLongMath.add(total,row.cost) }
+-            require(item.stockMicros>=quantity) { "موجودی ${item.name} برای فروش ثبت‌شده کافی نیست." }
+-            Triple(item,quantity,cost)
++
++        val lineIngredientCosts = LongArray(lineSeeds.size)
++        val preparedConsumptions = consumptionNeeds
++            .groupBy { it.item.id }
++            .toSortedMap()
++            .map { (_, rows) ->
++                val item = rows.first().item
++                val quantity = rows.fold(0L) { total, row -> SignedLongMath.add(total, row.quantity) }
++                val balance = database.inventoryBalanceDao().byKey(item.id, sourceLocationId)
++                val hasAnyLocationBalance = database.inventoryBalanceDao().countForItem(item.id) > 0
++                val balanceQuantity = balance?.onHandMicros ?: if (hasAnyLocationBalance) 0L else item.stockMicros
++                val balanceValue = balance?.inventoryValueRial ?: if (hasAnyLocationBalance) 0L else item.inventoryValueRial
++                val available = if (balance == null) {
++                    balanceQuantity
++                } else {
++                    SignedLongMath.subtract(
++                        SignedLongMath.subtract(
++                            SignedLongMath.subtract(balance.onHandMicros, balance.reservedMicros),
++                            balance.damagedMicros,
++                        ),
++                        balance.quarantinedMicros,
++                    ).coerceAtLeast(0L)
++                }
++                require(available >= quantity) {
++                    "موجودی ${item.name} در محل مصرف فروش روزانه کافی نیست."
++                }
++                val cost = WeightedAverageInventoryValuationService.issueValue(
++                    balanceQuantityMicros = balanceQuantity,
++                    balanceValueRial = balanceValue,
++                    issueQuantityMicros = quantity,
++                )
++
++                // Allocate only for line-level reporting. Ledger/COGS keeps the exact item-level value.
++                // The final row receives the deterministic rounding remainder so line sum == ledger value.
++                val orderedRows = rows.sortedBy { it.lineIndex }
++                var allocatedCost = 0L
++                orderedRows.forEachIndexed { index, row ->
++                    val share = if (index == orderedRows.lastIndex) {
++                        SignedLongMath.subtract(cost, allocatedCost)
++                    } else {
++                        mulDiv(cost, row.quantity, quantity)
++                    }
++                    lineIngredientCosts[row.lineIndex] = SignedLongMath.add(lineIngredientCosts[row.lineIndex], share)
++                    allocatedCost = SignedLongMath.add(allocatedCost, share)
++                }
++                check(allocatedCost == cost) { "تخصیص بهای مواد فروش روزانه با بهای دفتر موجودی تطابق ندارد." }
++                PreparedConsumption(item, quantity, cost, sourceLocationId)
++            }
++
++        val preparedLines = lineSeeds.mapIndexed { index, seed ->
++            val lineCost = lineIngredientCosts[index]
++            val fullCost = FullCostCalculator.calculate(
++                FullCostCalculator.Input(
++                    lineCost,
++                    seed.recipeYieldMicros,
++                    seed.preparationWasteBasisPoints,
++                    seed.cookingWasteBasisPoints,
++                    seed.packagingCost,
++                    seed.directLaborCost,
++                    seed.allocatedOverhead,
++                    seed.gross ?: 0L,
++                ),
++            )
++            PreparedLine(
++                seed.menuId,
++                seed.recipeVersionId,
++                seed.name,
++                seed.quantity,
++                seed.gross,
++                lineCost,
++                fullCost.foodCostRial,
++                seed.packagingCost,
++                seed.directLaborCost,
++                seed.allocatedOverhead,
++            )
++        }
++        val totalCost = preparedConsumptions.fold(0L) { total, row -> SignedLongMath.add(total, row.cost) }
++        check(preparedLines.fold(0L) { total, line -> SignedLongMath.add(total, line.cost) } == totalCost) {
++            "جمع بهای ردیف‌های فروش روزانه با بهای خروج موجودی تطابق ندارد."
+         }
+-        val totalCost=preparedLines.fold(0L) { total,line -> SignedLongMath.add(total,line.cost) }
+-        return PreparedDailySale(gross,netSales,revenue,amountToSettle,effectiveSettlements,cashSnapshot,cardSnapshot,transferSnapshot,preparedLines,aggregated,totalCost)
++        return PreparedDailySale(
++            gross,
++            netSales,
++            revenue,
++            amountToSettle,
++            effectiveSettlements,
++            cashSnapshot,
++            cardSnapshot,
++            transferSnapshot,
++            preparedLines,
++            preparedConsumptions,
++            totalCost,
++            sourceLocationId,
++        )
+     }
+ 
+     private suspend fun persistDraftDetails(summaryId: Long, prepared: PreparedDailySale, now: Long) {

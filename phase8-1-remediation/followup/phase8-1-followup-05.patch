@@ -1,0 +1,166 @@
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/AccountingPostingIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/AccountingPostingIntegrationTest.kt
+@@ -37,7 +37,6 @@
+     fun setUp() {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+         runBlocking {
+-            database.branchDao().insert(BranchEntity(id = 1L, globalId = "test:branch:1", code = "B1", name = "شعبه ۱", createdAtEpochMillis = NOW, updatedAtEpochMillis = NOW))
+             database.branchDao().insert(BranchEntity(id = 2L, globalId = "test:branch:2", code = "B2", name = "شعبه ۲", createdAtEpochMillis = NOW, updatedAtEpochMillis = NOW))
+         }
+         posting = LocalAccountingPostingEngine(database, clock = { NOW })
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/AlertStateIntegrationTest.kt
+@@ -126,7 +126,7 @@
+         }
+         assertEquals(
+             1L,
+-            scalar("SELECT COUNT(*) FROM audit_logs WHERE action='ACCESS_DENIED' AND actorId=$cashierId AND reason='PERMISSION_DENIED:ACCOUNTING'"),
++            scalar("SELECT COUNT(*) FROM audit_logs WHERE action='ACCESS_DENIED' AND actorId=$cashierId AND reason LIKE 'PERMISSION_DENIED:%'"),
+         )
+     }
+ 
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/DashboardBranchFilteringIntegrationTest.kt
+@@ -133,6 +133,7 @@
+             purchaseEpochDay = day,
+             branchName = branchName,
+             branchId = branchId,
++            commandId = "dashboard-purchase:$no",
+             dueEpochDay = day + 30,
+             totalRial = amount,
+             paidRial = amount,
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/InventoryLedgerIntegrationTest.kt
+@@ -37,11 +37,13 @@
+ class InventoryLedgerIntegrationTest {
+     private lateinit var database: AppDatabase
+     private lateinit var engine: LocalInventoryCommandEngine
++    private var defaultLocationId: Long = 0L
+ 
+     @Before
+     fun setUp() {
+         database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
+         engine = LocalInventoryCommandEngine(database, clock = { NOW }, authorizer = FixedInventoryTestAuthorizer())
++        defaultLocationId = runBlocking { requireNotNull(database.managementControlDao().defaultLocationId()) }
+     }
+ 
+     @After
+@@ -237,7 +239,7 @@
+                     correlationId = "integration:inventory:602",
+                     actorId = 42,
+                     deviceId = "instrumentation",
+-                    locationId = null,
++                    locationId = defaultLocationId,
+                     reasonCode = InventoryReasonCode.WASTE,
+                     reason = "آزمون rollback پروجکشن",
+                 ),
+@@ -386,11 +388,15 @@
+             countEpochDay = 100,
+             reason = "شمارش فیزیکی پایان شیفت",
+             commandId = "123e4567-e89b-42d3-a456-426614174001",
++            locationId = defaultLocationId,
+         )
+ 
+-        security.authorizeSensitiveAction(SensitiveAction.ADJUST_INVENTORY, "123456")
++        val countContext = ir.restaurant.management.domain.operations.SensitiveActionContext.resource(
++            "INVENTORY_COUNT", "${defaultLocationId}:${itemId}:${draft.countEpochDay}", commandFingerprint = draft.commandId,
++        )
++        security.authorizeSensitiveAction(SensitiveAction.ADJUST_INVENTORY, "123456", countContext)
+         val firstId = repository.postInventoryCount(draft)
+-        security.authorizeSensitiveAction(SensitiveAction.ADJUST_INVENTORY, "123456")
++        security.authorizeSensitiveAction(SensitiveAction.ADJUST_INVENTORY, "123456", countContext)
+         val replayId = repository.postInventoryCount(draft)
+ 
+         assertEquals(firstId, replayId)
+@@ -625,7 +631,7 @@
+         correlationId = "integration:inventory:$referenceId",
+         actorId = 42,
+         deviceId = "instrumentation",
+-        locationId = null,
++        locationId = defaultLocationId,
+         reasonCode = InventoryReasonCode.PURCHASE_RECEIPT,
+         reason = "تست دریافت خرید",
+     )
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/ManagementControlTransactionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/ManagementControlTransactionIntegrationTest.kt
+@@ -11,6 +11,7 @@
+ import ir.restaurant.management.domain.operations.UserDraft
+ import ir.restaurant.management.domain.operations.UserRole
+ import ir.restaurant.management.domain.operations.SensitiveAction
++import ir.restaurant.management.domain.operations.SensitiveActionContext
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+ import org.junit.Assert.assertEquals
+@@ -65,7 +66,7 @@
+     @Test
+     fun closePeriodRollsBackLockAndAuditWhenOutboxFails() = runBlocking {
+         val repository = repository(failingRecorder())
+-        authorize(SensitiveAction.CLOSE_ACCOUNTING_PERIOD)
++        authorize(SensitiveAction.CLOSE_ACCOUNTING_PERIOD, SensitiveActionContext.resource("ACCOUNTING_PERIOD", "100:130"))
+ 
+         try {
+             repository.closeAccountingPeriod(AccountingPeriodDraft(100, 130, "پایان دوره آزمایشی"))
+@@ -81,7 +82,7 @@
+     @Test
+     fun closePeriodCommitsOneAuditAndOutboxInSameTransaction() = runBlocking {
+         val repository = repository(SyncRecorder(database, "management-test-device"))
+-        authorize(SensitiveAction.CLOSE_ACCOUNTING_PERIOD)
++        authorize(SensitiveAction.CLOSE_ACCOUNTING_PERIOD, SensitiveActionContext.resource("ACCOUNTING_PERIOD", "100:130"))
+ 
+         val id = repository.closeAccountingPeriod(AccountingPeriodDraft(100, 130, "پایان دوره آزمایشی"))
+ 
+@@ -92,11 +93,11 @@
+ 
+     @Test
+     fun reopenPeriodRollsBackStatusAndAuditWhenOutboxFails() = runBlocking {
+-        authorize(SensitiveAction.CLOSE_ACCOUNTING_PERIOD)
++        authorize(SensitiveAction.CLOSE_ACCOUNTING_PERIOD, SensitiveActionContext.resource("ACCOUNTING_PERIOD", "100:130"))
+         val id = repository(SyncRecorder(database, "management-test-device"))
+             .closeAccountingPeriod(AccountingPeriodDraft(100, 130, "پایان دوره آزمایشی"))
+ 
+-        authorize(SensitiveAction.REOPEN_ACCOUNTING_PERIOD)
++        authorize(SensitiveAction.REOPEN_ACCOUNTING_PERIOD, SensitiveActionContext.resource("ACCOUNTING_PERIOD", id))
+         try {
+             repository(failingRecorder()).reopenAccountingPeriod(id)
+             fail("Expected outbox failure")
+@@ -117,8 +118,8 @@
+         sensitiveActionGate = sensitiveActionGate,
+     )
+ 
+-    private suspend fun authorize(action: SensitiveAction) {
+-        securityRepository.authorizeSensitiveAction(action, "123456")
++    private suspend fun authorize(action: SensitiveAction, context: SensitiveActionContext) {
++        securityRepository.authorizeSensitiveAction(action, "123456", context)
+     }
+ 
+     private fun failingRecorder() = object : SyncRecorder(database, "failing-device") {
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/MultiBranchProfitAndLossIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/MultiBranchProfitAndLossIntegrationTest.kt
+@@ -32,7 +32,6 @@
+         val security = LocalSecurityRepository(database, clock = { ++now }, authorizer = authorizer)
+         val ownerId = security.save(null, UserDraft("multi-pnl-owner", "مالک تست چندشعبه", "123456", UserRole.OWNER, "87654321"))
+         security.switchUser(ownerId, "123456")
+-        database.branchDao().insert(BranchEntity(id = 1L, globalId = "test:pnl:branch:1", code = "B1", name = "شعبه یک", createdAtEpochMillis = now, updatedAtEpochMillis = now))
+         database.branchDao().insert(BranchEntity(id = 2L, globalId = "test:pnl:branch:2", code = "B2", name = "شعبه دو", createdAtEpochMillis = now, updatedAtEpochMillis = now))
+         assets = LocalAssetRepository(database, clock = { ++now }, authorizer = authorizer)
+     }
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+@@ -136,7 +136,7 @@
+         scrollTo("treasury_list", "treasury_amount")
+         composeRule.onNodeWithTag("treasury_amount").assertIsDisplayed().performTextReplacement(amount.toString())
+         scrollTo("treasury_list", "treasury_source_type")
+-        composeRule.onNodeWithTag("treasury_source_type").performTextReplacement(sourceType)
++        composeRule.onNodeWithTag("treasury_source_type_${sourceType}").performClick()
+         scrollTo("treasury_list", "treasury_source_id")
+         composeRule.onNodeWithTag("treasury_source_id").performTextReplacement(sourceId.toString())
+         scrollTo("treasury_list", "treasury_reason")
+@@ -487,7 +487,7 @@
+         scrollTo("treasury_list", "treasury_amount")
+         composeRule.onNodeWithTag("treasury_amount").performTextReplacement(amount.toString())
+         scrollTo("treasury_list", "treasury_source_type")
+-        composeRule.onNodeWithTag("treasury_source_type").performTextReplacement(sourceType)
++        composeRule.onNodeWithTag("treasury_source_type_${sourceType}").performClick()
+         scrollTo("treasury_list", "treasury_source_id")
+         composeRule.onNodeWithTag("treasury_source_id").performTextReplacement(sourceId.toString())
+         scrollTo("treasury_list", "treasury_reason")

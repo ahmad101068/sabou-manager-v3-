@@ -1,0 +1,12 @@
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/EnterpriseCoreComposeE2ETest.kt
+@@ -221,7 +221,8 @@
+         }
+         composeRule.onNodeWithTag("inventory_count_submit").performClick()
+         composeRule.waitUntil(timeoutMillis = 10_000) {
+-            runBlocking { app.container.inventoryCountService.session(fixture.sessionId).status == InventoryCountStatus.PENDING_APPROVAL }
++            runBlocking { app.container.inventoryCountService.session(fixture.sessionId).status == InventoryCountStatus.PENDING_APPROVAL } &&
++                composeRule.onAllNodesWithTag("inventory_count_close").fetchSemanticsNodes().isNotEmpty()
+         }
+         composeRule.onNodeWithTag("inventory_count_close").performClick()
+ 

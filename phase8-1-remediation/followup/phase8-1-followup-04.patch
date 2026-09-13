@@ -1,0 +1,82 @@
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalDocumentNumberAllocator.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalDocumentNumberAllocator.kt
+@@ -13,7 +13,7 @@
+         "${type.prefix}-${nextRaw(type.sequenceKey).toString().padStart(8, '0')}"
+ 
+     suspend fun nextRaw(sequenceKey: String, initialValue: Long = 1L): Long {
+-        require(sequenceKey.matches(Regex("[A-Z0-9:_-]{3,120}"))) { "کلید توالی معتبر نیست." }
++        require(sequenceKey.matches(Regex("[A-Za-z0-9:._-]{3,120}"))) { "کلید توالی معتبر نیست." }
+         require(initialValue in 1..MAX_SEQUENCE) { "مقدار آغاز توالی معتبر نیست." }
+         val dao = database.documentSequenceDao()
+         val now = clock()
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalHrPayrollService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalHrPayrollService.kt
+@@ -594,7 +594,7 @@
+                 require(components.isNotEmpty() || payslip.grossPayRial == 0L) { "payroll_components_missing:${payslip.id}" }
+                 val actualHash = snapshotHash(
+                     snapshot.toDomainRequired(),
+-                    components.map(PayrollComponentEntity::toDraft),
++                    components.sortedBy(PayrollComponentEntity::id).map(PayrollComponentEntity::toDraft),
+                     snapshot.calculationParameters,
+                     snapshot.grossPayRial,
+                     snapshot.totalDeductionsRial,
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
+@@ -26,9 +26,10 @@
+ 
+     override fun alerts() = flow {
+         authorizer.actorIdentity()
++        requireAnyAlertDomainPermission()
+         emitAll(
+             combine(db.alertDao().observeVisible(), dataScope.scopedBranches(), dataScope.scopedLocations()) { rows, branches, locations ->
+-                val permissions = permittedSourceTypes()
++                val permissions = requireAnyAlertDomainPermission()
+                 val branchIds = branches.mapTo(mutableSetOf()) { it.id }
+                 val locationIds = locations.mapTo(mutableSetOf()) { it.id }
+                 val now = System.currentTimeMillis()
+@@ -46,8 +47,7 @@
+     override suspend fun refresh(todayEpochDay: Long) {
+         require(todayEpochDay > 0)
+         authorizer.actorIdentity()
+-        val permitted = permittedSourceTypes()
+-        if (permitted.isEmpty()) return
++        val permitted = requireAnyAlertDomainPermission()
+         val scopedBranches = dataScope.activeBranches().mapTo(mutableSetOf()) { it.id }
+         val scopedLocations = dataScope.activeLocations().mapTo(mutableSetOf()) { it.id }
+         db.withTransaction {
+@@ -110,8 +110,7 @@
+ 
+     override suspend fun clearDismissed() {
+         authorizer.actorIdentity()
+-        val permitted = permittedSourceTypes().toList()
+-        if (permitted.isNotEmpty()) db.alertDao().clearDismissedForTypes(permitted)
++        db.alertDao().clearDismissedForTypes(requireAnyAlertDomainPermission().toList())
+     }
+ 
+     private suspend fun requireAlertAccess(id: Long): AppAlertEntity {
+@@ -126,6 +125,15 @@
+         .filter { (_, permission) -> authorizer.can(permission) }
+         .mapTo(mutableSetOf()) { it.key }
+ 
++    private suspend fun requireAnyAlertDomainPermission(): Set<String> {
++        val permitted = permittedSourceTypes()
++        if (permitted.isNotEmpty()) return permitted
++        // There is deliberately no global "alert" permission: force a canonical
++        // data-boundary denial only when the actor has none of the alert domains.
++        authorizer.require(SOURCE_PERMISSION.values.first())
++        error("unreachable")
++    }
++
+     private fun requiredPermission(sourceType: String): Permission = SOURCE_PERMISSION[sourceType] ?: Permission.AUDIT_VIEW
+ 
+     private fun AppAlertEntity.toDomain() = AppAlert(
+--- a/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
+@@ -207,6 +207,7 @@
+                         FilterChip(
+                             selected = effectiveIntent == intent,
+                             onClick = { sourceIntent = intent },
++                            modifier = Modifier.testTag("treasury_source_type_${intent.storedValue}"),
+                             label = { Text(treasuryBusinessIntentTitle(intent), maxLines = 1) },
+                         )
+                     }

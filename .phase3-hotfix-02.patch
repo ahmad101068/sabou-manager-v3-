@@ -1,0 +1,20 @@
+diff --git a/app/src/test/java/ir/restaurant/management/domain/purchase/ProcurementModelsTest.kt b/app/src/test/java/ir/restaurant/management/domain/purchase/ProcurementModelsTest.kt
+--- a/app/src/test/java/ir/restaurant/management/domain/purchase/ProcurementModelsTest.kt
++++ b/app/src/test/java/ir/restaurant/management/domain/purchase/ProcurementModelsTest.kt
+@@ -11,6 +11,8 @@
+             department = "  آشپزخانه  ",
+             requiredEpochDay = 20_000,
+             lines = listOf(RequisitionLineDraft(1, 2_500_000, 300_000)),
++            branchId = 7,
++            destinationLocationId = 11,
+         ).validated()
+ 
+         assertEquals("آشپزخانه", result.department)
+@@ -25,6 +27,7 @@
+             deliveryNoteNo = "DN-1",
+             finalizeOrder = true,
+             lines = listOf(GoodsReceiptLineDraft(3, 0, 0, "عدم تحویل تأمین‌کننده")),
++            destinationLocationId = 11,
+         ).validated()
+ 
+         assertTrue(result.finalizeOrder)

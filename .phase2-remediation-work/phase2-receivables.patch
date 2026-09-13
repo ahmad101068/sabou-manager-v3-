@@ -1,0 +1,932 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+index 9d43498..2e36503 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/Phase2CorrectionIntegrationTest.kt
+@@ -50,6 +50,10 @@ import ir.restaurant.management.domain.sales.DailySalesReversalDraft
+ import ir.restaurant.management.domain.sales.DailySalesSettlementDraft
+ import ir.restaurant.management.domain.sales.DailySalesStatus
+ import ir.restaurant.management.domain.sales.SalesSettlementType
++import ir.restaurant.management.domain.treasury.TreasuryCommand
++import ir.restaurant.management.domain.treasury.TreasuryLedgerReader
++import ir.restaurant.management.domain.treasury.TreasuryService
++import ir.restaurant.management.domain.treasury.TreasuryTransaction
+ import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+@@ -123,11 +127,25 @@ class Phase2CorrectionIntegrationTest {
+         assertEquals(25_000_000L, accountDebitBalance("1202"))
+         assertEquals(10_000_000L, database.customerReceivableDao().balanceRial(fixture.personId))
+         assertEquals(25_000_000L, database.customerReceivableDao().balanceRial(fixture.companyId))
++        assertEquals(3L, scalar("SELECT COUNT(*) FROM treasury_transactions WHERE sourceType='DAILY_SALES_SETTLEMENT' AND sourceId=$saleId"))
++        assertEquals(15_000_000L, scalar("SELECT COALESCE(SUM(debitRial-creditRial),0) FROM journal_lines WHERE accountCode='1101'"))
++        assertEquals(5_000_000L, scalar("SELECT COALESCE(SUM(debitRial-creditRial),0) FROM journal_lines WHERE accountCode='1102'"))
++        assertEquals(70_000_000L, scalar("SELECT COALESCE(SUM(debitRial-creditRial),0) FROM journal_lines WHERE accountCode='1104'"))
++        assertEquals(0L, scalar("SELECT COALESCE(SUM(debitRial-creditRial),0) FROM journal_lines WHERE accountCode='2199'"))
+ 
+         val companyReceivableId = scalar("SELECT id FROM receivables WHERE sourceType='DAILY_SALES' AND sourceId=$saleId AND partyId=${fixture.companyId}")
+-        val collectionId = receivables.collect(
+-            ReceivableCollectionDraft(companyReceivableId, 10_000_000L, ReceivableCollectionMethod.BANK_TRANSFER, businessEpochDay = day + 1),
+-        )
++        val collectionCommandId = GlobalId.new().value
++        val collectionCommand = ReceivableCollectionDraft(
++            receivableId = companyReceivableId,
++            amountRial = 10_000_000L,
++            method = ReceivableCollectionMethod.BANK_TRANSFER,
++            businessEpochDay = day + 1,
++            commandId = collectionCommandId,
++        )
++        val collectionId = receivables.collect(collectionCommand)
++        assertEquals(collectionId, receivables.collect(collectionCommand))
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM receivable_collections WHERE globalId='$collectionCommandId'"))
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM treasury_transactions WHERE commandId='$collectionCommandId'"))
+         assertEquals(15_000_000L, database.businessOperationsDao().receivable(companyReceivableId)?.outstandingAmountRial)
+         assertEquals(15_000_000L, database.customerReceivableDao().balanceRial(fixture.companyId))
+         assertEquals(15_000_000L, accountDebitBalance("1202"))
+@@ -143,7 +161,7 @@ class Phase2CorrectionIntegrationTest {
+         val collectionReversal = ReceivableCollectionReversalDraft(collectionId, "اصلاح وصول", day + 2)
+         receivables.reverseCollection(collectionReversal)
+         receivables.reverseCollection(collectionReversal)
+-        assertEquals(1L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='RECEIVABLE_COLLECTION_REVERSAL' AND sourceId=$collectionId"))
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='RECEIVABLE_COLLECTION_REVERSAL' AND sourceId=$companyReceivableId"))
+         assertEquals(25_000_000L, database.customerReceivableDao().balanceRial(fixture.companyId))
+         assertEquals(25_000_000L, accountDebitBalance("1202"))
+         val saleReversal = DailySalesReversalDraft(saleId, day + 2, "اصلاح فروش اعتباری")
+@@ -158,6 +176,63 @@ class Phase2CorrectionIntegrationTest {
+         assertEquals(1L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='DAILY_SALES_REVERSAL' AND sourceId=$saleId"))
+     }
+ 
++    @Test
++    fun receivableCollection_rollsBackTreasuryJournalLedgerAndMaster_whenFailureOccursAfterTreasury() = runBlocking {
++        val fixture = seedSaleFixture()
++        val saleId = sales.createDraft(mixedDraft(fixture.menuId, fixture.personId, fixture.companyId))
++        sales.confirm(saleId)
++        sales.postConfirmed(saleId)
++        val receivableId = scalar(
++            "SELECT id FROM receivables WHERE sourceType='DAILY_SALES' AND sourceId=$saleId AND partyId=${fixture.personId}",
++        )
++        val before = requireNotNull(database.businessOperationsDao().receivable(receivableId))
++        val realTreasury = LocalTreasuryServiceV2(
++            database = database,
++            accounting = LocalAccountingPostingEngine(database, clock = { ++now }),
++            authorizer = authorizer,
++            accountCatalog = DefaultTreasuryAccountCatalog(),
++            clock = { ++now },
++        )
++        val failingTreasury = object : TreasuryService by realTreasury, TreasuryLedgerReader by realTreasury {
++            override suspend fun execute(command: TreasuryCommand): TreasuryTransaction {
++                realTreasury.execute(command)
++                error("forced_after_treasury")
++            }
++        }
++        val failingReceivables = LocalReceivableService(
++            database = database,
++            authorizer = authorizer,
++            clock = { ++now },
++            treasury = failingTreasury,
++            treasuryReader = failingTreasury,
++        )
++        val commandId = GlobalId.new().value
++        val command = ReceivableCollectionDraft(
++            receivableId = receivableId,
++            amountRial = 4_000_000L,
++            method = ReceivableCollectionMethod.CASH,
++            businessEpochDay = day + 1,
++            commandId = commandId,
++        )
++
++        try {
++            failingReceivables.collect(command)
++            fail("خرابی پس از Treasury باید کل وصول را rollback کند")
++        } catch (expected: IllegalStateException) {
++            assertEquals("forced_after_treasury", expected.message)
++        }
++
++        val after = requireNotNull(database.businessOperationsDao().receivable(receivableId))
++        assertEquals(before.paidAmountRial, after.paidAmountRial)
++        assertEquals(before.outstandingAmountRial, after.outstandingAmountRial)
++        assertEquals(before.status, after.status)
++        assertEquals(0L, scalar("SELECT COUNT(*) FROM receivable_collections WHERE globalId='$commandId'"))
++        assertEquals(0L, scalar("SELECT COUNT(*) FROM treasury_transactions WHERE commandId='$commandId'"))
++        assertEquals(0L, scalar("SELECT COUNT(*) FROM customer_receivable_ledger WHERE sourceType='RECEIVABLE_COLLECTION' AND reference='RECEIVABLE:$receivableId'"))
++        assertEquals(0L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='RECEIVABLE_COLLECTION' AND sourceId=$receivableId"))
++        assertEquals(0L, scalar("SELECT COUNT(*) FROM audit_logs WHERE action='COLLECT' AND entityType='RECEIVABLE' AND entityId=$receivableId"))
++    }
++
+     @Test
+     fun legacyOpeningBalanceAndNewCreditShareOneCanonicalPartyBalanceAndAging() = runBlocking {
+         val fixture = seedSaleFixture()
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt b/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
+index e50f27c..7081486 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/BusinessOperationsDao.kt
+@@ -17,15 +17,20 @@ interface BusinessOperationsDao {
+ 
+     @Insert suspend fun insertReceivable(row: ReceivableEntity): Long
+     @Query("SELECT * FROM receivables WHERE id=:id") suspend fun receivable(id: Long): ReceivableEntity?
++    @Query("SELECT * FROM receivables WHERE globalId=:globalId LIMIT 1") suspend fun receivableByGlobalId(globalId: String): ReceivableEntity?
+     @Query("SELECT * FROM receivables WHERE branchId=:branchId AND status IN ('OPEN','PARTIALLY_PAID') ORDER BY dueEpochDay, id") fun observeOpenReceivables(branchId: Long): Flow<List<ReceivableEntity>>
+     @Query("SELECT * FROM receivables WHERE branchId=:branchId AND status IN ('OPEN','PARTIALLY_PAID') ORDER BY dueEpochDay, id") suspend fun openReceivables(branchId: Long): List<ReceivableEntity>
+     @Query("SELECT * FROM receivables WHERE partyId=:partyId AND status IN ('OPEN','PARTIALLY_PAID') ORDER BY dueEpochDay, id") suspend fun openReceivablesForParty(partyId: Long): List<ReceivableEntity>
+-    @Query("UPDATE receivables SET paidAmountRial=:paid, outstandingAmountRial=:outstanding, status=:status, updatedAtEpochMillis=:updatedAt WHERE id=:id") suspend fun updateReceivableBalance(id: Long, paid: Long, outstanding: Long, status: String, updatedAt: Long): Int
+-    @Query("UPDATE receivables SET paidAmountRial=0, outstandingAmountRial=0, status='VOIDED', updatedAtEpochMillis=:updatedAt WHERE id=:id AND status!='VOIDED'") suspend fun voidReceivable(id: Long, updatedAt: Long): Int
++    @Query("SELECT * FROM receivables WHERE partyId IN (:partyIds) AND status IN ('OPEN','PARTIALLY_PAID') ORDER BY dueEpochDay, id") suspend fun openReceivablesForParties(partyIds: List<Long>): List<ReceivableEntity>
++    @Query("UPDATE receivables SET paidAmountRial=:paid, outstandingAmountRial=:outstanding, status=:status, updatedAtEpochMillis=:updatedAt WHERE id=:id AND paidAmountRial=:expectedPaid AND outstandingAmountRial=:expectedOutstanding")
++    suspend fun updateReceivableBalance(id: Long, expectedPaid: Long, expectedOutstanding: Long, paid: Long, outstanding: Long, status: String, updatedAt: Long): Int
++    @Query("UPDATE receivables SET paidAmountRial=0, outstandingAmountRial=0, status='VOIDED', updatedAtEpochMillis=:updatedAt WHERE id=:id AND status!='VOIDED' AND paidAmountRial=:expectedPaid AND outstandingAmountRial=:expectedOutstanding")
++    suspend fun voidReceivable(id: Long, expectedPaid: Long, expectedOutstanding: Long, updatedAt: Long): Int
+     @Query("SELECT * FROM receivables WHERE sourceType=:sourceType AND sourceId=:sourceId ORDER BY id") suspend fun receivablesBySource(sourceType: String, sourceId: Long): List<ReceivableEntity>
+     @Query("UPDATE receivables SET partyId=:targetPartyId WHERE partyId=:sourcePartyId") suspend fun moveReceivables(sourcePartyId: Long, targetPartyId: Long): Int
+     @Insert suspend fun insertCollection(row: ReceivableCollectionEntity): Long
+     @Query("SELECT * FROM receivable_collections WHERE id=:id") suspend fun collection(id: Long): ReceivableCollectionEntity?
++    @Query("SELECT * FROM receivable_collections WHERE globalId=:globalId LIMIT 1") suspend fun collectionByGlobalId(globalId: String): ReceivableCollectionEntity?
+     @Query("SELECT * FROM receivable_collections WHERE receivableId=:receivableId AND reversedAtEpochMillis IS NULL ORDER BY id") suspend fun activeCollections(receivableId: Long): List<ReceivableCollectionEntity>
+     @Query("SELECT COUNT(*) FROM receivable_collections WHERE receivableId=:receivableId AND reversedAtEpochMillis IS NULL") suspend fun activeCollectionCount(receivableId: Long): Int
+     @Query("UPDATE receivable_collections SET reversedAtEpochMillis=:reversedAt,reversalReason=:reason,reversalJournalEntryId=:journalEntryId WHERE id=:id AND reversedAtEpochMillis IS NULL") suspend fun markCollectionReversed(id: Long, reversedAt: Long, reason: String, journalEntryId: Long): Int
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+index 8ab4797..c16b6a5 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalDailySalesRepository.kt
+@@ -11,8 +11,6 @@ import ir.restaurant.management.data.db.AppDatabase
+ import ir.restaurant.management.data.db.DailySalesMenuLineEntity
+ import ir.restaurant.management.data.db.DailySalesSummaryEntity
+ import ir.restaurant.management.data.db.DailySalesSettlementEntity
+-import ir.restaurant.management.data.db.ReceivableEntity
+-import ir.restaurant.management.data.db.CustomerReceivableLedgerEntity
+ import ir.restaurant.management.data.db.InventoryItemEntity
+ import ir.restaurant.management.data.db.SalesDayClosureEntity
+ import ir.restaurant.management.data.security.SessionAuthorizer
+@@ -28,6 +26,16 @@ import ir.restaurant.management.domain.accounting.AccountingPostingContext
+ import ir.restaurant.management.domain.accounting.AccountingScope
+ import ir.restaurant.management.domain.accounting.BalancedJournalDraft
+ import ir.restaurant.management.domain.accounting.JournalLineDraft
++import ir.restaurant.management.domain.receivables.DailySalesReceivableOriginDraft
++import ir.restaurant.management.domain.receivables.ReceivableService
++import ir.restaurant.management.domain.receivables.ReceivableType
++import ir.restaurant.management.domain.treasury.TreasuryAccountId
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
++import ir.restaurant.management.domain.treasury.TreasuryChannel
++import ir.restaurant.management.domain.treasury.TreasuryCommand
++import ir.restaurant.management.domain.treasury.TreasuryLedgerReader
++import ir.restaurant.management.domain.treasury.TreasuryReversalCommand
++import ir.restaurant.management.domain.treasury.TreasuryService
+ import ir.restaurant.management.domain.sales.DailySalesDraft
+ import ir.restaurant.management.domain.sales.DailyMenuSaleDraft
+ import ir.restaurant.management.domain.sales.DailySalesSettlementDraft
+@@ -61,6 +69,21 @@ class LocalDailySalesRepository(
+     private val syncRecorder: SyncRecorder? = null,
+     private val clock: () -> Long = System::currentTimeMillis,
+     private val sensitiveActionGate: SensitiveActionGate = SensitiveActionGate(),
++    private val treasury: TreasuryService = ir.restaurant.management.data.treasury.LocalTreasuryServiceV2(
++        database = database,
++        accounting = LocalAccountingPostingEngine(database, clock = clock),
++        authorizer = authorizer,
++        accountCatalog = ir.restaurant.management.data.treasury.DefaultTreasuryAccountCatalog(),
++        clock = clock,
++    ),
++    private val receivables: ReceivableService = LocalReceivableService(
++        database = database,
++        authorizer = authorizer,
++        clock = clock,
++        treasury = treasury,
++    ),
++    private val treasuryReader: TreasuryLedgerReader = treasury as? TreasuryLedgerReader
++        ?: error("daily_sales_treasury_reader_required"),
+ ) : DailySalesRepository {
+     private val accountingPosting = LocalAccountingPostingEngine(database, clock = clock)
+     private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock, authorizer = authorizer)
+@@ -247,16 +270,22 @@ class LocalDailySalesRepository(
+                 grossSalesRial = summary.grossSalesRial,
+             )
+             val prepared = prepare(reconstructed)
+-            // Re-freeze recipe/current inventory valuation at posting time so inventory and COGS stay aligned.
+-            database.dailySalesDao().deleteLines(summary.id)
+-            database.dailySalesDao().insertLines(prepared.lines.map {
+-                DailySalesMenuLineEntity(
+-                    summaryId=summary.id,menuItemId=it.menuId,recipeVersionId=it.recipeVersionId,menuItemNameSnapshot=it.name,
+-                    quantityMicros=it.quantity,grossSalesRial=it.gross,theoreticalCostRial=it.cost,foodCostSnapshotRial=it.foodCost,
+-                    packagingCostSnapshotRial=it.packagingCost,directLaborCostSnapshotRial=it.directLaborCost,allocatedOverheadSnapshotRial=it.allocatedOverhead,
+-                )
+-            })
+-            check(database.dailySalesDao().updateConfirmedCost(summary.id, prepared.totalCost, actor.id, now) == 1) { "به‌روزرسانی بهای فروش تأییدشده انجام نشد." }
++            // CONFIRMED is a financial snapshot. Posting may validate the current executable
++            // consumption plan, but it must never rewrite confirmed recipe/cost history.
++            require(prepared.totalCost == summary.theoreticalCostRial) {
++                "daily_sales_confirmed_cost_snapshot_changed"
++            }
++            require(prepared.lines.size == persistedLines.size) { "daily_sales_confirmed_line_snapshot_changed" }
++            val persistedByMenu = persistedLines.associateBy { requireNotNull(it.menuItemId) }
++            prepared.lines.forEach { line ->
++                val frozen = persistedByMenu[line.menuId] ?: error("daily_sales_confirmed_line_snapshot_changed")
++                require(
++                    frozen.recipeVersionId == line.recipeVersionId &&
++                        frozen.quantityMicros == line.quantity &&
++                        frozen.grossSalesRial == line.gross &&
++                        frozen.theoreticalCostRial == line.cost
++                ) { "daily_sales_confirmed_line_snapshot_changed" }
++            }
+ 
+             prepared.consumptions.forEach { consumption ->
+                 val item = consumption.item
+@@ -283,55 +312,65 @@ class LocalDailySalesRepository(
+                 )
+             }
+ 
+-            persistedSettlements.filter { it.type in setOf(SalesSettlementType.PERSONAL_CREDIT.name, SalesSettlementType.CORPORATE_CREDIT.name) }.forEach { row ->
+-                val partyId = requireNotNull(row.partyId)
+-                val party = database.salesDao().activeCustomerById(partyId) ?: error("طرف‌حساب اعتباری فعال نیست.")
+-                val isCorporate = row.type == SalesSettlementType.CORPORATE_CREDIT.name
+-                require(if (isCorporate) party.partyType == "COMPANY" else party.partyType == "PERSON") { "نوع طرف‌حساب با نوع فروش اعتباری سازگار نیست." }
+-                val due = row.dueEpochDay ?: party.paymentTermsDays.takeIf { it > 0 }?.let { summary.businessEpochDay + it }
+-                val receivableId = database.businessOperationsDao().insertReceivable(
+-                    ReceivableEntity(
+-                        globalId = GlobalId.new().value,
+-                        branchId = summary.branchId,
+-                        partyId = partyId,
+-                        type = if (isCorporate) "CORPORATE" else "PERSONAL",
+-                        sourceType = "DAILY_SALES",
+-                        sourceId = summary.id,
+-                        originalAmountRial = row.amountRial,
+-                        outstandingAmountRial = row.amountRial,
+-                        issueEpochDay = summary.businessEpochDay,
+-                        dueEpochDay = due,
+-                        status = "OPEN",
+-                        createdAtEpochMillis = now,
+-                        updatedAtEpochMillis = now,
+-                    ),
+-                )
+-                database.customerReceivableDao().insertLedger(
+-                    CustomerReceivableLedgerEntity(
+-                        customerId = partyId,
+-                        businessEpochDay = summary.businessEpochDay,
+-                        entryType = "CREDIT_SALE",
+-                        debitRial = row.amountRial,
+-                        creditRial = 0,
+-                        sourceType = "RECEIVABLE",
+-                        sourceId = receivableId,
+-                        reference = receivableLedgerReference(receivableId),
+-                        dueEpochDay = due,
+-                        actorId = actor.id,
+-                        createdAtEpochMillis = now,
+-                    ),
+-                )
+-                check(database.customerReceivableDao().balanceByReference(partyId, receivableLedgerReference(receivableId)) == row.amountRial) {
+-                    "ثبت دفتر دریافتنی فروش اعتباری ناقص است."
++            persistedSettlements.filter { it.amountRial > 0 }.forEach { row ->
++                when (SalesSettlementType.valueOf(row.type)) {
++                    SalesSettlementType.CASH, SalesSettlementType.CARD, SalesSettlementType.BANK_TRANSFER -> {
++                        val (accountId, channel) = when (SalesSettlementType.valueOf(row.type)) {
++                            SalesSettlementType.CASH -> TreasuryAccountId.parse("cash_main") to TreasuryChannel.CASH
++                            SalesSettlementType.CARD -> TreasuryAccountId.parse("card_terminal") to TreasuryChannel.CARD
++                            SalesSettlementType.BANK_TRANSFER -> TreasuryAccountId.parse("bank_main") to TreasuryChannel.BANK
++                            else -> error("unsupported_daily_sales_liquidity_settlement")
++                        }
++                        val settlementCommandId = GlobalId.parse(row.globalId)
++                        val treasuryResult = treasury.execute(
++                            TreasuryCommand.Receipt(
++                                commandId = settlementCommandId,
++                                businessEpochDay = summary.businessEpochDay,
++                                correlationId = ir.restaurant.management.core.CorrelationId.forCommand("daily_sales_settlement", settlementCommandId),
++                                businessIntent = TreasuryBusinessIntent.DAILY_SALES_SETTLEMENT,
++                                sourceId = summary.id,
++                                reason = row.note?.takeIf { it.isNotBlank() } ?: row.referenceNumber?.takeIf { it.isNotBlank() } ?: "تسویه فروش روزانه ${summary.id}",
++                                accountingScope = AccountingScope.BRANCH,
++                                branchId = summary.branchId,
++                                accountId = accountId,
++                                channel = channel,
++                                amount = MoneyRial.of(row.amountRial),
++                            ),
++                        )
++                        require(treasuryResult.journalEntryId != null) { "سند خزانه تسویه فروش روزانه ایجاد نشد." }
++                    }
++                    SalesSettlementType.PERSONAL_CREDIT, SalesSettlementType.CORPORATE_CREDIT -> {
++                        val partyId = requireNotNull(row.partyId) { "فروش اعتباری نیازمند طرف‌حساب است." }
++                        val party = database.salesDao().activeCustomerById(partyId) ?: error("طرف‌حساب اعتباری فعال نیست.")
++                        val type = if (row.type == SalesSettlementType.CORPORATE_CREDIT.name) ReceivableType.CORPORATE else ReceivableType.PERSONAL
++                        val due = row.dueEpochDay ?: party.paymentTermsDays.takeIf { it > 0 }?.let { summary.businessEpochDay + it }
++                        receivables.createFromDailySales(
++                            DailySalesReceivableOriginDraft(
++                                commandId = row.globalId,
++                                branchId = summary.branchId,
++                                partyId = partyId,
++                                type = type,
++                                dailySalesId = summary.id,
++                                amountRial = row.amountRial,
++                                issueEpochDay = summary.businessEpochDay,
++                                dueEpochDay = due,
++                            ),
++                        )
++                    }
+                 }
+             }
+ 
+             val revenueLines = buildList {
++                val liquiditySettlementRial = persistedSettlements
++                    .filter { it.type in setOf(SalesSettlementType.CASH.name, SalesSettlementType.CARD.name, SalesSettlementType.BANK_TRANSFER.name) }
++                    .fold(0L) { total, settlement -> SignedLongMath.add(total, settlement.amountRial) }
++                if (liquiditySettlementRial > 0) {
++                    add(SemanticJournalLine(SemanticAccountRole.TREASURY_CLEARING, debit = MoneyRial.of(liquiditySettlementRial), memo = "تسویه خزانه فروش روزانه"))
++                }
+                 persistedSettlements.forEach { settlement ->
+                     if (settlement.amountRial <= 0) return@forEach
+                     when (SalesSettlementType.valueOf(settlement.type)) {
+-                        SalesSettlementType.CASH -> add(SemanticJournalLine(SemanticAccountRole.CASH, debit = MoneyRial.of(settlement.amountRial)))
+-                        SalesSettlementType.CARD, SalesSettlementType.BANK_TRANSFER -> add(SemanticJournalLine(SemanticAccountRole.BANK, debit = MoneyRial.of(settlement.amountRial), memo = settlement.type))
++                        SalesSettlementType.CASH, SalesSettlementType.CARD, SalesSettlementType.BANK_TRANSFER -> Unit
+                         SalesSettlementType.PERSONAL_CREDIT -> add(SemanticJournalLine(SemanticAccountRole.PERSONAL_RECEIVABLE, debit = MoneyRial.of(settlement.amountRial)))
+                         SalesSettlementType.CORPORATE_CREDIT -> add(SemanticJournalLine(SemanticAccountRole.CORPORATE_RECEIVABLE, debit = MoneyRial.of(settlement.amountRial)))
+                     }
+@@ -350,12 +389,12 @@ class LocalDailySalesRepository(
+                 ),
+                 AccountingPostingContext.local("DAILY_SALES", summary.id, "revenue", actor.id, correlationId="daily_sales:${summary.id}"),
+             )
+-            val costJournalId = if (prepared.totalCost > 0) accountingPosting.post(
++            val costJournalId = if (summary.theoreticalCostRial > 0) accountingPosting.post(
+                 SemanticJournalDraft(
+                     entryNo="بفر-${summary.id}", description="بهای تمام‌شده فروش تجمیعی", entryEpochDay=summary.businessEpochDay,
+                     sourceType="DAILY_SALES_COGS", sourceId=summary.id, lines=listOf(
+-                        SemanticJournalLine(SemanticAccountRole.COGS, debit=MoneyRial.of(prepared.totalCost)),
+-                        SemanticJournalLine(SemanticAccountRole.INVENTORY_ASSET, credit=MoneyRial.of(prepared.totalCost)),
++                        SemanticJournalLine(SemanticAccountRole.COGS, debit=MoneyRial.of(summary.theoreticalCostRial)),
++                        SemanticJournalLine(SemanticAccountRole.INVENTORY_ASSET, credit=MoneyRial.of(summary.theoreticalCostRial)),
+                     ),
+                     accountingScope=AccountingScope.BRANCH, branchId=summary.branchId,
+                 ),
+@@ -574,7 +613,8 @@ class LocalDailySalesRepository(
+         creditRows.groupBy { requireNotNull(it.partyId) }.forEach { (partyId, rows) ->
+             val party = database.salesDao().activeCustomerById(partyId) ?: error("طرف‌حساب اعتباری فعال نیست.")
+             val pendingCredit = rows.fold(0L) { acc, row -> SignedLongMath.add(acc, row.amountRial) }
+-            val canonicalOutstanding = database.customerReceivableDao().balanceRial(partyId)
++            val canonicalOutstanding = CanonicalReceivableReadModel(database).openLotsForParty(partyId)
++                .fold(0L) { total, lot -> SignedLongMath.add(total, lot.outstandingRial) }
+             if (party.creditLimitRial > 0 && SignedLongMath.add(canonicalOutstanding, pendingCredit) > party.creditLimitRial) {
+                 authorizer.require(Permission.CREDIT_OVERRIDE)
+             }
+@@ -587,7 +627,6 @@ class LocalDailySalesRepository(
+         referenceNumber=row.referenceNumber,note=row.note,
+     )
+ 
+-    private fun receivableLedgerReference(receivableId:Long)="RECEIVABLE:$receivableId"
+ 
+     override suspend fun reverse(draft: DailySalesReversalDraft) {
+         val actor = authorizer.require(Permission.DAILY_SALES_VOID)
+@@ -639,6 +678,34 @@ class LocalDailySalesRepository(
+                 )
+             }
+ 
++            val settlementRows = database.businessOperationsDao().settlements(summary.id)
++            settlementRows.filter { it.amountRial > 0 }.forEach { settlement ->
++                when (SalesSettlementType.valueOf(settlement.type)) {
++                    SalesSettlementType.CASH, SalesSettlementType.CARD, SalesSettlementType.BANK_TRANSFER -> {
++                        val context = treasuryReader.reversalContext(settlement.globalId)
++                            ?: error("تراکنش خزانه تسویه فروش روزانه پیدا نشد.")
++                        require(context.status == "POSTED") { "تراکنش خزانه فروش قبلاً برگشت خورده است." }
++                        val reversalCommandId = GlobalId.new()
++                        treasury.reverse(
++                            TreasuryReversalCommand(
++                                commandId = reversalCommandId,
++                                originalTransactionId = context.transactionId,
++                                originalJournalEntryId = requireNotNull(context.journalEntryId) { "سند خزانه فروش روزانه پیدا نشد." },
++                                businessEpochDay = valid.reversalEpochDay,
++                                correlationId = ir.restaurant.management.core.CorrelationId.forCommand("daily_sales_treasury_reversal", reversalCommandId),
++                                sourceType = "DAILY_SALES_SETTLEMENT_REVERSAL",
++                                sourceId = summary.id,
++                                reason = valid.reason,
++                                accountId = context.accountId,
++                                channel = context.channel,
++                                amount = MoneyRial.of(settlement.amountRial),
++                            ),
++                        )
++                    }
++                    SalesSettlementType.PERSONAL_CREDIT, SalesSettlementType.CORPORATE_CREDIT -> Unit
++                }
++            }
++
+             val revenueReversalId = reverseJournal(
+                 originalEntryId = summary.journalEntryId,
+                 summaryId = summary.id,
+@@ -663,19 +730,8 @@ class LocalDailySalesRepository(
+                 now = now,
+                 actorId = actor.id,
+             )
+-            receivables.forEach { receivable ->
+-                database.customerReceivableDao().insertLedger(
+-                    CustomerReceivableLedgerEntity(
+-                        customerId=receivable.partyId,businessEpochDay=valid.reversalEpochDay,entryType="SALE_REVERSAL",
+-                        debitRial=0,creditRial=receivable.originalAmountRial,sourceType="RECEIVABLE_REVERSAL",sourceId=receivable.id,
+-                        reference=receivableLedgerReference(receivable.id),dueEpochDay=receivable.dueEpochDay,actorId=actor.id,createdAtEpochMillis=now,
+-                    ),
+-                )
+-                check(database.businessOperationsDao().voidReceivable(receivable.id, now) == 1) { "ابطال دریافتنی انجام نشد." }
+-                check(database.customerReceivableDao().balanceByReference(receivable.partyId, receivableLedgerReference(receivable.id)) == 0L) {
+-                    "مانده دریافتنی بعد از برگشت فروش صفر نشد."
+-                }
+-                audit("RECEIVABLE_REVERSE", receivable.id, "ابطال دریافتنی ناشی از برگشت فروش ${summary.id}", now, entityType="RECEIVABLE", businessEpochDay=valid.reversalEpochDay)
++            if (receivables.isNotEmpty()) {
++                this.receivables.voidFromDailySales(summary.id, valid.reversalEpochDay, valid.reason)
+             }
+             check(
+                 database.dailySalesDao().markReversed(
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalReceivableService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalReceivableService.kt
+index 2fb6089..10f6096 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalReceivableService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalReceivableService.kt
+@@ -1,29 +1,37 @@
+ package ir.restaurant.management.data.repository
+ 
+ import androidx.room.withTransaction
++import ir.restaurant.management.core.CorrelationId
+ import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.core.MoneyRial
+ import ir.restaurant.management.core.SignedLongMath
+ import ir.restaurant.management.data.db.AppDatabase
+ import ir.restaurant.management.data.db.CustomerReceivableLedgerEntity
+ import ir.restaurant.management.data.db.ReceivableCollectionEntity
++import ir.restaurant.management.data.db.ReceivableEntity
+ import ir.restaurant.management.data.security.SessionAuthorizer
++import ir.restaurant.management.data.treasury.DefaultTreasuryAccountCatalog
++import ir.restaurant.management.data.treasury.LocalTreasuryServiceV2
+ import ir.restaurant.management.domain.accounting.AccountingPostingContext
+ import ir.restaurant.management.domain.accounting.AccountingScope
+ import ir.restaurant.management.domain.accounting.BalancedJournalDraft
+ import ir.restaurant.management.domain.accounting.JournalLineDraft
+-import ir.restaurant.management.domain.accounting.SemanticAccountRole
+-import ir.restaurant.management.domain.accounting.SemanticJournalDraft
+-import ir.restaurant.management.domain.accounting.SemanticJournalLine
++import ir.restaurant.management.domain.receivables.DailySalesReceivableOriginDraft
+ import ir.restaurant.management.domain.receivables.ReceivableAging
+ import ir.restaurant.management.domain.receivables.ReceivableCollectionDraft
+-import ir.restaurant.management.domain.receivables.ReceivableCollectionMethod
+ import ir.restaurant.management.domain.receivables.ReceivableCollectionReversalDraft
+ import ir.restaurant.management.domain.receivables.ReceivableRecord
+ import ir.restaurant.management.domain.receivables.ReceivableService
+ import ir.restaurant.management.domain.receivables.ReceivableStatus
+ import ir.restaurant.management.domain.receivables.ReceivableType
+ import ir.restaurant.management.domain.security.Permission
++import ir.restaurant.management.domain.treasury.TreasuryAccountId
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
++import ir.restaurant.management.domain.treasury.TreasuryChannel
++import ir.restaurant.management.domain.treasury.TreasuryCommand
++import ir.restaurant.management.domain.treasury.TreasuryLedgerReader
++import ir.restaurant.management.domain.treasury.TreasuryReversalCommand
++import ir.restaurant.management.domain.treasury.TreasuryService
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.map
+ 
+@@ -31,8 +39,18 @@ class LocalReceivableService(
+     private val database: AppDatabase,
+     private val authorizer: SessionAuthorizer,
+     private val clock: () -> Long = System::currentTimeMillis,
++    private val treasury: TreasuryService = LocalTreasuryServiceV2(
++        database = database,
++        accounting = LocalAccountingPostingEngine(database, clock = clock),
++        authorizer = authorizer,
++        accountCatalog = DefaultTreasuryAccountCatalog(),
++        clock = clock,
++    ),
++    private val treasuryReader: TreasuryLedgerReader = treasury as? TreasuryLedgerReader
++        ?: error("receivable_treasury_reader_required"),
+ ) : ReceivableService {
+-    private val accounting = LocalAccountingPostingEngine(database, clock = clock)
++    /** Legacy-only reversal adapter for collections created before canonical Treasury ownership. */
++    private val legacyAccounting = LocalAccountingPostingEngine(database, clock = clock)
+     private val audit = LocalAuditEventWriter(database)
+     private val branchResolver = CanonicalBranchResolver(database)
+ 
+@@ -43,23 +61,149 @@ class LocalReceivableService(
+             }
+         }
+ 
++    override suspend fun createFromDailySales(draft: DailySalesReceivableOriginDraft): Long {
++        val actor = authorizer.require(Permission.DAILY_SALES_POST)
++        val valid = draft.validated()
++        return database.withTransaction {
++            val dao = database.businessOperationsDao()
++            dao.receivableByGlobalId(valid.commandId)?.let { existing ->
++                require(existing.branchId == valid.branchId && existing.partyId == valid.partyId) { "receivable_origin_idempotency_conflict" }
++                require(existing.type == valid.type.name && existing.sourceType == "DAILY_SALES" && existing.sourceId == valid.dailySalesId) { "receivable_origin_idempotency_conflict" }
++                require(existing.originalAmountRial == valid.amountRial && existing.issueEpochDay == valid.issueEpochDay && existing.dueEpochDay == valid.dueEpochDay) { "receivable_origin_idempotency_conflict" }
++                return@withTransaction existing.id
++            }
++            branchResolver.requireExisting(valid.branchId)
++            val party = database.salesDao().activeCustomerById(valid.partyId) ?: error("طرف‌حساب اعتباری فعال نیست.")
++            require(if (valid.type == ReceivableType.CORPORATE) party.partyType == "COMPANY" else party.partyType == "PERSON") {
++                "نوع طرف‌حساب با نوع دریافتنی سازگار نیست."
++            }
++            val now = clock()
++            val receivableId = dao.insertReceivable(
++                ReceivableEntity(
++                    globalId = valid.commandId,
++                    branchId = valid.branchId,
++                    partyId = valid.partyId,
++                    type = valid.type.name,
++                    sourceType = "DAILY_SALES",
++                    sourceId = valid.dailySalesId,
++                    originalAmountRial = valid.amountRial,
++                    outstandingAmountRial = valid.amountRial,
++                    issueEpochDay = valid.issueEpochDay,
++                    dueEpochDay = valid.dueEpochDay,
++                    status = ReceivableStatus.OPEN.name,
++                    createdAtEpochMillis = now,
++                    updatedAtEpochMillis = now,
++                ),
++            )
++            val ledgerReference = receivableLedgerReference(receivableId)
++            database.customerReceivableDao().insertLedger(
++                CustomerReceivableLedgerEntity(
++                    customerId = valid.partyId,
++                    businessEpochDay = valid.issueEpochDay,
++                    entryType = "CREDIT_SALE",
++                    debitRial = valid.amountRial,
++                    creditRial = 0,
++                    sourceType = "RECEIVABLE",
++                    sourceId = receivableId,
++                    reference = ledgerReference,
++                    dueEpochDay = valid.dueEpochDay,
++                    actorId = actor.id,
++                    createdAtEpochMillis = now,
++                ),
++            )
++            check(database.customerReceivableDao().balanceByReference(valid.partyId, ledgerReference) == valid.amountRial) {
++                "ثبت دفتر دریافتنی فروش اعتباری ناقص است."
++            }
++            audit.appendAuthorized(
++                authorizer, "CREATE", "RECEIVABLE", receivableId,
++                "ایجاد دریافتنی از فروش روزانه ${valid.dailySalesId}", now, valid.issueEpochDay,
++                correlationId = "daily_sales_receivable:${valid.commandId}", referenceType = "DAILY_SALES", referenceId = valid.dailySalesId,
++            )
++            receivableId
++        }
++    }
++
++    override suspend fun voidFromDailySales(dailySalesId: Long, reversalEpochDay: Long, reason: String) {
++        val actor = authorizer.require(Permission.DAILY_SALES_VOID)
++        require(dailySalesId > 0 && reversalEpochDay > 0) { "منشأ فروش روزانه معتبر نیست." }
++        val normalizedReason = reason.trim()
++        require(normalizedReason.length in 3..300) { "دلیل ابطال دریافتنی الزامی است." }
++        database.withTransaction {
++            val dao = database.businessOperationsDao()
++            val rows = dao.receivablesBySource("DAILY_SALES", dailySalesId)
++            val now = clock()
++            rows.forEach { receivable ->
++                if (receivable.status == ReceivableStatus.VOIDED.name) return@forEach
++                require(dao.activeCollectionCount(receivable.id) == 0) { "دریافتنی فروش دارای وصول فعال است." }
++                require(receivable.paidAmountRial == 0L) { "دریافتنی فروش پرداخت‌شده بدون برگشت وصول قابل ابطال نیست." }
++                val ledgerReference = receivableLedgerReference(receivable.id)
++                database.customerReceivableDao().insertLedger(
++                    CustomerReceivableLedgerEntity(
++                        customerId = receivable.partyId,
++                        businessEpochDay = reversalEpochDay,
++                        entryType = "SALE_REVERSAL",
++                        debitRial = 0,
++                        creditRial = receivable.outstandingAmountRial,
++                        sourceType = "RECEIVABLE_REVERSAL",
++                        sourceId = receivable.id,
++                        reference = ledgerReference,
++                        dueEpochDay = receivable.dueEpochDay,
++                        actorId = actor.id,
++                        createdAtEpochMillis = now,
++                    ),
++                )
++                check(dao.voidReceivable(receivable.id, receivable.paidAmountRial, receivable.outstandingAmountRial, now) == 1) {
++                    "دریافتنی فروش هم‌زمان تغییر کرده است."
++                }
++                check(database.customerReceivableDao().balanceByReference(receivable.partyId, ledgerReference) == 0L) {
++                    "مانده دریافتنی بعد از برگشت فروش صفر نشد."
++                }
++                audit.appendAuthorized(
++                    authorizer, "VOID_FROM_DAILY_SALES", "RECEIVABLE", receivable.id,
++                    "ابطال دریافتنی ناشی از برگشت فروش $dailySalesId", now, reversalEpochDay,
++                    reason = normalizedReason, correlationId = "daily_sales_receivable_reversal:$dailySalesId",
++                    referenceType = "DAILY_SALES", referenceId = dailySalesId,
++                )
++            }
++        }
++    }
++
+     override suspend fun collect(draft: ReceivableCollectionDraft): Long {
+         val actor = authorizer.require(Permission.RECEIVABLE_COLLECT)
+-        val now = clock()
+         return database.withTransaction {
+             val dao = database.businessOperationsDao()
+             val current = dao.receivable(draft.receivableId) ?: error("مطالبه پیدا نشد.")
+             branchResolver.requireExisting(current.branchId)
++            val normalized = draft.normalized()
++            dao.collectionByGlobalId(normalized.commandId)?.let { existing ->
++                verifyCollectionReplay(existing, normalized)
++                return@withTransaction existing.id
++            }
+             require(current.status in setOf("OPEN", "PARTIALLY_PAID")) { "این مطالبه قابل وصول نیست." }
+-            val valid = draft.validated(current.outstandingAmountRial)
++            val valid = normalized.validated(current.outstandingAmountRial)
++            val treasuryResult = treasury.execute(
++                TreasuryCommand.Receipt(
++                    commandId = GlobalId.parse(valid.commandId),
++                    businessEpochDay = valid.businessEpochDay,
++                    correlationId = CorrelationId.forCommand("receivable_collection", GlobalId.parse(valid.commandId)),
++                    businessIntent = if (current.type == ReceivableType.CORPORATE.name) TreasuryBusinessIntent.CORPORATE_RECEIVABLE_COLLECTION else TreasuryBusinessIntent.CUSTOMER_RECEIVABLE_COLLECTION,
++                    sourceId = current.id,
++                    reason = valid.reference ?: "وصول دریافتنی ${current.id}",
++                    accountingScope = AccountingScope.BRANCH,
++                    branchId = current.branchId,
++                    accountId = TreasuryAccountId.parse(valid.treasuryAccountId),
++                    channel = valid.method.toTreasuryChannel(),
++                    amount = MoneyRial.of(valid.amountRial),
++                ),
++            )
++            require(treasuryResult.journalEntryId != null) { "سند حسابداری وصول ایجاد نشد." }
++            val now = clock()
+             val collectionId = dao.insertCollection(
+                 ReceivableCollectionEntity(
+-                    globalId = GlobalId.new().value,
++                    globalId = valid.commandId,
+                     receivableId = current.id,
+                     amountRial = valid.amountRial,
+                     method = valid.method.name,
+-                    cashboxId = valid.cashboxId,
+-                    bankAccountId = valid.bankAccountId,
+                     reference = valid.reference,
+                     businessEpochDay = valid.businessEpochDay,
+                     createdByUserId = actor.id,
+@@ -85,38 +229,15 @@ class LocalReceivableService(
+             val newPaid = SignedLongMath.add(current.paidAmountRial, valid.amountRial)
+             val outstanding = SignedLongMath.subtract(current.originalAmountRial, newPaid)
+             val status = if (outstanding == 0L) "PAID" else "PARTIALLY_PAID"
+-            check(dao.updateReceivableBalance(current.id, newPaid, outstanding, status, now) == 1)
++            check(dao.updateReceivableBalance(current.id, current.paidAmountRial, current.outstandingAmountRial, newPaid, outstanding, status, now) == 1)
+             check(database.customerReceivableDao().balanceByReference(current.partyId, ledgerReference) == outstanding) {
+                 "مانده سند دریافتنی با دفتر دریافتنی یکسان نیست."
+             }
+-            val debitRole = when (valid.method) {
+-                ReceivableCollectionMethod.CASH -> SemanticAccountRole.CASH
+-                ReceivableCollectionMethod.CARD, ReceivableCollectionMethod.BANK_TRANSFER -> SemanticAccountRole.BANK
+-            }
+-            val creditRole = if (current.type == "CORPORATE") SemanticAccountRole.CORPORATE_RECEIVABLE else SemanticAccountRole.PERSONAL_RECEIVABLE
+-            accounting.post(
+-                SemanticJournalDraft(
+-                    entryNo = "RCV-$collectionId",
+-                    entryEpochDay = valid.businessEpochDay,
+-                    description = "وصول مطالبات؛ بدون ایجاد درآمد جدید",
+-                    sourceType = "RECEIVABLE_COLLECTION",
+-                    sourceId = collectionId,
+-                    accountingScope = AccountingScope.BRANCH,
+-                    branchId = current.branchId,
+-                    lines = listOf(
+-                        SemanticJournalLine(debitRole, debit = MoneyRial.of(valid.amountRial)),
+-                        SemanticJournalLine(creditRole, credit = MoneyRial.of(valid.amountRial)),
+-                    ),
+-                ),
+-                AccountingPostingContext.local(
+-                    sourceType = "RECEIVABLE_COLLECTION",
+-                    sourceId = collectionId,
+-                    suffix = "collect",
+-                    actorId = actor.id,
+-                    correlationId = "receivable_collection:$collectionId",
+-                ),
++            audit.appendAuthorized(
++                authorizer,"COLLECT","RECEIVABLE",current.id,
++                "وصول ${valid.amountRial} ریال؛ مانده=$outstanding",now,valid.businessEpochDay,
++                correlationId="receivable_collection:${valid.commandId}", referenceType="TREASURY_TRANSACTION", referenceId=current.id,
+             )
+-            audit.appendAuthorized(authorizer,"COLLECT","RECEIVABLE",current.id,"وصول ${valid.amountRial} ریال؛ مانده=$outstanding",now,valid.businessEpochDay,correlationId="receivable_collection:$collectionId")
+             collectionId
+         }
+     }
+@@ -130,37 +251,29 @@ class LocalReceivableService(
+             val collection = dao.collection(valid.collectionId) ?: error("وصول مطالبات پیدا نشد.")
+             if (collection.reversedAtEpochMillis != null) return@withTransaction
+             val receivable = dao.receivable(collection.receivableId) ?: error("مطالبه مرتبط پیدا نشد.")
+-            val originalJournal = database.accountingDao().entryBySource("RECEIVABLE_COLLECTION", collection.id)
+-                ?: error("سند حسابداری وصول پیدا نشد.")
+-            val originalLines = database.accountingDao().linesByEntry(originalJournal.id)
+-            require(originalLines.size >= 2) { "آرتیکل‌های سند وصول کامل نیستند." }
+-            val reversal = accounting.postBalanced(
+-                BalancedJournalDraft(
+-                    entryEpochDay = valid.reversalEpochDay,
+-                    description = "برگشت وصول مطالبات: ${valid.reason}",
+-                    sourceType = "RECEIVABLE_COLLECTION_REVERSAL",
+-                    sourceId = collection.id,
+-                    accountingScope = AccountingScope.fromStoredValue(originalJournal.accountingScope),
+-                    branchId = originalJournal.branchId,
+-                    lines = originalLines.map { line ->
+-                        JournalLineDraft(
+-                            accountCode = line.accountCode,
+-                            debit = MoneyRial.of(line.creditRial),
+-                            credit = MoneyRial.of(line.debitRial),
+-                            memo = valid.reason,
+-                        )
+-                    },
+-                ),
+-                AccountingPostingContext.local(
+-                    sourceType = "RECEIVABLE_COLLECTION_REVERSAL",
+-                    sourceId = collection.id,
+-                    suffix = "reverse:${originalJournal.id}",
+-                    actorId = actor.id,
+-                    correlationId = "receivable_collection_reversal:${collection.id}",
+-                    reversalOfEntryId = originalJournal.id,
+-                ),
+-                entryNoFactory = { id -> "RCVR-$id" },
+-            )
++            val treasuryContext = treasuryReader.reversalContext(collection.globalId)
++            val reversalJournalId = if (treasuryContext != null) {
++                val reversalCommandId = GlobalId.new()
++                val reversal = treasury.reverse(
++                    TreasuryReversalCommand(
++                        commandId = reversalCommandId,
++                        originalTransactionId = treasuryContext.transactionId,
++                        originalJournalEntryId = requireNotNull(treasuryContext.journalEntryId) { "سند حسابداری وصول خزانه پیدا نشد." },
++                        businessEpochDay = valid.reversalEpochDay,
++                        correlationId = CorrelationId.forCommand("receivable_collection_reversal", reversalCommandId),
++                        sourceType = "RECEIVABLE_COLLECTION_REVERSAL",
++                        sourceId = receivable.id,
++                        reason = valid.reason,
++                        accountId = treasuryContext.accountId,
++                        channel = treasuryContext.channel,
++                        amount = MoneyRial.of(collection.amountRial),
++                    ),
++                )
++                requireNotNull(reversal.journalEntryId)
++            } else {
++                reverseLegacyCollectionAccounting(collection.id, valid, actor.id)
++            }
++
+             val ledgerReference = receivableLedgerReference(receivable.id)
+             database.customerReceivableDao().insertLedger(
+                 CustomerReceivableLedgerEntity(
+@@ -181,11 +294,11 @@ class LocalReceivableService(
+             require(newPaid >= 0) { "مانده وصول سند دریافتنی نامعتبر شد." }
+             val outstanding = SignedLongMath.subtract(receivable.originalAmountRial, newPaid)
+             val status = if (newPaid == 0L) "OPEN" else "PARTIALLY_PAID"
+-            check(dao.updateReceivableBalance(receivable.id, newPaid, outstanding, status, now) == 1)
++            check(dao.updateReceivableBalance(receivable.id, receivable.paidAmountRial, receivable.outstandingAmountRial, newPaid, outstanding, status, now) == 1)
+             check(database.customerReceivableDao().balanceByReference(receivable.partyId, ledgerReference) == outstanding) {
+                 "مانده سند دریافتنی با دفتر دریافتنی یکسان نیست."
+             }
+-            check(dao.markCollectionReversed(collection.id, now, valid.reason, reversal.entryId) == 1)
++            check(dao.markCollectionReversed(collection.id, now, valid.reason, reversalJournalId) == 1)
+             audit.appendAuthorized(
+                 authorizer,"REVERSE_COLLECTION","RECEIVABLE",receivable.id,
+                 "برگشت وصول ${collection.amountRial} ریال؛ مانده=$outstanding",now,valid.reversalEpochDay,
+@@ -198,8 +311,6 @@ class LocalReceivableService(
+         authorizer.require(Permission.RECEIVABLE_VIEW)
+         require(branchId > 0 && todayEpochDay > 0)
+         branchResolver.requireExisting(branchId)
+-        // Branch aging contains only facts with trustworthy branch attribution. Legacy rows are
+-        // preserved by the canonical allocator as unassigned rather than being fabricated as branch 1.
+         val lots = CanonicalReceivableReadModel(database).openLotsForBranch(branchId)
+         var current=0L; var d1=0L; var d8=0L; var d31=0L; var d61=0L; var d90=0L
+         lots.forEach { lot ->
+@@ -216,5 +327,58 @@ class LocalReceivableService(
+         return ReceivableAging(current,d1,d8,d31,d61,d90)
+     }
+ 
++    private suspend fun verifyCollectionReplay(existing: ReceivableCollectionEntity, valid: ReceivableCollectionDraft) {
++        require(existing.receivableId == valid.receivableId && existing.amountRial == valid.amountRial) { "receivable_collection_idempotency_conflict" }
++        require(existing.method == valid.method.name && existing.reference == valid.reference && existing.businessEpochDay == valid.businessEpochDay) { "receivable_collection_idempotency_conflict" }
++        val treasuryContext = treasuryReader.reversalContext(existing.globalId) ?: error("receivable_collection_treasury_integrity_missing")
++        require(treasuryContext.sourceId == existing.receivableId && treasuryContext.amountRial == existing.amountRial) { "receivable_collection_treasury_integrity_mismatch" }
++        require(treasuryContext.accountId.value == valid.treasuryAccountId) { "receivable_collection_idempotency_conflict" }
++    }
++
++    private suspend fun reverseLegacyCollectionAccounting(
++        collectionId: Long,
++        valid: ReceivableCollectionReversalDraft,
++        actorId: Long,
++    ): Long {
++        val originalJournal = database.accountingDao().entryBySource("RECEIVABLE_COLLECTION", collectionId)
++            ?: error("سند حسابداری وصول تاریخی پیدا نشد.")
++        val originalLines = database.accountingDao().linesByEntry(originalJournal.id)
++        require(originalLines.size >= 2) { "آرتیکل‌های سند وصول تاریخی کامل نیستند." }
++        val reversal = legacyAccounting.postBalanced(
++            BalancedJournalDraft(
++                entryEpochDay = valid.reversalEpochDay,
++                description = "برگشت وصول تاریخی: ${valid.reason}",
++                sourceType = "RECEIVABLE_COLLECTION_REVERSAL",
++                sourceId = collectionId,
++                accountingScope = AccountingScope.fromStoredValue(originalJournal.accountingScope),
++                branchId = originalJournal.branchId,
++                lines = originalLines.map { line ->
++                    JournalLineDraft(
++                        accountCode = line.accountCode,
++                        debit = MoneyRial.of(line.creditRial),
++                        credit = MoneyRial.of(line.debitRial),
++                        memo = valid.reason,
++                    )
++                },
++            ),
++            AccountingPostingContext.local(
++                sourceType = "RECEIVABLE_COLLECTION_REVERSAL",
++                sourceId = collectionId,
++                suffix = "legacy-reverse:${originalJournal.id}",
++                actorId = actorId,
++                correlationId = "receivable_collection_legacy_reversal:$collectionId",
++                reversalOfEntryId = originalJournal.id,
++            ),
++            entryNoFactory = { id -> "RCVR-$id" },
++        )
++        return reversal.entryId
++    }
++
+     private fun receivableLedgerReference(receivableId: Long): String = "RECEIVABLE:$receivableId"
++
++    private fun ir.restaurant.management.domain.receivables.ReceivableCollectionMethod.toTreasuryChannel(): TreasuryChannel = when (this) {
++        ir.restaurant.management.domain.receivables.ReceivableCollectionMethod.CASH -> TreasuryChannel.CASH
++        ir.restaurant.management.domain.receivables.ReceivableCollectionMethod.CARD -> TreasuryChannel.CARD
++        ir.restaurant.management.domain.receivables.ReceivableCollectionMethod.BANK_TRANSFER -> TreasuryChannel.BANK
++    }
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/domain/receivables/ReceivableModels.kt b/app/src/main/java/ir/restaurant/management/domain/receivables/ReceivableModels.kt
+index 5f34fd8..0a025f7 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/receivables/ReceivableModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/receivables/ReceivableModels.kt
+@@ -1,8 +1,15 @@
+ package ir.restaurant.management.domain.receivables
+ 
++import ir.restaurant.management.core.GlobalId
++import ir.restaurant.management.domain.treasury.TreasuryAccountId
++
+ enum class ReceivableType { PERSONAL, CORPORATE }
+ enum class ReceivableStatus { OPEN, PARTIALLY_PAID, PAID, VOIDED }
+-enum class ReceivableCollectionMethod { CASH, CARD, BANK_TRANSFER }
++enum class ReceivableCollectionMethod(val canonicalTreasuryAccountId: String) {
++    CASH("cash_main"),
++    CARD("card_terminal"),
++    BANK_TRANSFER("bank_main"),
++}
+ 
+ data class ReceivableRecord(
+     val id: Long,
+@@ -26,16 +33,47 @@ data class ReceivableCollectionDraft(
+     val receivableId: Long,
+     val amountRial: Long,
+     val method: ReceivableCollectionMethod,
+-    val cashboxId: Long? = null,
+-    val bankAccountId: Long? = null,
+     val reference: String? = null,
+     val businessEpochDay: Long,
++    val commandId: String = GlobalId.new().value,
++    val treasuryAccountId: String = method.canonicalTreasuryAccountId,
+ ) {
+-    fun validated(outstandingRial: Long): ReceivableCollectionDraft {
++    fun normalized(): ReceivableCollectionDraft {
++        val normalizedCommandId = GlobalId.parse(commandId).value
++        val normalizedAccountId = TreasuryAccountId.parse(treasuryAccountId).value
+         require(receivableId > 0 && businessEpochDay > 0) { "دریافتنی معتبر نیست." }
+         require(amountRial > 0) { "مبلغ وصول باید بیشتر از صفر باشد." }
+-        require(amountRial <= outstandingRial) { "مبلغ وصول از مانده دریافتنی بیشتر است." }
+-        return copy(reference = reference?.trim()?.takeIf(String::isNotEmpty))
++        require(normalizedAccountId == method.canonicalTreasuryAccountId) { "حساب خزانه با روش وصول سازگار نیست." }
++        return copy(
++            commandId = normalizedCommandId,
++            treasuryAccountId = normalizedAccountId,
++            reference = reference?.trim()?.takeIf(String::isNotEmpty),
++        )
++    }
++
++    fun validated(outstandingRial: Long): ReceivableCollectionDraft {
++        val normalized = normalized()
++        require(normalized.amountRial <= outstandingRial) { "مبلغ وصول از مانده دریافتنی بیشتر است." }
++        return normalized
++    }
++}
++
++data class DailySalesReceivableOriginDraft(
++    val commandId: String,
++    val branchId: Long,
++    val partyId: Long,
++    val type: ReceivableType,
++    val dailySalesId: Long,
++    val amountRial: Long,
++    val issueEpochDay: Long,
++    val dueEpochDay: Long?,
++) {
++    fun validated(): DailySalesReceivableOriginDraft {
++        GlobalId.parse(commandId)
++        require(branchId > 0 && partyId > 0 && dailySalesId > 0 && issueEpochDay > 0) { "منشأ دریافتنی فروش معتبر نیست." }
++        require(amountRial > 0) { "مبلغ دریافتنی باید بیشتر از صفر باشد." }
++        require(dueEpochDay == null || dueEpochDay >= issueEpochDay) { "سررسید دریافتنی نمی‌تواند قبل از تاریخ فروش باشد." }
++        return this
+     }
+ }
+ 
+@@ -63,6 +101,8 @@ data class ReceivableCollectionReversalDraft(
+ 
+ interface ReceivableService {
+     fun observeOpen(branchId: Long): kotlinx.coroutines.flow.Flow<List<ReceivableRecord>>
++    suspend fun createFromDailySales(draft: DailySalesReceivableOriginDraft): Long
++    suspend fun voidFromDailySales(dailySalesId: Long, reversalEpochDay: Long, reason: String)
+     suspend fun collect(draft: ReceivableCollectionDraft): Long
+     suspend fun reverseCollection(draft: ReceivableCollectionReversalDraft)
+     suspend fun aging(branchId: Long, todayEpochDay: Long): ReceivableAging
+diff --git a/app/src/test/java/ir/restaurant/management/phase2/ReceivableCollectionPolicyTest.kt b/app/src/test/java/ir/restaurant/management/phase2/ReceivableCollectionPolicyTest.kt
+index 9f55c98..403952c 100644
+--- a/app/src/test/java/ir/restaurant/management/phase2/ReceivableCollectionPolicyTest.kt
++++ b/app/src/test/java/ir/restaurant/management/phase2/ReceivableCollectionPolicyTest.kt
+@@ -2,6 +2,6 @@ package ir.restaurant.management.phase2
+ import ir.restaurant.management.domain.receivables.*
+ import kotlin.test.*
+ class ReceivableCollectionPolicyTest {
+- @Test fun partialCollectionAllowed() { val d=ReceivableCollectionDraft(1,10,ReceivableCollectionMethod.CASH,businessEpochDay=2).validated(30); assertEquals(10,d.amountRial) }
+- @Test fun overCollectionBlocked() { assertFailsWith<IllegalArgumentException>{ ReceivableCollectionDraft(1,25,ReceivableCollectionMethod.CASH,businessEpochDay=2).validated(20) } }
++ @Test fun partialCollectionAllowed() { val d=ReceivableCollectionDraft(receivableId=1, amountRial=10, method=ReceivableCollectionMethod.CASH, businessEpochDay=2).validated(30); assertEquals(10,d.amountRial) }
++ @Test fun overCollectionBlocked() { assertFailsWith<IllegalArgumentException>{ ReceivableCollectionDraft(receivableId=1, amountRial=25, method=ReceivableCollectionMethod.CASH, businessEpochDay=2).validated(20) } }
+ }

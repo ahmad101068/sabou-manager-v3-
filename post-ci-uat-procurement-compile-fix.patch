@@ -1,0 +1,35 @@
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt b/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt
+index a3046b4..b926a2e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/ProcurementDao.kt
+@@ -268,7 +268,8 @@ interface ProcurementDao {
+     @Query(
+         """
+         SELECT r.id, r.requestNo, r.department, r.requiredEpochDay, r.status,
+-               r.requestedBy, r.approvedBy,r.requiredApprovalLevel,r.completedApprovalLevel,r.firstApprovedBy,r.secondApprovedBy,r.committedBudgetId,r.committedBudgetRial,
++               r.requestedBy, r.approvedBy, r.note, r.createdAtEpochMillis,
++               r.requiredApprovalLevel,r.completedApprovalLevel,r.firstApprovedBy,r.secondApprovedBy,r.committedBudgetId,r.committedBudgetRial,
+                COUNT(rl.id) AS lineCount
+         FROM purchase_requisitions r
+         LEFT JOIN purchase_requisition_lines rl ON rl.requisitionId = r.id
+@@ -374,6 +375,8 @@ data class ProcurementRequisitionRow(
+     val status: String,
+     val requestedBy: String,
+     val approvedBy: String?,
++    val note: String,
++    val createdAtEpochMillis: Long,
+     val requiredApprovalLevel: Int,
+     val completedApprovalLevel: Int,
+     val firstApprovedBy: String?,
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt b/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt
+index 8bacf78..35aea06 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ProcurementControlUi.kt
+@@ -15,6 +15,7 @@ import androidx.compose.material3.Checkbox
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.OutlinedButton
+ import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Surface
+ import androidx.compose.material3.Text
+ import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable

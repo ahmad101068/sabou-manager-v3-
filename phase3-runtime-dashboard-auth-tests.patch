@@ -1,0 +1,123 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+index 0bbd2ab..e60656e 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+@@ -63,10 +63,14 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     @Test
+     fun ownerHome_hasFourPrimarySections_andNoAuditOrModuleDump() {
+         composeRule.onNodeWithTag("home_header").assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_kpi_summary").performScrollTo().assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_quick_actions").performScrollTo().assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_attention_center").performScrollTo().assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_kpi_sales").performScrollTo().assertIsDisplayed()
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_summary"))
++        composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_quick_actions"))
++        composeRule.onNodeWithTag("home_quick_actions").assertIsDisplayed()
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_attention_center"))
++        composeRule.onNodeWithTag("home_attention_center").assertIsDisplayed()
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_sales"))
++        composeRule.onNodeWithTag("home_kpi_sales").assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithText("فعالیت‌های اخیر").fetchSemanticsNodes().isEmpty())
+         assertTrue(composeRule.onAllNodesWithTag("module_AUDIT_LOG_امنیت و حسابرسی").fetchSemanticsNodes().isEmpty())
+         composeRule.onNodeWithTag("nav_control_hub").assertIsDisplayed()
+@@ -101,21 +105,23 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     @Test
+     fun cashierHome_filtersSensitiveKpisAndActionsBeforeRendering() {
+         switchToRoleUser(CASHIER_USERNAME, CASHIER_PIN, UserRole.CASHIER)
+-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_action_sale").fetchSemanticsNodes().isNotEmpty() }
+-        composeRule.onNodeWithTag("home_action_sale").performScrollTo().assertIsDisplayed()
+-        assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_summary"))
+         assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity").fetchSemanticsNodes().isEmpty())
+-        composeRule.onNodeWithTag("home_kpi_sales").performScrollTo().assertIsDisplayed()
++        composeRule.onNodeWithTag("home_kpi_sales").assertIsDisplayed()
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_action_sale"))
++        composeRule.onNodeWithTag("home_action_sale").assertIsDisplayed()
++        assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
+     }
+ 
+     @Test
+     fun inventoryHome_showsInventoryContext_withoutFinancialKpis() {
+         switchToRoleUser(INVENTORY_USERNAME, INVENTORY_PIN, UserRole.INVENTORY)
+-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_action_inventory").fetchSemanticsNodes().isNotEmpty() }
+-        composeRule.onNodeWithTag("home_kpi_summary").performScrollTo().assertIsDisplayed()
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_summary"))
++        composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
+         composeRule.onNodeWithText("کم‌موجودی").assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity").fetchSemanticsNodes().isEmpty())
+-        composeRule.onNodeWithTag("home_action_inventory").performScrollTo().assertIsDisplayed()
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_action_inventory"))
++        composeRule.onNodeWithTag("home_action_inventory").assertIsDisplayed()
+     }
+ 
+     @Test
+@@ -154,7 +160,8 @@ class DashboardNavigationSettingsUx2ComposeTest {
+         )
+         children.forEach { (moduleTag, title) ->
+             composeRule.onNodeWithTag("nav_control_hub").performClick()
+-            composeRule.onNodeWithTag(moduleTag).performScrollTo().performClick()
++            composeRule.onNodeWithTag("control_hub").performScrollToNode(hasTestTag(moduleTag))
++            composeRule.onNodeWithTag(moduleTag).performClick()
+             composeRule.onNodeWithText(title).assertIsDisplayed()
+             composeRule.onNodeWithTag("nav_control_hub").assertIsSelected()
+         }
+@@ -165,18 +172,22 @@ class DashboardNavigationSettingsUx2ComposeTest {
+         composeRule.onNodeWithTag("home_dashboard").assertIsDisplayed()
+ 
+         composeRule.onNodeWithTag("nav_finance_hub").performClick()
++        composeRule.onNodeWithTag("finance_hub").performScrollToNode(hasTestTag("module_SALES_فروش روزانه"))
+         composeRule.onNodeWithTag("module_SALES_فروش روزانه").performClick()
+         composeRule.onNodeWithText("ثبت فروش روزانه").assertIsDisplayed()
+         composeRule.onNodeWithTag("nav_finance_hub").assertIsSelected()
+ 
+         composeRule.onNodeWithTag("nav_finance_hub").performClick()
++        composeRule.onNodeWithTag("finance_hub").performScrollToNode(hasTestTag("module_CRM_مطالبات"))
+         composeRule.onNodeWithTag("module_CRM_مطالبات").performClick()
+         composeRule.onNodeWithText("طرف‌حساب‌ها و مطالبات").assertIsDisplayed()
+-        composeRule.onNodeWithTag("receivables_branch_selector").performScrollTo().assertIsDisplayed()
++        composeRule.onNodeWithTag("crm_list").performScrollToNode(hasTestTag("receivables_branch_selector"))
++        composeRule.onNodeWithTag("receivables_branch_selector").assertIsDisplayed()
+         composeRule.onNodeWithTag("nav_finance_hub").assertIsSelected()
+ 
+         composeRule.onNodeWithTag("nav_more").performClick()
+-        composeRule.onNodeWithTag("module_BRANCHES_شعب").performScrollTo().performClick()
++        composeRule.onNodeWithTag("more_hub").performScrollToNode(hasTestTag("module_BRANCHES_شعب"))
++        composeRule.onNodeWithTag("module_BRANCHES_شعب").performClick()
+         composeRule.onNodeWithTag("branch_management").assertIsDisplayed()
+         composeRule.onNodeWithTag("nav_more").assertIsSelected()
+     }
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
+index db1b3c1..29f8323 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
+@@ -50,15 +50,16 @@ class StartupAuthenticationBoundaryComposeTest {
+         val cashier = prepareCashierAndLogout()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
+ 
+-        composeRule.onNodeWithTag("security_switch_${cashier.id}").performScrollTo().performClick()
++        composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_switch_${cashier.id}"))
++        composeRule.onNodeWithTag("security_switch_${cashier.id}").performClick()
+         composeRule.onNodeWithTag("security_login_pin").performTextReplacement(CASHIER_PIN)
+         composeRule.onNodeWithTag("security_login_confirm").performClick()
+ 
+         composeRule.waitUntil(10_000) {
+             composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty()
+         }
+-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_action_sale").fetchSemanticsNodes().isNotEmpty() }
+-        composeRule.onNodeWithTag("home_action_sale").performScrollTo().assertIsDisplayed()
++        composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_action_sale"))
++        composeRule.onNodeWithTag("home_action_sale").assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
+ 
+         composeRule.onNodeWithTag("nav_more").performClick()
+@@ -76,7 +77,8 @@ class StartupAuthenticationBoundaryComposeTest {
+         val owner = prepareOwnerAndLogout()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
+ 
+-        composeRule.onNodeWithTag("security_switch_${owner.id}").performScrollTo().performClick()
++        composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_switch_${owner.id}"))
++        composeRule.onNodeWithTag("security_switch_${owner.id}").performClick()
+         composeRule.onNodeWithTag("security_login_pin").performTextReplacement(OWNER_PIN)
+         composeRule.onNodeWithTag("security_login_confirm").performClick()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() }

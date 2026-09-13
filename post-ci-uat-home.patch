@@ -1,0 +1,311 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+index 202726c..9980dda 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
+ import androidx.compose.ui.test.onAllNodesWithText
+ import androidx.compose.ui.test.onNodeWithTag
+ import androidx.compose.ui.test.onNodeWithText
++import androidx.compose.ui.test.onFirst
+ import androidx.compose.ui.test.performClick
+ import androidx.compose.ui.test.performScrollTo
+ import androidx.compose.ui.test.performScrollToNode
+@@ -62,6 +63,7 @@ class DashboardNavigationSettingsUx2ComposeTest {
+ 
+     @Test
+     fun ownerHome_hasFourPrimarySections_andNoAuditOrModuleDump() {
++        selectHomeBranchIfRequired()
+         composeRule.onNodeWithTag("home_header").assertIsDisplayed()
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_section"))
+         composeRule.waitUntil(10_000) {
+@@ -82,6 +84,18 @@ class DashboardNavigationSettingsUx2ComposeTest {
+         composeRule.onNodeWithTag("nav_more").assertIsDisplayed()
+     }
+ 
++    @Test
++    fun homeRequiresExplicitBranchBeforeCanonicalManagementKpis() {
++        composeRule.onNodeWithTag("home_no_branch_state").assertIsDisplayed()
++        assertTrue(composeRule.onAllNodesWithTag("home_management_overview").fetchSemanticsNodes().isEmpty())
++        val choices = composeRule.onAllNodesWithTag("home_choose_branch").fetchSemanticsNodes()
++        if (choices.isNotEmpty()) {
++            composeRule.onAllNodesWithTag("home_choose_branch").onFirst().performClick()
++            composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_revenue_7d_chart").fetchSemanticsNodes().isNotEmpty() }
++            composeRule.onNodeWithTag("home_revenue_7d_chart").assertIsDisplayed()
++        }
++    }
++
+     @Test
+     fun morePage_groupsAuthorizedModules_andTopLevelNavigationReturnsHome() {
+         composeRule.onNodeWithTag("nav_more").performClick()
+@@ -108,6 +122,7 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     @Test
+     fun cashierHome_filtersSensitiveKpisAndActionsBeforeRendering() {
+         switchToRoleUser(CASHIER_USERNAME, CASHIER_PIN, UserRole.CASHIER)
++        selectHomeBranchIfRequired()
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_section"))
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_kpi_sales", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+         composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
+@@ -121,6 +136,7 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     @Test
+     fun inventoryHome_showsInventoryContext_withoutFinancialKpis() {
+         switchToRoleUser(INVENTORY_USERNAME, INVENTORY_PIN, UserRole.INVENTORY)
++        selectHomeBranchIfRequired()
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_section"))
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_kpi_low_stock", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+         composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
+@@ -198,6 +214,13 @@ class DashboardNavigationSettingsUx2ComposeTest {
+         composeRule.onNodeWithTag("nav_more").assertIsSelected()
+     }
+ 
++    private fun selectHomeBranchIfRequired() {
++        if (composeRule.onAllNodesWithTag("home_no_branch_state").fetchSemanticsNodes().isEmpty()) return
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_choose_branch").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.onAllNodesWithTag("home_choose_branch").onFirst().performClick()
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_kpi_section").fetchSemanticsNodes().isNotEmpty() }
++    }
++
+     private fun switchToRoleUser(username: String, pin: String, role: UserRole) {
+         val target = runBlocking {
+             val security = app.container.securityRepository
+diff --git a/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt b/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt
+index e7f8844..c4f6732 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt
+@@ -1,6 +1,7 @@
+ package ir.restaurant.management.ui
+ 
+ import androidx.compose.foundation.BorderStroke
++import androidx.compose.foundation.Canvas
+ import androidx.compose.foundation.background
+ import androidx.compose.foundation.clickable
+ import androidx.compose.foundation.layout.Arrangement
+@@ -121,12 +122,17 @@ internal fun DashboardScreen(
+                     onWarehouse = onWarehouse,
+                 )
+             }
+-            item {
+-                Box(Modifier.fillMaxWidth().testTag("home_kpi_section")) {
+-                    SalesHeroCard(home, managementOverview, onOpen)
++            if (state.selectedBranchId == null) {
++                item { HomeBranchRequiredState(state, onBranchSelected) }
++            } else {
++                item {
++                    Box(Modifier.fillMaxWidth().testTag("home_kpi_section")) {
++                        SalesHeroCard(home, managementOverview, onOpen)
++                    }
+                 }
++                item { HomeRevenueTrendCard(managementOverview) }
++                item { HomeManagementOverview(managementOverview, onOpen) }
+             }
+-            item { HomeManagementOverview(managementOverview, onOpen) }
+             if (windowClass == ErpWindowClass.COMPACT) {
+                 item { HomeAttentionCenter(home.alerts, home.partialErrors, onOpen) }
+                 item { HomeQuickActions(home.quickActions, onOpen) }
+@@ -267,6 +273,103 @@ private fun DashboardContextFilters(
+     }
+ }
+ 
++@Composable
++private fun HomeBranchRequiredState(
++    state: DashboardSnapshot,
++    onBranchSelected: (Long?) -> Unit,
++) {
++    Surface(
++        modifier = Modifier.fillMaxWidth().testTag("home_no_branch_state"),
++        shape = RoundedCornerShape(24.dp),
++        color = MaterialTheme.colorScheme.surface,
++        border = BorderStroke(1.dp, ErpPalette.Border),
++        shadowElevation = 1.dp,
++    ) {
++        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
++            Text("انتخاب شعبه", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
++            Text(
++                if (state.availableBranches.isEmpty()) "هنوز شعبه فعالی تعریف نشده است."
++                else "برای مشاهده شاخص‌های مدیریتی، ابتدا یک شعبه فعال انتخاب کنید.",
++                color = ErpPalette.Muted,
++            )
++            state.availableBranches.take(6).forEach { branch ->
++                Button(
++                    onClick = { onBranchSelected(branch.id) },
++                    modifier = Modifier.fillMaxWidth().testTag("home_choose_branch"),
++                ) { Text(branch.name) }
++            }
++        }
++    }
++}
++
++@Composable
++private fun RevenueSparkline(points: List<HomeRevenueTrendPoint>, modifier: Modifier = Modifier) {
++    if (points.size < 2) { Box(modifier); return }
++    val max = points.maxOf { it.revenueRial }
++    val min = points.minOf { it.revenueRial }
++    val range = (max - min).coerceAtLeast(1L)
++    Canvas(modifier) {
++        val step = size.width / (points.size - 1).coerceAtLeast(1)
++        points.zipWithNext().forEachIndexed { index, pair ->
++            val y1 = size.height - ((pair.first.revenueRial - min).toFloat() / range.toFloat()) * size.height
++            val y2 = size.height - ((pair.second.revenueRial - min).toFloat() / range.toFloat()) * size.height
++            drawLine(
++                color = Color.White.copy(alpha = .92f),
++                start = androidx.compose.ui.geometry.Offset(index * step, y1),
++                end = androidx.compose.ui.geometry.Offset((index + 1) * step, y2),
++                strokeWidth = 4f,
++            )
++        }
++    }
++}
++
++@Composable
++private fun HomeRevenueTrendCard(overview: HomeManagementOverviewUiState) {
++    Surface(
++        modifier = Modifier.fillMaxWidth().testTag("home_revenue_7d_chart"),
++        shape = RoundedCornerShape(22.dp),
++        color = MaterialTheme.colorScheme.surface,
++        border = BorderStroke(1.dp, ErpPalette.Border),
++    ) {
++        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
++            Text("روند درآمد ۷ روز اخیر", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
++            when {
++                overview.loading -> Text("در حال دریافت داده واقعی…", color = ErpPalette.Muted)
++                overview.revenueTrend.size < 2 -> Text(
++                    overview.unavailableMessage ?: "داده کافی برای رسم نمودار وجود ندارد.",
++                    color = ErpPalette.Muted,
++                    modifier = Modifier.testTag("home_revenue_chart_empty"),
++                )
++                else -> {
++                    val points = overview.revenueTrend
++                    val max = points.maxOf { it.revenueRial }
++                    val min = points.minOf { it.revenueRial }
++                    val range = (max - min).coerceAtLeast(1L)
++                    Canvas(Modifier.fillMaxWidth().height(150.dp).testTag("home_revenue_chart_canvas")) {
++                        val step = size.width / (points.size - 1).coerceAtLeast(1)
++                        repeat(3) { grid ->
++                            val y = size.height * grid / 2f
++                            drawLine(ErpPalette.Border, androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(size.width, y), 1f)
++                        }
++                        points.zipWithNext().forEachIndexed { index, pair ->
++                            val y1 = size.height - ((pair.first.revenueRial - min).toFloat() / range.toFloat()) * size.height
++                            val y2 = size.height - ((pair.second.revenueRial - min).toFloat() / range.toFloat()) * size.height
++                            drawLine(ErpPalette.Teal, androidx.compose.ui.geometry.Offset(index * step, y1), androidx.compose.ui.geometry.Offset((index + 1) * step, y2), 5f)
++                        }
++                    }
++                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
++                        points.forEach { point ->
++                            val date = epochDayToPersian(point.businessEpochDay)
++                            Text(toPersianDigits("${date.month}/${date.day}"), style = MaterialTheme.typography.labelSmall, color = ErpPalette.Muted)
++                        }
++                    }
++                    Text("کمینه ${formatMoney(min)} · بیشینه ${formatMoney(max)}", style = MaterialTheme.typography.labelMedium, color = ErpPalette.Muted)
++                }
++            }
++        }
++    }
++}
++
+ @Composable
+ private fun SalesHeroCard(
+     home: DashboardUiState,
+@@ -324,8 +427,8 @@ private fun SalesHeroCard(
+                         )
+                     }
+                 }
+-                TinyTrendChart(
+-                    direction = hero.trend.direction,
++                RevenueSparkline(
++                    points = managementOverview.revenueTrend,
+                     modifier = Modifier.size(width = 108.dp, height = 62.dp).padding(top = 10.dp),
+                 )
+             }
+@@ -365,14 +468,14 @@ private fun HomeManagementOverview(
+         else -> null
+     }
+     val metrics = listOf(
+-        HomeManagementMetric("Revenue", readModel?.revenueRial?.let(::formatMoney), AppScreen.SALES),
+-        HomeManagementMetric("Gross Profit", readModel?.grossProfitRial?.let(::formatMoney), AppScreen.REPORTS),
+-        HomeManagementMetric("Food Cost %", readModel?.foodCostBasisPoints?.let(::formatPercentBasisPoints), AppScreen.DAILY_BRIEF),
+-        HomeManagementMetric("Estimated Operating Profit", readModel?.estimatedOperatingProfitRial?.let(::formatMoney), AppScreen.DAILY_BRIEF),
+-        HomeManagementMetric("New Receivables", readModel?.newReceivablesRial?.let(::formatMoney), AppScreen.CRM),
+-        HomeManagementMetric("Collections", readModel?.collectionsRial?.let(::formatMoney), AppScreen.CRM),
+-        HomeManagementMetric("Critical Issues", readModel?.criticalIssues?.let { toPersianDigits(it.toString()) }, AppScreen.MANAGEMENT_ISSUES),
+-        HomeManagementMetric("Overdue Tasks", readModel?.overdueTasks?.let { toPersianDigits(it.toString()) }, AppScreen.MANAGEMENT_TASKS),
++        HomeManagementMetric("درآمد", readModel?.revenueRial?.let(::formatMoney), AppScreen.SALES),
++        HomeManagementMetric("سود ناخالص", readModel?.grossProfitRial?.let(::formatMoney), AppScreen.REPORTS),
++        HomeManagementMetric("درصد بهای مواد غذایی", readModel?.foodCostBasisPoints?.let(::formatPercentBasisPoints), AppScreen.DAILY_BRIEF),
++        HomeManagementMetric("سود عملیاتی تخمینی", readModel?.estimatedOperatingProfitRial?.let(::formatMoney), AppScreen.DAILY_BRIEF),
++        HomeManagementMetric("مطالبات جدید", readModel?.newReceivablesRial?.let(::formatMoney), AppScreen.CRM),
++        HomeManagementMetric("وصول مطالبات", readModel?.collectionsRial?.let(::formatMoney), AppScreen.CRM),
++        HomeManagementMetric("مسائل بحرانی", readModel?.criticalIssues?.let { toPersianDigits(it.toString()) }, AppScreen.MANAGEMENT_ISSUES),
++        HomeManagementMetric("وظایف معوق", readModel?.overdueTasks?.let { toPersianDigits(it.toString()) }, AppScreen.MANAGEMENT_TASKS),
+     )
+     Column(Modifier.fillMaxWidth().testTag("home_management_overview"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+         Text("نمای مدیریتی", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black, color = ErpPalette.Ink)
+diff --git a/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
+index 9b1bd7f..3cd9271 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
+@@ -113,13 +113,12 @@ class DashboardViewModel(
+         managementRefresh,
+     ) { selected, snapshot, _ ->
+         val effectiveBranchId = selected.branchId
+-            ?: snapshot.availableBranches.singleOrNull { it.isActive }?.id
+         when {
+             selected.period != DashboardPeriod.TODAY -> HomeManagementOverviewRequest.Unavailable(
+                 "شاخص‌های مدیریتی Canonical برای Home در نمای امروز ارائه می‌شوند.",
+             )
+             effectiveBranchId == null -> HomeManagementOverviewRequest.Unavailable(
+-                "برای نمایش شاخص‌های مدیریتی واقعی، یک شعبه را انتخاب کنید.",
++                "برای مشاهده شاخص‌های مدیریتی، ابتدا یک شعبه فعال انتخاب کنید.",
+             )
+             else -> HomeManagementOverviewRequest.Load(effectiveBranchId, selected.toEpochDay)
+         }
+@@ -131,19 +130,23 @@ class DashboardViewModel(
+             is HomeManagementOverviewRequest.Load -> flow {
+                 emit(HomeManagementOverviewUiState(loading = true))
+                 emit(
+-                    runCatching { dailyBriefService.compose(request.branchId, request.businessEpochDay) }
+-                        .fold(
+-                            onSuccess = { brief ->
+-                                HomeManagementOverviewUiState(
+-                                    readModel = DailyManagementKpiReadModelFactory.from(brief),
+-                                )
++                    runCatching {
++                        val readModels = (6L downTo 0L).map { offset ->
++                            DailyManagementKpiReadModelFactory.from(
++                                dailyBriefService.compose(request.branchId, request.businessEpochDay - offset),
++                            )
++                        }
++                        HomeManagementOverviewUiState(
++                            readModel = readModels.last(),
++                            revenueTrend = readModels.map {
++                                HomeRevenueTrendPoint(it.businessEpochDay, it.revenueRial)
+                             },
+-                            onFailure = {
+-                                HomeManagementOverviewUiState(
+-                                    unavailableMessage = "داده کافی موجود نیست یا دسترسی شاخص‌های مدیریتی فراهم نیست.",
+-                                )
+-                            },
+-                        ),
++                        )
++                    }.getOrElse {
++                        HomeManagementOverviewUiState(
++                            unavailableMessage = "داده کافی موجود نیست یا دسترسی شاخص‌های مدیریتی فراهم نیست.",
++                        )
++                    },
+                 )
+             }
+         }
+@@ -249,8 +252,14 @@ class DashboardViewModel(
+     }
+ }
+ 
++data class HomeRevenueTrendPoint(
++    val businessEpochDay: Long,
++    val revenueRial: Long,
++)
++
+ data class HomeManagementOverviewUiState(
+     val loading: Boolean = false,
+     val readModel: DailyManagementKpiReadModel? = null,
++    val revenueTrend: List<HomeRevenueTrendPoint> = emptyList(),
+     val unavailableMessage: String? = null,
+ )

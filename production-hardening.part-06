@@ -1,0 +1,134 @@
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock, authorizer)
+     private val branchResolver = CanonicalBranchResolver(database)
+ 
+     override suspend fun search(query: InventoryWasteSearch): List<InventoryWasteDocument> {
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+index d1fd831..bb8ac01 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalOperationsRepository.kt
+@@ -358,7 +358,7 @@ class LocalOperationsRepository(
+                 current.stockMicros != valid.countedQuantityMicros ||
+                 current.inventoryValueRial != valid.countedValueRial
+             ) {
+-                LocalInventoryCommandEngine(database, clock = { now }).adjustToCount(
++                LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).adjustToCount(
+                     itemId = current.id,
+                     countedQuantityMicros = valid.countedQuantityMicros,
+                     countedValueRial = valid.countedValueRial,
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
+index 1253fa5..1f5e04e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
+@@ -46,7 +46,7 @@ class LocalPurchaseRepository(
+     private val syncRecorder: SyncRecorder? = null,
+     private val authorizer: SessionAuthorizer,
+ ) : PurchaseRepository {
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock)
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock, authorizer = authorizer)
+     private val accountingPosting = LocalAccountingPostingEngine(database, clock = clock)
+     private val auditWriter = LocalAuditEventWriter(database)
+     private val numbering = LocalDocumentNumberAllocator(database, clock)
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/ProcurementReceivingService.kt b/app/src/main/java/ir/restaurant/management/data/repository/ProcurementReceivingService.kt
+index cc77321..2e8822d 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/ProcurementReceivingService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/ProcurementReceivingService.kt
+@@ -38,7 +38,7 @@ internal class ProcurementReceivingService(
+     private val clock: () -> Long,
+     private val syncRecorder: SyncRecorder?,
+ ) {
+-    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock)
++    private val inventoryCommands = LocalInventoryCommandEngine(database, clock = clock, authorizer = authorizer)
+     private val numbering = LocalDocumentNumberAllocator(database, clock)
+     private val auditWriter = LocalAuditEventWriter(database)
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+index 3963d83..1fa7f88 100644
+--- a/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
++++ b/app/src/main/java/ir/restaurant/management/data/security/SessionAuthorizer.kt
+@@ -1,6 +1,8 @@
+ package ir.restaurant.management.data.security
+ 
++import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.AuditLogEntity
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.BusinessRuleViolation
+ import ir.restaurant.management.domain.security.AuthorizationService
+@@ -39,7 +41,23 @@ class SessionAuthorizer(private val database: AppDatabase) : AuthorizationServic
+     override suspend fun require(permission: Permission): AuthorizedActor {
+         val actor = actorIdentity()
+         val role = actor.role
+-        if (!role.allows(permission)) throw AccessDeniedException(permission)
++        if (!role.allows(permission)) {
++            database.auditLogDao().insert(
++                AuditLogEntity(
++                    action = "ACCESS_DENIED",
++                    entityType = "SECURITY",
++                    entityId = actor.id,
++                    description = "رد دسترسی به مجوز ${permission.name}",
++                    actor = actor.displayName,
++                    createdAtEpochMillis = System.currentTimeMillis(),
++                    globalId = GlobalId.new().value,
++                    actorId = actor.id,
++                    reason = "PERMISSION_DENIED:${permission.name}",
++                    correlationId = "security:denied:${actor.id}:${permission.name}:${System.nanoTime()}",
++                ),
++            )
++            throw AccessDeniedException(permission)
++        }
+         return actor
+     }
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt b/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
+index b7dd8a6..86c6b9c 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/operations/AlertModels.kt
+@@ -1,10 +1,24 @@
+ package ir.restaurant.management.domain.operations
+ 
+-import ir.restaurant.management.data.db.AppAlertEntity
+ import kotlinx.coroutines.flow.Flow
+ 
++data class AppAlert(
++    val id: Long,
++    val sourceType: String,
++    val sourceId: Long,
++    val title: String,
++    val message: String,
++    val severity: String,
++    val dueEpochDay: Long?,
++    val isRead: Boolean,
++    val isDismissed: Boolean,
++    val createdAtEpochMillis: Long,
++    val updatedAtEpochMillis: Long,
++    val status: String,
++)
++
+ interface AlertRepository {
+-    fun alerts(): Flow<List<AppAlertEntity>>
++    fun alerts(): Flow<List<AppAlert>>
+     suspend fun refresh(todayEpochDay: Long)
+     suspend fun markRead(id: Long)
+     suspend fun markActioned(id: Long)
+diff --git a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+index 701342f..b67818c 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/AlertViewModel.kt
+@@ -3,7 +3,7 @@ package ir.restaurant.management.ui
+ import androidx.lifecycle.ViewModel
+ import androidx.lifecycle.ViewModelProvider
+ import androidx.lifecycle.viewModelScope
+-import ir.restaurant.management.data.db.AppAlertEntity
++import ir.restaurant.management.domain.operations.AppAlert
+ import ir.restaurant.management.domain.operations.AlertRepository
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.SharingStarted
+@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.stateIn
+ import kotlinx.coroutines.launch
+ 
+ data class AlertUiState(
+-    val alerts: List<AppAlertEntity> = emptyList(),
++    val alerts: List<AppAlert> = emptyList(),
+     val message: String? = null,
+     val refreshing: Boolean = false,
+ )

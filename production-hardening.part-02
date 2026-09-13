@@ -1,0 +1,148 @@
+-        LocalInventoryCommandEngine(database, clock = { now }).receive(
++        LocalInventoryCommandEngine(database, clock = { now }, authorizer = authorizer).receive(
+             itemId = itemId,
+             quantityMicros = 1_000_000,
+             valueRial = 200_000,
+diff --git a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+index 132a81e..7637956 100644
+--- a/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
++++ b/app/src/main/java/ir/restaurant/management/AlertRefreshWorker.kt
+@@ -13,12 +13,15 @@ import androidx.core.app.NotificationManagerCompat
+ import androidx.work.CoroutineWorker
+ import androidx.work.WorkerParameters
+ import ir.restaurant.management.core.currentLocalEpochDay
++import ir.restaurant.management.domain.security.Permission
++import ir.restaurant.management.domain.security.UserRole
+ import kotlinx.coroutines.flow.first
+ 
+ class AlertRefreshWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+     override suspend fun doWork(): Result = runCatching {
+         val app = applicationContext as RestaurantManagementApplication
+-        if (app.container.securityRepository.currentUser.first() == null) return Result.success()
++        val currentUser = app.container.securityRepository.currentUser.first() ?: return Result.success()
++        if (!UserRole.fromStoredValue(currentUser.role).allows(Permission.ACCOUNTING)) return Result.success()
+         val repository = app.container.alertRepository
+         repository.refresh(currentLocalEpochDay())
+         val actionable = repository.alerts().first().count {
+diff --git a/app/src/main/java/ir/restaurant/management/data/AppContainer.kt b/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
+index 9c7a858..4a9bfe9 100644
+--- a/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
++++ b/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
+@@ -294,7 +294,7 @@ class AppContainer(context: Context) {
+     }
+ 
+     val inventoryCommandService: InventoryCommandService by lazy {
+-        LocalInventoryCommandEngine(database)
++        LocalInventoryCommandEngine(database, authorizer = authorizer)
+     }
+ 
+     val inventoryCountService: InventoryCountService by lazy {
+@@ -407,7 +407,7 @@ class AppContainer(context: Context) {
+     val syncRecorder by lazy { SyncRecorder(database, deviceId) }
+     val assetRepository: AssetRepository by lazy { LocalAssetRepository(database, syncRecorder = syncRecorder, authorizer = authorizer) }
+     val assetUseCases: AssetUseCases by lazy { AssetUseCases(assetRepository) }
+-    val alertRepository: AlertRepository by lazy { LocalAlertRepository(database) }
++    val alertRepository: AlertRepository by lazy { LocalAlertRepository(database, authorizer) }
+     val managementControlRepository: ManagementControlRepository by lazy {
+         LocalManagementControlRepository(
+             database,
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+index 2433d20..9aa3031 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+@@ -229,6 +229,8 @@ abstract class AppDatabase : RoomDatabase() {
+                 require(integrityResults.size == 1 && integrityResults.single().equals("ok", ignoreCase = true)) {
+                     "اعتبارسنجی SQLite نسخه موقت ناموفق بود."
+                 }
++                DatabaseHealthValidator.validateForeignKeys(sqlite)
++                DatabaseHealthValidator.validateStartup(sqlite)
+                 val schemaVersion = sqlite.query("PRAGMA user_version").use { cursor ->
+                     check(cursor.moveToFirst())
+                     cursor.getInt(0)
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/DatabaseHealthValidator.kt b/app/src/main/java/ir/restaurant/management/data/db/DatabaseHealthValidator.kt
+new file mode 100644
+index 0000000..cd726b2
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/data/db/DatabaseHealthValidator.kt
+@@ -0,0 +1,47 @@
++package ir.restaurant.management.data.db
++
++import androidx.sqlite.db.SupportSQLiteDatabase
++
++internal object DatabaseHealthValidator {
++    fun validateStartup(sqlite: SupportSQLiteDatabase) {
++        val quick = sqlite.query("PRAGMA quick_check").use { cursor ->
++            buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
++        }
++        check(quick.size == 1 && quick.single().equals("ok", ignoreCase = true)) {
++            "DATABASE_QUICK_CHECK_FAILED:${quick.joinToString("|")}"
++        }
++        val version = sqlite.query("PRAGMA user_version").use { cursor ->
++            check(cursor.moveToFirst())
++            cursor.getInt(0)
++        }
++        check(version == APP_DATABASE_SCHEMA_VERSION) {
++            "DATABASE_SCHEMA_VERSION_MISMATCH:$version/$APP_DATABASE_SCHEMA_VERSION"
++        }
++        validateRequiredGuards(sqlite)
++    }
++
++    fun validateForeignKeys(sqlite: SupportSQLiteDatabase) {
++        sqlite.query("PRAGMA foreign_key_check").use { cursor ->
++            check(!cursor.moveToFirst()) { "DATABASE_FOREIGN_KEY_CHECK_FAILED" }
++        }
++    }
++
++    private fun validateRequiredGuards(sqlite: SupportSQLiteDatabase) {
++        val required = setOf(
++            "prevent_closed_sales_day_insert",
++            "prevent_closed_accounting_insert",
++            "validate_journal_line_insert",
++            "trg_recipe_versions_no_update",
++            "trg_audit_logs_no_update",
++            "trg_stock_movements_no_update",
++        )
++        val existing = sqlite.query(
++            "SELECT name FROM sqlite_master WHERE type='trigger' AND name IN (${required.joinToString(",") { "'${it}'" }})",
++        ).use { cursor ->
++            buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) }
++        }
++        check(existing == required) {
++            "DATABASE_REQUIRED_GUARDS_MISSING:${(required - existing).sorted().joinToString(",")}"
++        }
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
+index 5e4c751..4141ff9 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
+@@ -114,6 +114,9 @@ interface CustomerReceivableDao {
+     @Query("SELECT * FROM customer_receivable_ledger WHERE customerId=:customerId ORDER BY businessEpochDay,id")
+     suspend fun ledger(customerId: Long): List<CustomerReceivableLedgerEntity>
+ 
++    @Query("SELECT * FROM customer_receivable_ledger WHERE customerId IN (:customerIds) ORDER BY customerId,businessEpochDay,id")
++    suspend fun ledgerForCustomers(customerIds: List<Long>): List<CustomerReceivableLedgerEntity>
++
+     @Query("SELECT COALESCE(SUM(debitRial-creditRial),0) FROM customer_receivable_ledger WHERE customerId=:customerId")
+     suspend fun balanceRial(customerId: Long): Long
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt
+index 71be33b..a267fe7 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt
+@@ -46,6 +46,8 @@ internal object AccountSeedCallback : RoomDatabase.Callback() {
+         installStockTransferGuards(db)
+         installHrPayrollGuards(db)
+         installSalesHistoryGuards(db)
++        DatabaseHealthValidator.validateStartup(db)
++        DatabaseHealthValidator.validateForeignKeys(db)
+     }
+ 
+     fun seedMissingAccounts(db: SupportSQLiteDatabase) {
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
+index a711521..7304a46 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
+@@ -2,34 +2,39 @@ package ir.restaurant.management.data.repository
+ 
+ import androidx.room.withTransaction

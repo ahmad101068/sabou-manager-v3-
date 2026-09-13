@@ -1,0 +1,1400 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/TreasuryV2IntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/TreasuryV2IntegrationTest.kt
+index 565dec2..eb76c33 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/TreasuryV2IntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/TreasuryV2IntegrationTest.kt
+@@ -8,8 +8,7 @@ import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.core.MoneyRial
+ import ir.restaurant.management.application.treasury.ReverseTreasuryTransactionUseCase
+ import ir.restaurant.management.data.db.AppDatabase
+-import ir.restaurant.management.data.db.PurchaseEntity
+-import ir.restaurant.management.data.db.SupplierEntity
++import ir.restaurant.management.data.db.BranchEntity
+ import ir.restaurant.management.data.security.SessionAuthorizer
+ import ir.restaurant.management.data.treasury.DefaultTreasuryAccountCatalog
+ import ir.restaurant.management.data.treasury.LocalTreasuryServiceV2
+@@ -17,9 +16,12 @@ import ir.restaurant.management.domain.operations.UserDraft
+ import ir.restaurant.management.domain.operations.UserRole
+ import ir.restaurant.management.domain.treasury.TreasuryAccountId
+ import ir.restaurant.management.domain.treasury.TreasuryChannel
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
+ import ir.restaurant.management.domain.treasury.TreasuryCommand
+ import ir.restaurant.management.domain.treasury.TreasuryDirection
+ import ir.restaurant.management.domain.treasury.TreasuryReversalCommand
++import ir.restaurant.management.domain.accounting.AccountingScope
++import ir.restaurant.management.domain.common.BusinessRuleViolation
+ import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.runBlocking
+ import org.junit.After
+@@ -39,6 +41,8 @@ class TreasuryV2IntegrationTest {
+     private lateinit var service: LocalTreasuryServiceV2
+     private val cash = TreasuryAccountId.parse("cash_main")
+     private val bank = TreasuryAccountId.parse("bank_main")
++    private val card = TreasuryAccountId.parse("card_terminal")
++    private val pettyCash = TreasuryAccountId.parse("petty_cash")
+     private var now = 10_000L
+ 
+     @Before
+@@ -68,7 +72,7 @@ class TreasuryV2IntegrationTest {
+             commandId = commandId,
+             businessEpochDay = 20_000L,
+             correlationId = CorrelationId.forCommand("treasury_receipt", commandId),
+-            sourceType = "OTHER_RECEIPT",
++            businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
+             sourceId = 71L,
+             reason = "دریافت تست یکپارچه",
+             accountId = cash,
+@@ -84,42 +88,70 @@ class TreasuryV2IntegrationTest {
+         assertEquals(first.id, replay.id)
+         assertEquals(1L, scalar("SELECT COUNT(*) FROM treasury_transactions WHERE commandId='${commandId.value}'"))
+         assertEquals(1L, scalar("SELECT COUNT(*) FROM treasury_ledger_entries WHERE transactionId='${commandId.value}'"))
+-        assertEquals(1L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='OTHER_RECEIPT' AND sourceId=71"))
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM journal_entries WHERE sourceType='OTHER_INCOME' AND sourceId=71"))
+         assertEquals(25_000L, service.observeBalance(cash).first())
+     }
+ 
+     @Test
+-    fun missingCustomerAfterAccountingPost_rollsBackEntireTreasuryCommand() = runBlocking {
++    fun receiptReplay_sameCommandIdWithDifferentAccount_failsIdempotencyConflict() = runBlocking {
+         val commandId = GlobalId.new()
+-        val beforeJournals = scalar("SELECT COUNT(*) FROM journal_entries")
+-        val beforeTransactions = scalar("SELECT COUNT(*) FROM treasury_transactions")
+-        val beforeLedger = scalar("SELECT COUNT(*) FROM treasury_ledger_entries")
+-        val beforeAudit = scalar("SELECT COUNT(*) FROM audit_logs")
++        service.execute(
++            TreasuryCommand.Receipt(
++                commandId = commandId,
++                businessEpochDay = 20_001L,
++                correlationId = CorrelationId.forCommand("treasury_replay_payload", commandId),
++                businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
++                sourceId = 701L,
++                reason = "دریافت برای آزمون تعارض بازپخش",
++                accountId = cash,
++                channel = TreasuryChannel.CASH,
++                amount = MoneyRial.of(8_000L),
++            ),
++        )
+ 
+         try {
+             service.execute(
+                 TreasuryCommand.Receipt(
+                     commandId = commandId,
+                     businessEpochDay = 20_001L,
+-                    correlationId = CorrelationId.forCommand("customer_receipt", commandId),
+-                    sourceType = "CUSTOMER_RECEIVABLE",
+-                    sourceId = 9_999_999L,
+-                    reason = "دریافت مشتری ناموجود برای آزمون rollback",
+-                    accountId = cash,
+-                    channel = TreasuryChannel.CASH,
+-                    amount = MoneyRial.of(11_000L),
++                    correlationId = CorrelationId.forCommand("treasury_replay_payload", commandId),
++                    businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
++                    sourceId = 701L,
++                    reason = "دریافت برای آزمون تعارض بازپخش",
++                    accountId = bank,
++                    channel = TreasuryChannel.BANK,
++                    amount = MoneyRial.of(8_000L),
+                 ),
+             )
+-            fail("نبود مشتری باید بعد از شروع عملیات باعث rollback کامل شود")
+-        } catch (_: Throwable) {
++            fail("بازپخش همان commandId با حساب متفاوت باید رد شود")
++        } catch (_: BusinessRuleViolation) {
++            Unit
++        }
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM treasury_transactions WHERE commandId='${commandId.value}'"))
++        assertEquals(8_000L, service.observeBalance(cash).first())
++        assertEquals(0L, service.observeBalance(bank).first())
++    }
++
++    @Test
++    fun moduleOwnedGenericReceiptAndUnknownPayment_failClosedBeforePosting() = runBlocking {
++        val beforeJournals = scalar("SELECT COUNT(*) FROM journal_entries")
++        val beforeTransactions = scalar("SELECT COUNT(*) FROM treasury_transactions")
++
++        try {
++            TreasuryBusinessIntent.fromExternalSource("CUSTOMER_RECEIVABLE", TreasuryDirection.RECEIPT)
++            fail("دریافت مستقیم دریافتنی باید فقط از مرز canonical AR مجاز باشد")
++        } catch (_: BusinessRuleViolation) {
++            Unit
++        }
++        try {
++            TreasuryBusinessIntent.fromExternalSource("UNKNOWN_PAYMENT", TreasuryDirection.PAYMENT)
++            fail("پرداخت با ماهیت اقتصادی نامشخص باید fail-closed باشد")
++        } catch (_: BusinessRuleViolation) {
+             Unit
+         }
+ 
+         assertEquals(beforeJournals, scalar("SELECT COUNT(*) FROM journal_entries"))
+         assertEquals(beforeTransactions, scalar("SELECT COUNT(*) FROM treasury_transactions"))
+-        assertEquals(beforeLedger, scalar("SELECT COUNT(*) FROM treasury_ledger_entries"))
+-        assertEquals(beforeAudit, scalar("SELECT COUNT(*) FROM audit_logs"))
+-        assertEquals(0L, service.observeBalance(cash).first())
+     }
+ 
+     @Test
+@@ -130,7 +162,7 @@ class TreasuryV2IntegrationTest {
+                 commandId = seedId,
+                 businessEpochDay = 20_002L,
+                 correlationId = CorrelationId.forCommand("treasury_seed", seedId),
+-                sourceType = "OTHER_RECEIPT",
++                businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
+                 sourceId = 72L,
+                 reason = "تأمین موجودی اولیه صندوق",
+                 accountId = cash,
+@@ -147,8 +179,7 @@ class TreasuryV2IntegrationTest {
+                 commandId = commandId,
+                 businessEpochDay = 20_003L,
+                 correlationId = CorrelationId.forCommand("treasury_transfer", commandId),
+-                sourceType = "INTERNAL_TRANSFER",
+-                sourceId = 73L,
++                                sourceId = 73L,
+                 reason = "انتقال صندوق به بانک",
+                 fromAccountId = cash,
+                 toAccountId = bank,
+@@ -178,8 +209,7 @@ class TreasuryV2IntegrationTest {
+                 commandId = shortageId,
+                 businessEpochDay = 20_006L,
+                 correlationId = CorrelationId.forCommand("cash_reconciliation", shortageId),
+-                sourceType = "CASH_RECONCILIATION",
+-                sourceId = 75L,
++                                sourceId = 75L,
+                 reason = "کسری شمارش صندوق",
+                 accountId = cash,
+                 expected = MoneyRial.of(50_000L),
+@@ -201,7 +231,6 @@ class TreasuryV2IntegrationTest {
+                 commandId = exactId,
+                 businessEpochDay = 20_006L,
+                 correlationId = CorrelationId.forCommand("bank_reconciliation", exactId),
+-                sourceType = "BANK_RECONCILIATION",
+                 sourceId = 76L,
+                 reason = "تطبیق کامل صورتحساب بانک",
+                 accountId = bank,
+@@ -215,69 +244,123 @@ class TreasuryV2IntegrationTest {
+     }
+ 
+     @Test
+-    fun purchasePayableSettlement_updatesOperationalPayable_andReversalRestoresIt() = runBlocking {
+-        val supplierId = database.supplierDao().insert(
+-            SupplierEntity(
+-                name = "تأمین‌کننده خزانه",
+-                createdAtEpochMillis = now++,
+-                updatedAtEpochMillis = now++,
++    fun bankToCardTransfer_postsDistinctMappedGlAccounts() = runBlocking {
++        val seedId = GlobalId.new()
++        service.execute(
++            TreasuryCommand.Receipt(
++                commandId = seedId,
++                businessEpochDay = 20_006L,
++                correlationId = CorrelationId.forCommand("bank_card_seed", seedId),
++                businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
++                sourceId = 77L,
++                reason = "تأمین حساب بانکی برای آزمون کارتخوان",
++                accountId = bank,
++                channel = TreasuryChannel.BANK,
++                amount = MoneyRial.of(50_000L),
+             ),
+         )
+-        val purchaseId = database.purchaseDao().insert(
+-            PurchaseEntity(
+-                invoiceNo = "PUR-TREASURY-001",
+-                supplierId = supplierId,
+-                purchaseEpochDay = 19_990L,
+-                dueEpochDay = 20_010L,
+-                totalRial = 100_000L,
+-                paidRial = 20_000L,
+-                paymentStatus = "PARTIAL",
+-                paymentMethod = null,
+-                reminderEnabled = true,
+-                reminderEpochDay = 20_010L,
+-                createdAtEpochMillis = now++,
++        val transferId = GlobalId.new()
++        val result = service.execute(
++            TreasuryCommand.InternalTransfer(
++                commandId = transferId,
++                businessEpochDay = 20_006L,
++                correlationId = CorrelationId.forCommand("bank_to_card", transferId),
++                sourceId = 78L,
++                reason = "انتقال بانک به کارتخوان",
++                fromAccountId = bank,
++                toAccountId = card,
++                amount = MoneyRial.of(12_000L),
+             ),
+         )
+-        val settlementId = GlobalId.new()
+-        val posted = service.execute(
+-            TreasuryCommand.Settlement(
+-                commandId = settlementId,
++        val journalId = requireNotNull(result.journalEntryId)
++        assertEquals(12_000L, scalar("SELECT debitRial FROM journal_lines WHERE entryId=$journalId AND accountCode='1104'"))
++        assertEquals(12_000L, scalar("SELECT creditRial FROM journal_lines WHERE entryId=$journalId AND accountCode='1102'"))
++        assertEquals(0L, scalar("SELECT COUNT(*) FROM journal_lines WHERE entryId=$journalId AND accountCode='1101'"))
++    }
++
++    @Test
++    fun cashToPettyCashTransfer_postsDistinctMappedGlAccounts() = runBlocking {
++        val seedId = GlobalId.new()
++        service.execute(
++            TreasuryCommand.Receipt(
++                commandId = seedId,
+                 businessEpochDay = 20_006L,
+-                correlationId = CorrelationId.forCommand("purchase_payable", settlementId),
+-                sourceType = "PURCHASE_PAYABLE",
+-                sourceId = purchaseId,
+-                reason = "تسویه بخشی فاکتور خرید",
+-                accountId = bank,
+-                direction = TreasuryDirection.PAYMENT,
+-                channel = TreasuryChannel.BANK,
++                correlationId = CorrelationId.forCommand("cash_petty_seed", seedId),
++                businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
++                sourceId = 79L,
++                reason = "تأمین صندوق برای آزمون تنخواه",
++                accountId = cash,
++                channel = TreasuryChannel.CASH,
+                 amount = MoneyRial.of(30_000L),
+             ),
+         )
+-        val afterSettlement = requireNotNull(database.purchaseDao().byId(purchaseId))
+-        assertEquals(50_000L, afterSettlement.paidRial)
+-        assertEquals("PARTIAL", afterSettlement.paymentStatus)
+-        assertEquals(50_000L, scalar("SELECT COALESCE(SUM(totalRial-paidRial),0) FROM purchases WHERE id=$purchaseId"))
++        val transferId = GlobalId.new()
++        val result = service.execute(
++            TreasuryCommand.InternalTransfer(
++                commandId = transferId,
++                businessEpochDay = 20_006L,
++                correlationId = CorrelationId.forCommand("cash_to_petty", transferId),
++                sourceId = 80L,
++                reason = "تأمین تنخواه از صندوق",
++                fromAccountId = cash,
++                toAccountId = pettyCash,
++                amount = MoneyRial.of(9_000L),
++            ),
++        )
++        val journalId = requireNotNull(result.journalEntryId)
++        assertEquals(9_000L, scalar("SELECT debitRial FROM journal_lines WHERE entryId=$journalId AND accountCode='1103'"))
++        assertEquals(9_000L, scalar("SELECT creditRial FROM journal_lines WHERE entryId=$journalId AND accountCode='1101'"))
++    }
+ 
+-        val reversalId = GlobalId.new()
+-        service.reverse(
+-            TreasuryReversalCommand(
+-                commandId = reversalId,
+-                originalTransactionId = posted.id,
+-                originalJournalEntryId = requireNotNull(posted.journalEntryId),
+-                businessEpochDay = 20_007L,
+-                correlationId = CorrelationId.forCommand("purchase_payable_reversal", reversalId),
+-                sourceType = "PURCHASE_PAYABLE_REVERSAL",
+-                sourceId = purchaseId,
+-                reason = "برگشت تسویه فاکتور خرید",
++    @Test
++    fun treasuryPosting_preservesBranchAndOrganizationScope() = runBlocking {
++        val branchId = database.branchDao().insert(
++            BranchEntity(
++                globalId = GlobalId.new().value,
++                code = "TR-BR",
++                name = "شعبه خزانه",
++                createdAtEpochMillis = now++,
++                updatedAtEpochMillis = now++,
++            ),
++        )
++        val branchCommandId = GlobalId.new()
++        val branchResult = service.execute(
++            TreasuryCommand.Receipt(
++                commandId = branchCommandId,
++                businessEpochDay = 20_006L,
++                correlationId = CorrelationId.forCommand("branch_treasury", branchCommandId),
++                businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
++                sourceId = 90L,
++                reason = "دریافت شعبه‌ای آزمون",
++                accountingScope = AccountingScope.BRANCH,
++                branchId = branchId,
++                accountId = cash,
++                channel = TreasuryChannel.CASH,
++                amount = MoneyRial.of(5_000L),
++            ),
++        )
++        val branchJournal = requireNotNull(branchResult.journalEntryId)
++        assertEquals(branchId, scalar("SELECT branchId FROM journal_entries WHERE id=$branchJournal"))
++        assertEquals("BRANCH", text("SELECT accountingScope FROM journal_entries WHERE id=$branchJournal"))
++
++        val orgCommandId = GlobalId.new()
++        val orgResult = service.execute(
++            TreasuryCommand.Receipt(
++                commandId = orgCommandId,
++                businessEpochDay = 20_006L,
++                correlationId = CorrelationId.forCommand("org_treasury", orgCommandId),
++                businessIntent = TreasuryBusinessIntent.OWNER_CAPITAL,
++                sourceId = 91L,
++                reason = "آورده سازمانی آزمون",
++                accountingScope = AccountingScope.ORGANIZATION,
++                branchId = null,
+                 accountId = bank,
+                 channel = TreasuryChannel.BANK,
+-                amount = MoneyRial.of(30_000L),
++                amount = MoneyRial.of(7_000L),
+             ),
+         )
+-        val afterReversal = requireNotNull(database.purchaseDao().byId(purchaseId))
+-        assertEquals(20_000L, afterReversal.paidRial)
+-        assertEquals("PARTIAL", afterReversal.paymentStatus)
+-        assertEquals(80_000L, scalar("SELECT COALESCE(SUM(totalRial-paidRial),0) FROM purchases WHERE id=$purchaseId"))
++        val orgJournal = requireNotNull(orgResult.journalEntryId)
++        assertEquals(1L, scalar("SELECT COUNT(*) FROM journal_entries WHERE id=$orgJournal AND accountingScope='ORGANIZATION' AND branchId IS NULL"))
+     }
+ 
+     @Test
+@@ -288,7 +371,7 @@ class TreasuryV2IntegrationTest {
+                 commandId = commandId,
+                 businessEpochDay = 20_004L,
+                 correlationId = CorrelationId.forCommand("treasury_reverse_source", commandId),
+-                sourceType = "OTHER_RECEIPT",
++                businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
+                 sourceId = 74L,
+                 reason = "دریافت قابل برگشت",
+                 accountId = cash,
+@@ -330,7 +413,7 @@ class TreasuryV2IntegrationTest {
+                 commandId = seedId,
+                 businessEpochDay = 20_008L,
+                 correlationId = CorrelationId.forCommand("payment_reverse_seed", seedId),
+-                sourceType = "OTHER_RECEIPT",
++                businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
+                 sourceId = 81L,
+                 reason = "تأمین صندوق برای تست پرداخت",
+                 accountId = cash,
+@@ -344,7 +427,7 @@ class TreasuryV2IntegrationTest {
+                 commandId = paymentId,
+                 businessEpochDay = 20_008L,
+                 correlationId = CorrelationId.forCommand("payment_reverse_source", paymentId),
+-                sourceType = "OTHER_PAYMENT",
++                businessIntent = TreasuryBusinessIntent.OPERATING_EXPENSE,
+                 sourceId = 82L,
+                 reason = "پرداخت قابل برگشت",
+                 accountId = cash,
+@@ -379,7 +462,7 @@ class TreasuryV2IntegrationTest {
+                 commandId = seedId,
+                 businessEpochDay = 20_011L,
+                 correlationId = CorrelationId.forCommand("transfer_reverse_seed", seedId),
+-                sourceType = "OTHER_RECEIPT",
++                businessIntent = TreasuryBusinessIntent.OTHER_INCOME,
+                 sourceId = 83L,
+                 reason = "تأمین صندوق برای انتقال",
+                 accountId = cash,
+@@ -395,8 +478,7 @@ class TreasuryV2IntegrationTest {
+                 commandId = transferId,
+                 businessEpochDay = 20_011L,
+                 correlationId = CorrelationId.forCommand("transfer_reverse_source", transferId),
+-                sourceType = "INTERNAL_TRANSFER",
+-                sourceId = 84L,
++                                sourceId = 84L,
+                 reason = "انتقال قابل برگشت",
+                 fromAccountId = cash,
+                 toAccountId = bank,
+@@ -418,6 +500,11 @@ class TreasuryV2IntegrationTest {
+         )
+     }
+ 
++    private fun text(sql: String): String = database.openHelper.writableDatabase.query(sql).use { cursor ->
++        check(cursor.moveToFirst())
++        cursor.getString(0)
++    }
++
+     private fun scalar(sql: String): Long = database.openHelper.writableDatabase.query(sql).use { cursor ->
+         check(cursor.moveToFirst())
+         cursor.getLong(0)
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
+index 4141ff9..366038d 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/EnterpriseCoreDao.kt
+@@ -18,12 +18,21 @@ interface TreasuryDao {
+     @Insert(onConflict = OnConflictStrategy.ABORT)
+     suspend fun insertReconciliation(entity: TreasuryReconciliationEntity): Long
+ 
++    @Query("SELECT * FROM treasury_reconciliations WHERE transactionId=:transactionId LIMIT 1")
++    suspend fun reconciliationByTransactionId(transactionId: String): TreasuryReconciliationEntity?
++
+     @Query("SELECT * FROM treasury_transactions WHERE commandId=:commandId LIMIT 1")
+     suspend fun byCommandId(commandId: String): TreasuryTransactionEntity?
+ 
+     @Query("SELECT * FROM treasury_transactions WHERE id=:id LIMIT 1")
+     suspend fun transactionById(id: String): TreasuryTransactionEntity?
+ 
++    @Query("SELECT * FROM treasury_transactions WHERE journalEntryId=:journalEntryId LIMIT 1")
++    suspend fun transactionByJournalEntryId(journalEntryId: Long): TreasuryTransactionEntity?
++
++    @Query("SELECT * FROM treasury_transactions WHERE sourceType=:sourceType AND sourceId=:sourceId AND status='POSTED' AND reversalOfTransactionId IS NULL ORDER BY createdAtEpochMillis,id")
++    suspend fun activeTransactionsBySource(sourceType: String, sourceId: Long): List<TreasuryTransactionEntity>
++
+     @Query("SELECT * FROM treasury_ledger_entries WHERE transactionId=:transactionId ORDER BY id")
+     suspend fun entriesForTransaction(transactionId: String): List<TreasuryLedgerEntryEntity>
+ 
+@@ -111,6 +120,27 @@ interface CustomerReceivableDao {
+     @Query("SELECT * FROM customer_receivable_ledger WHERE customerId=:customerId ORDER BY businessEpochDay,id")
+     fun observeLedger(customerId: Long): Flow<List<CustomerReceivableLedgerEntity>>
+ 
++    @Query("""
++        WITH RECURSIVE party_ids(id) AS (
++            SELECT :customerId
++            UNION ALL
++            SELECT h.sourceCustomerId FROM customer_merge_history h JOIN party_ids p ON h.targetCustomerId=p.id
++        )
++        SELECT l.* FROM customer_receivable_ledger l JOIN party_ids p ON p.id=l.customerId
++        ORDER BY l.businessEpochDay,l.id
++    """)
++    fun observeLedgerIncludingMerged(customerId: Long): Flow<List<CustomerReceivableLedgerEntity>>
++
++    @Query("""
++        WITH RECURSIVE party_ids(id) AS (
++            SELECT :customerId
++            UNION ALL
++            SELECT h.sourceCustomerId FROM customer_merge_history h JOIN party_ids p ON h.targetCustomerId=p.id
++        )
++        SELECT id FROM party_ids
++    """)
++    suspend fun mergedCustomerIds(customerId: Long): List<Long>
++
+     @Query("SELECT * FROM customer_receivable_ledger WHERE customerId=:customerId ORDER BY businessEpochDay,id")
+     suspend fun ledger(customerId: Long): List<CustomerReceivableLedgerEntity>
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt
+index a267fe7..0040b5e 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/DatabaseSeedCallback.kt
+@@ -53,8 +53,9 @@ internal object AccountSeedCallback : RoomDatabase.Callback() {
+     fun seedMissingAccounts(db: SupportSQLiteDatabase) {
+         val accounts = listOf(
+             arrayOf("1101", "صندوق", "ASSET"),
+-            arrayOf("1102", "بانک و کارت‌خوان", "ASSET"),
++            arrayOf("1102", "بانک", "ASSET"),
+             arrayOf("1103", "تنخواه‌گردان", "ASSET"),
++            arrayOf("1104", "وجوه کارت‌خوان", "ASSET"),
+             arrayOf("1201", "حساب‌های دریافتنی", "ASSET"),
+             arrayOf("1202", "اسناد دریافتنی", "ASSET"),
+             arrayOf("1203", "اعتبار نزد تأمین‌کننده", "ASSET"),
+@@ -69,6 +70,7 @@ internal object AccountSeedCallback : RoomDatabase.Callback() {
+             arrayOf("2103", "مالیات و عوارض پرداختنی", "LIABILITY"),
+             arrayOf("2104", "بیمه پرداختنی", "LIABILITY"),
+             arrayOf("2105", "کالای دریافت‌شده فاکتورنشده", "LIABILITY"),
++            arrayOf("2199", "حساب واسط تسویه خزانه", "LIABILITY"),
+             arrayOf("3101", "سرمایه", "EQUITY"),
+             arrayOf("4101", "فروش غذا و نوشیدنی", "REVENUE"),
+             arrayOf("4102", "سایر درآمدها", "REVENUE"),
+diff --git a/app/src/main/java/ir/restaurant/management/data/treasury/DefaultTreasuryAccountCatalog.kt b/app/src/main/java/ir/restaurant/management/data/treasury/DefaultTreasuryAccountCatalog.kt
+index b80b5cc..cc9da3c 100644
+--- a/app/src/main/java/ir/restaurant/management/data/treasury/DefaultTreasuryAccountCatalog.kt
++++ b/app/src/main/java/ir/restaurant/management/data/treasury/DefaultTreasuryAccountCatalog.kt
+@@ -1,15 +1,13 @@
+ package ir.restaurant.management.data.treasury
+ 
++import ir.restaurant.management.domain.accounting.SemanticAccountRole
+ import ir.restaurant.management.domain.treasury.TreasuryAccount
+ import ir.restaurant.management.domain.treasury.TreasuryAccountCatalog
+ import ir.restaurant.management.domain.treasury.TreasuryAccountId
+ import ir.restaurant.management.domain.treasury.TreasuryAccountKind
+ import ir.restaurant.management.domain.treasury.TreasuryChannel
+ 
+-/**
+- * Default account catalog backed by existing cash/bank concepts. It exposes existing cash/bank concepts without claiming a
+- * dedicated treasury table or creating a second balance source of truth.
+- */
++/** Stable one-to-one mapping from each operational treasury account to its GL settlement role. */
+ class DefaultTreasuryAccountCatalog : TreasuryAccountCatalog {
+     private val accounts = listOf(
+         TreasuryAccount(
+@@ -17,6 +15,7 @@ class DefaultTreasuryAccountCatalog : TreasuryAccountCatalog {
+             "صندوق اصلی",
+             TreasuryAccountKind.CASH,
+             TreasuryChannel.CASH,
++            SemanticAccountRole.CASH,
+             isActive = true,
+         ),
+         TreasuryAccount(
+@@ -24,6 +23,7 @@ class DefaultTreasuryAccountCatalog : TreasuryAccountCatalog {
+             "حساب بانکی اصلی",
+             TreasuryAccountKind.BANK,
+             TreasuryChannel.BANK,
++            SemanticAccountRole.BANK,
+             isActive = true,
+         ),
+         TreasuryAccount(
+@@ -31,6 +31,7 @@ class DefaultTreasuryAccountCatalog : TreasuryAccountCatalog {
+             "کارتخوان",
+             TreasuryAccountKind.CARD_TERMINAL,
+             TreasuryChannel.CARD,
++            SemanticAccountRole.CARD_SETTLEMENT,
+             isActive = true,
+         ),
+         TreasuryAccount(
+@@ -38,10 +39,16 @@ class DefaultTreasuryAccountCatalog : TreasuryAccountCatalog {
+             "تنخواه",
+             TreasuryAccountKind.PETTY_CASH,
+             TreasuryChannel.CASH,
++            SemanticAccountRole.PETTY_CASH,
+             isActive = true,
+         ),
+     )
+ 
++    init {
++        require(accounts.map { it.id }.distinct().size == accounts.size) { "treasury_account_id_mapping_duplicate" }
++        require(accounts.map { it.settlementRole }.distinct().size == accounts.size) { "treasury_account_gl_mapping_not_one_to_one" }
++    }
++
+     override fun activeAccounts(): List<TreasuryAccount> = accounts
+ 
+     override fun account(id: TreasuryAccountId): TreasuryAccount? =
+diff --git a/app/src/main/java/ir/restaurant/management/data/treasury/LocalTreasuryServiceV2.kt b/app/src/main/java/ir/restaurant/management/data/treasury/LocalTreasuryServiceV2.kt
+index eb0461e..ee002f2 100644
+--- a/app/src/main/java/ir/restaurant/management/data/treasury/LocalTreasuryServiceV2.kt
++++ b/app/src/main/java/ir/restaurant/management/data/treasury/LocalTreasuryServiceV2.kt
+@@ -3,7 +3,6 @@ package ir.restaurant.management.data.treasury
+ import androidx.room.withTransaction
+ import ir.restaurant.management.core.MoneyRial
+ import ir.restaurant.management.data.db.AppDatabase
+-import ir.restaurant.management.data.db.CustomerReceivableLedgerEntity
+ import ir.restaurant.management.data.db.TreasuryLedgerEntryEntity
+ import ir.restaurant.management.data.db.TreasuryReconciliationEntity
+ import ir.restaurant.management.data.db.TreasuryTransactionEntity
+@@ -19,9 +18,9 @@ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.asViolation
+ import ir.restaurant.management.domain.security.AuthorizationService
+ import ir.restaurant.management.domain.security.Permission
+-import ir.restaurant.management.domain.purchase.PurchasePaymentStatus
+ import ir.restaurant.management.domain.treasury.TreasuryAccount
+ import ir.restaurant.management.domain.treasury.TreasuryAccountCatalog
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
+ import ir.restaurant.management.domain.treasury.TreasuryChannel
+ import ir.restaurant.management.domain.treasury.TreasuryCommand
+ import ir.restaurant.management.domain.treasury.TreasuryDirection
+@@ -38,8 +37,8 @@ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.map
+ 
+ /**
+- * Treasury 2.0 owns an append-only operational ledger while accounting remains the financial
+- * source of truth. The accounting posting, treasury header/lines and audit event share the same
++ * Treasury 2.0 is the canonical owner of operational liquidity movements. Every treasury command
++ * creates its accounting posting, treasury header/lines and audit event inside the same
+  * outer Room transaction, so a failure in any side effect rolls the whole command back.
+  */
+ class LocalTreasuryServiceV2(
+@@ -65,33 +64,41 @@ class LocalTreasuryServiceV2(
+     override suspend fun reversalContext(transactionId: String): TreasuryReversalContext? {
+         val normalizedId = transactionId.trim()
+         if (normalizedId.isEmpty()) return null
+-        val transaction = database.treasuryDao().transactionById(normalizedId) ?: return null
+-        val primaryLine = database.treasuryDao().entriesForTransaction(normalizedId).firstOrNull() ?: return null
++        return database.treasuryDao().transactionById(normalizedId)?.toReversalContext()
++    }
++
++    override suspend fun reversalContextByJournalEntryId(journalEntryId: Long): TreasuryReversalContext? {
++        if (journalEntryId <= 0) return null
++        return database.treasuryDao().transactionByJournalEntryId(journalEntryId)?.toReversalContext()
++    }
++
++    override suspend fun activeReversalContextsBySource(sourceType: String, sourceId: Long): List<TreasuryReversalContext> {
++        if (sourceType.isBlank() || sourceId <= 0) return emptyList()
++        return database.treasuryDao().activeTransactionsBySource(sourceType.trim().uppercase(), sourceId).mapNotNull { it.toReversalContext() }
++    }
++
++    private suspend fun TreasuryTransactionEntity.toReversalContext(): TreasuryReversalContext? {
++        val primaryLine = database.treasuryDao().entriesForTransaction(id).firstOrNull() ?: return null
+         val accountId = ir.restaurant.management.domain.treasury.TreasuryAccountId.parse(primaryLine.accountId)
+         val account = accountCatalog.account(accountId) ?: return null
+         return TreasuryReversalContext(
+-            transactionId = transaction.id,
+-            status = transaction.status,
+-            journalEntryId = transaction.journalEntryId,
+-            businessEpochDay = transaction.businessEpochDay,
+-            sourceType = transaction.sourceType,
+-            sourceId = transaction.sourceId,
+-            amountRial = transaction.amountRial,
++            transactionId = id,
++            status = status,
++            journalEntryId = journalEntryId,
++            businessEpochDay = businessEpochDay,
++            sourceType = sourceType,
++            sourceId = sourceId,
++            amountRial = amountRial,
+             accountId = account.id,
+             channel = account.channel,
+-            reversalOfTransactionId = transaction.reversalOfTransactionId,
++            reversalOfTransactionId = reversalOfTransactionId,
+         )
+     }
+ 
+     override suspend fun execute(command: TreasuryCommand): TreasuryTransaction {
+         val valid = command.validated()
+-        authorizer.require(Permission.TREASURY)
+-        val actor = when (valid) {
+-            is TreasuryCommand.Payment, is TreasuryCommand.Settlement -> {
+-                authorizer.require(Permission.PAYMENT_APPROVE)
+-            }
+-            else -> authorizer.require(Permission.ACCOUNTING)
+-        }
++        validateAccountSelection(valid)
++        val actor = authorize(valid)
+         return database.withTransaction {
+             database.treasuryDao().byCommandId(valid.commandId.value)?.let { existing ->
+                 verifyReplay(existing, valid)
+@@ -107,9 +114,6 @@ class LocalTreasuryServiceV2(
+                 is TreasuryCommand.Reconciliation -> postReconciliation(valid, actor.id)
+             }
+             val entries = ledgerEntries(valid, actor.id, now)
+-            if (valid is TreasuryCommand.Settlement && valid.direction == TreasuryDirection.PAYMENT && valid.isPurchasePayableSettlement()) {
+-                applyPurchasePayableSettlement(valid)
+-            }
+             val transaction = TreasuryTransactionEntity(
+                 id = valid.commandId.value,
+                 commandId = valid.commandId.value,
+@@ -129,20 +133,6 @@ class LocalTreasuryServiceV2(
+             )
+             database.treasuryDao().insertTransaction(transaction)
+             if (entries.isNotEmpty()) database.treasuryDao().insertLedgerEntries(entries)
+-            val customerReceiptAmount = when (valid) {
+-                is TreasuryCommand.Receipt -> if (receiptCounterpart(valid.sourceType) == SemanticAccountRole.CUSTOMER_RECEIVABLE) valid.amount.value else 0L
+-                is TreasuryCommand.Settlement -> if (valid.direction == TreasuryDirection.RECEIPT) valid.amount.value else 0L
+-                else -> 0L
+-            }
+-            if (customerReceiptAmount > 0) {
+-                val customer = database.salesDao().activeCustomerById(valid.sourceId) ?: throw BusinessError.EntityNotFound("ACTIVE_CUSTOMER", valid.sourceId).asViolation()
+-                database.customerReceivableDao().insertLedger(
+-                    CustomerReceivableLedgerEntity(
+-                        customerId = customer.id, businessEpochDay = valid.businessEpochDay, entryType = "RECEIPT", debitRial = 0, creditRial = customerReceiptAmount,
+-                        sourceType = "TREASURY_RECEIPT", sourceId = valid.sourceId, reference = valid.commandId.value, actorId = actor.id, createdAtEpochMillis = now,
+-                    ),
+-                )
+-            }
+             if (valid is TreasuryCommand.Reconciliation) {
+                 val difference = valid.actual.value - valid.expected.value
+                 database.treasuryDao().insertReconciliation(
+@@ -179,19 +169,21 @@ class LocalTreasuryServiceV2(
+ 
+     override suspend fun reverse(command: TreasuryReversalCommand): TreasuryTransaction {
+         val valid = command.validated()
+-        authorizer.require(Permission.TREASURY)
+-        val actor = authorizer.require(Permission.JOURNAL_REVERSE)
+         return database.withTransaction {
+             database.treasuryDao().byCommandId(valid.commandId.value)?.let { replay ->
+                 return@withTransaction replay.toDomain(idempotentReplay = true)
+             }
+             val original = database.treasuryDao().transactionById(valid.originalTransactionId)
+                 ?: throw BusinessError.EntityNotFound("TREASURY_TRANSACTION", null).asViolation()
++            val actor = authorizeReversal(original.sourceType)
+             require(original.status == "POSTED") { "treasury_transaction_not_posted" }
+             require(original.journalEntryId == valid.originalJournalEntryId) { "treasury_original_journal_mismatch" }
+             require(valid.sourceId == original.sourceId) { "treasury_reversal_source_id_mismatch" }
+             require(valid.amount.value == original.amountRial) { "treasury_reversal_amount_mismatch" }
+             val originalLines = database.treasuryDao().entriesForTransaction(original.id)
++            val originalPrimaryAccountId = originalLines.firstOrNull()?.accountId ?: error("treasury_original_ledger_missing")
++            require(originalPrimaryAccountId == valid.accountId.value) { "treasury_reversal_account_mismatch" }
++            require(account(valid.accountId).channel == valid.channel) { "treasury_reversal_channel_mismatch" }
+             val result = accounting.reverse(
+                 AccountingReversalCommand(
+                     originalEntryId = valid.originalJournalEntryId,
+@@ -241,34 +233,6 @@ class LocalTreasuryServiceV2(
+                     )
+                 },
+             )
+-            val reversesCustomerReceipt =
+-                (original.kind == TreasuryTransactionKind.RECEIPT.name && receiptCounterpart(original.sourceType) == SemanticAccountRole.CUSTOMER_RECEIVABLE) ||
+-                    (original.kind == TreasuryTransactionKind.SETTLEMENT.name && originalLines.any { it.direction == TreasuryDirection.RECEIPT.name })
+-            if (reversesCustomerReceipt) {
+-                val customerId = original.counterpartyId ?: original.sourceId
+-                database.salesDao().activeCustomerById(customerId)
+-                    ?: throw BusinessError.EntityNotFound("ACTIVE_CUSTOMER", customerId).asViolation()
+-                database.customerReceivableDao().insertLedger(
+-                    CustomerReceivableLedgerEntity(
+-                        customerId = customerId,
+-                        businessEpochDay = valid.businessEpochDay,
+-                        entryType = "REVERSAL",
+-                        debitRial = original.amountRial,
+-                        creditRial = 0,
+-                        sourceType = "TREASURY_REVERSAL",
+-                        sourceId = customerId,
+-                        reference = valid.commandId.value,
+-                        actorId = actor.id,
+-                        createdAtEpochMillis = now,
+-                    ),
+-                )
+-            }
+-            if (original.kind == TreasuryTransactionKind.SETTLEMENT.name &&
+-                original.sourceType in PURCHASE_PAYABLE_SETTLEMENT_SOURCES &&
+-                originalLines.any { it.direction == TreasuryDirection.PAYMENT.name }
+-            ) {
+-                reversePurchasePayableSettlement(original.sourceId, original.amountRial)
+-            }
+             audit.appendAuthorized(
+                 authorizer = authorizer,
+                 action = "REVERSE",
+@@ -288,50 +252,6 @@ class LocalTreasuryServiceV2(
+         }
+     }
+ 
+-    private suspend fun applyPurchasePayableSettlement(command: TreasuryCommand.Settlement) {
+-        val purchase = database.purchaseDao().byId(command.sourceId)
+-            ?: throw BusinessError.EntityNotFound("PURCHASE_PAYABLE", command.sourceId).asViolation()
+-        require(purchase.paymentMethod == null) { "treasury_purchase_already_paid_at_source" }
+-        val status = PurchasePaymentStatus.fromStoredValue(purchase.paymentStatus)
+-        require(status in setOf(PurchasePaymentStatus.UNPAID, PurchasePaymentStatus.PARTIAL)) { "treasury_purchase_not_payable" }
+-        val remaining = Math.subtractExact(purchase.totalRial, purchase.paidRial)
+-        require(command.amount.value <= remaining) { "treasury_settlement_exceeds_purchase_payable" }
+-        val newPaid = Math.addExact(purchase.paidRial, command.amount.value)
+-        val paidInFull = newPaid == purchase.totalRial
+-        check(
+-            database.purchaseDao().updateSettlementState(
+-                purchaseId = purchase.id,
+-                expectedPaidRial = purchase.paidRial,
+-                newPaidRial = newPaid,
+-                paymentStatus = if (paidInFull) PurchasePaymentStatus.PAID.storedValue else PurchasePaymentStatus.PARTIAL.storedValue,
+-                reminderEnabled = !paidInFull && purchase.reminderEnabled,
+-                reminderEpochDay = if (paidInFull) null else purchase.reminderEpochDay,
+-            ) == 1,
+-        ) { "treasury_purchase_payable_concurrent_change" }
+-    }
+-
+-    private suspend fun reversePurchasePayableSettlement(purchaseId: Long, amountRial: Long) {
+-        val purchase = database.purchaseDao().byId(purchaseId)
+-            ?: throw BusinessError.EntityNotFound("PURCHASE_PAYABLE", purchaseId).asViolation()
+-        require(purchase.paymentMethod == null) { "treasury_purchase_reversal_source_invalid" }
+-        require(amountRial in 1..purchase.paidRial) { "treasury_purchase_reversal_amount_invalid" }
+-        val newPaid = Math.subtractExact(purchase.paidRial, amountRial)
+-        val newStatus = if (newPaid == 0L) PurchasePaymentStatus.UNPAID else PurchasePaymentStatus.PARTIAL
+-        check(
+-            database.purchaseDao().updateSettlementState(
+-                purchaseId = purchase.id,
+-                expectedPaidRial = purchase.paidRial,
+-                newPaidRial = newPaid,
+-                paymentStatus = newStatus.storedValue,
+-                reminderEnabled = purchase.reminderEnabled,
+-                reminderEpochDay = purchase.reminderEpochDay,
+-            ) == 1,
+-        ) { "treasury_purchase_payable_reversal_concurrent_change" }
+-    }
+-
+-    private fun TreasuryCommand.Settlement.isPurchasePayableSettlement(): Boolean =
+-        sourceType in PURCHASE_PAYABLE_SETTLEMENT_SOURCES
+-
+     private suspend fun postReceipt(command: TreasuryCommand.Receipt, actorId: Long) =
+         accounting.post(
+             postingCommand(
+@@ -339,7 +259,7 @@ class LocalTreasuryServiceV2(
+                 actorId = actorId,
+                 lines = listOf(
+                     SemanticJournalLine(accountRole(account(command.accountId)), debit = command.amount, memo = command.reason),
+-                    SemanticJournalLine(receiptCounterpart(command.sourceType), credit = command.amount, memo = command.sourceType),
++                    SemanticJournalLine(counterpartRole(command), credit = command.amount, memo = command.businessIntent.storedValue),
+                 ),
+             ),
+         )
+@@ -350,7 +270,7 @@ class LocalTreasuryServiceV2(
+                 command = command,
+                 actorId = actorId,
+                 lines = listOf(
+-                    SemanticJournalLine(paymentCounterpart(command.sourceType), debit = command.amount, memo = command.sourceType),
++                    SemanticJournalLine(counterpartRole(command), debit = command.amount, memo = command.businessIntent.storedValue),
+                     SemanticJournalLine(accountRole(account(command.accountId)), credit = command.amount, memo = command.reason),
+                 ),
+             ),
+@@ -364,7 +284,7 @@ class LocalTreasuryServiceV2(
+                     actorId,
+                     listOf(
+                         SemanticJournalLine(accountRole(account(command.accountId)), debit = command.amount),
+-                        SemanticJournalLine(SemanticAccountRole.CUSTOMER_RECEIVABLE, credit = command.amount),
++                        SemanticJournalLine(counterpartRole(command), credit = command.amount),
+                     ),
+                 ),
+             )
+@@ -374,7 +294,7 @@ class LocalTreasuryServiceV2(
+                     command,
+                     actorId,
+                     listOf(
+-                        SemanticJournalLine(SemanticAccountRole.SUPPLIER_PAYABLE, debit = command.amount),
++                        SemanticJournalLine(counterpartRole(command), debit = command.amount),
+                         SemanticJournalLine(accountRole(account(command.accountId)), credit = command.amount),
+                     ),
+                 ),
+@@ -424,28 +344,67 @@ class LocalTreasuryServiceV2(
+             correlationId = command.correlationId,
+             actorId = actorId,
+             status = JournalStatus.POSTED,
+-            accountingScope = AccountingScope.ORGANIZATION,
+-            branchId = null,
++            accountingScope = command.accountingScope,
++            branchId = command.branchId,
+         )
+ 
++
++    private fun validateAccountSelection(command: TreasuryCommand) {
++        when (command) {
++            is TreasuryCommand.Receipt -> require(account(command.accountId).channel == command.channel) { "treasury_account_channel_mismatch" }
++            is TreasuryCommand.Payment -> require(account(command.accountId).channel == command.channel) { "treasury_account_channel_mismatch" }
++            is TreasuryCommand.Settlement -> require(account(command.accountId).channel == command.channel) { "treasury_account_channel_mismatch" }
++            is TreasuryCommand.InternalTransfer -> {
++                account(command.fromAccountId)
++                account(command.toAccountId)
++            }
++            is TreasuryCommand.Reconciliation -> account(command.accountId)
++        }
++    }
++
+     private fun account(id: ir.restaurant.management.domain.treasury.TreasuryAccountId): TreasuryAccount =
+         accountCatalog.account(id)?.takeIf { it.isActive }
+             ?: throw BusinessError.EntityNotFound("TREASURY_ACCOUNT", null).asViolation()
+ 
+-    private fun accountRole(account: TreasuryAccount): SemanticAccountRole = when (account.channel) {
+-        TreasuryChannel.CASH -> SemanticAccountRole.CASH
+-        TreasuryChannel.BANK, TreasuryChannel.CARD, TreasuryChannel.TRANSFER -> SemanticAccountRole.BANK
+-    }
++    private fun accountRole(account: TreasuryAccount): SemanticAccountRole = account.settlementRole
++
++    private fun counterpartRole(command: TreasuryCommand): SemanticAccountRole =
++        command.businessIntent.counterpartRole
++            ?: throw BusinessError.InvalidBusinessState("TREASURY_INTENT", command.businessIntent.storedValue).asViolation()
+ 
+-    private fun receiptCounterpart(sourceType: String): SemanticAccountRole = when {
+-        sourceType.contains("CUSTOMER") || sourceType.contains("RECEIVABLE") -> SemanticAccountRole.CUSTOMER_RECEIVABLE
+-        else -> SemanticAccountRole.OTHER_INCOME
++    private suspend fun authorize(command: TreasuryCommand): ir.restaurant.management.domain.security.AuthorizedActor {
++        return when (command.businessIntent) {
++            TreasuryBusinessIntent.DAILY_SALES_SETTLEMENT -> authorizer.require(Permission.DAILY_SALES_POST)
++            TreasuryBusinessIntent.CUSTOMER_RECEIVABLE_COLLECTION, TreasuryBusinessIntent.CORPORATE_RECEIVABLE_COLLECTION -> authorizer.require(Permission.RECEIVABLE_COLLECT)
++            TreasuryBusinessIntent.PAYROLL_PAYMENT -> authorizer.require(Permission.PAYROLL_PAY)
++            TreasuryBusinessIntent.PURCHASE_PAYABLE_SETTLEMENT, TreasuryBusinessIntent.SUPPLIER_SETTLEMENT -> {
++                authorizer.require(Permission.PURCHASES)
++                authorizer.require(Permission.PAYMENT_APPROVE)
++            }
++            TreasuryBusinessIntent.ASSET_ACQUISITION,
++            TreasuryBusinessIntent.ASSET_MAINTENANCE,
++            TreasuryBusinessIntent.ASSET_DISPOSAL_RECEIPT -> authorizer.require(Permission.ASSET_LIFECYCLE)
++            TreasuryBusinessIntent.EMPLOYEE_ADVANCE_DISBURSEMENT -> authorizer.require(Permission.ADVANCE_CREATE)
++            TreasuryBusinessIntent.EMPLOYEE_ADVANCE_REPAYMENT -> authorizer.require(Permission.ADVANCE_SETTLE)
++            else -> {
++                authorizer.require(Permission.TREASURY)
++                when (command) {
++                    is TreasuryCommand.Payment, is TreasuryCommand.Settlement -> authorizer.require(Permission.PAYMENT_APPROVE)
++                    else -> authorizer.require(Permission.ACCOUNTING)
++                }
++            }
++        }
+     }
+ 
+-    private fun paymentCounterpart(sourceType: String): SemanticAccountRole = when {
+-        sourceType.contains("PAYROLL") || sourceType.contains("EMPLOYEE") -> SemanticAccountRole.PAYROLL_PAYABLE
+-        sourceType.contains("SUPPLIER") || sourceType.contains("PURCHASE") -> SemanticAccountRole.SUPPLIER_PAYABLE
+-        else -> SemanticAccountRole.OTHER_OPERATING_EXPENSE
++    private suspend fun authorizeReversal(sourceType: String): ir.restaurant.management.domain.security.AuthorizedActor = when (sourceType) {
++        TreasuryBusinessIntent.CUSTOMER_RECEIVABLE_COLLECTION.storedValue, TreasuryBusinessIntent.CORPORATE_RECEIVABLE_COLLECTION.storedValue -> authorizer.require(Permission.RECEIVABLE_ADJUST)
++        TreasuryBusinessIntent.DAILY_SALES_SETTLEMENT.storedValue -> authorizer.require(Permission.DAILY_SALES_VOID)
++        TreasuryBusinessIntent.PAYROLL_PAYMENT.storedValue -> authorizer.require(Permission.PAYROLL_REVERSE)
++        TreasuryBusinessIntent.PURCHASE_PAYABLE_SETTLEMENT.storedValue, "PURCHASE_PAYABLE", "PURCHASE_SETTLEMENT" -> authorizer.require(Permission.PAYMENT_APPROVE)
++        else -> {
++            authorizer.require(Permission.TREASURY)
++            authorizer.require(Permission.JOURNAL_REVERSE)
++        }
+     }
+ 
+     private fun ledgerEntries(command: TreasuryCommand, actorId: Long, now: Long): List<TreasuryLedgerEntryEntity> {
+@@ -484,18 +443,45 @@ class LocalTreasuryServiceV2(
+         }
+     }
+ 
+-    private fun verifyReplay(existing: TreasuryTransactionEntity, command: TreasuryCommand) {
++    private suspend fun verifyReplay(existing: TreasuryTransactionEntity, command: TreasuryCommand) {
++        fun conflict(): Nothing = throw BusinessError.IdempotencyConflict(command.commandId.value).asViolation()
+         if (existing.kind != command.kindName() || existing.businessEpochDay != command.businessEpochDay ||
+             existing.sourceType != command.sourceType || existing.sourceId != command.sourceId ||
+-            existing.amountRial != command.transactionAmountRial() || existing.reason != command.reason
+-        ) {
+-            throw BusinessError.IdempotencyConflict(command.commandId.value).asViolation()
++            existing.amountRial != command.transactionAmountRial() || existing.reason != command.reason ||
++            existing.correlationId != command.correlationId.value
++        ) conflict()
++
++        val ledger = database.treasuryDao().entriesForTransaction(existing.id)
++        val expectedAccounts = when (command) {
++            is TreasuryCommand.Receipt -> listOf(command.accountId.value to TreasuryDirection.RECEIPT.name)
++            is TreasuryCommand.Payment -> listOf(command.accountId.value to TreasuryDirection.PAYMENT.name)
++            is TreasuryCommand.Settlement -> listOf(command.accountId.value to command.direction.name)
++            is TreasuryCommand.InternalTransfer -> listOf(
++                command.fromAccountId.value to TreasuryDirection.PAYMENT.name,
++                command.toAccountId.value to TreasuryDirection.RECEIPT.name,
++            )
++            is TreasuryCommand.Reconciliation -> {
++                val reconciliation = database.treasuryDao().reconciliationByTransactionId(existing.id) ?: conflict()
++                if (reconciliation.accountId != command.accountId.value ||
++                    reconciliation.expectedRial != command.expected.value || reconciliation.actualRial != command.actual.value
++                ) conflict()
++                val difference = command.actual.value - command.expected.value
++                if (difference == 0L) emptyList() else listOf(
++                    command.accountId.value to if (difference > 0) TreasuryDirection.RECEIPT.name else TreasuryDirection.PAYMENT.name,
++                )
++            }
+         }
+-    }
++        val actualAccounts = ledger.map { it.accountId to it.direction }
++        if (actualAccounts != expectedAccounts || ledger.any { it.amountRial != command.transactionAmountRial() }) conflict()
+ 
+-    private companion object {
+-        val PURCHASE_PAYABLE_SETTLEMENT_SOURCES = setOf("PURCHASE_PAYABLE", "PURCHASE_SETTLEMENT")
++        existing.journalEntryId?.let { journalId ->
++            val journal = database.accountingDao().entryById(journalId) ?: conflict()
++            if (journal.accountingScope != command.accountingScope.name || journal.branchId != command.branchId) conflict()
++        } ?: run {
++            if (command !is TreasuryCommand.Reconciliation || command.actual != command.expected) conflict()
++        }
+     }
++
+ }
+ 
+ private fun TreasuryCommand.kindName(): String = when (this) {
+diff --git a/app/src/main/java/ir/restaurant/management/domain/accounting/AccountingPosting.kt b/app/src/main/java/ir/restaurant/management/domain/accounting/AccountingPosting.kt
+index 89ab776..2a455c9 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/accounting/AccountingPosting.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/accounting/AccountingPosting.kt
+@@ -11,6 +11,9 @@ import ir.restaurant.management.core.MoneyRial
+ enum class SemanticAccountRole {
+     CASH,
+     BANK,
++    CARD_SETTLEMENT,
++    PETTY_CASH,
++    TREASURY_CLEARING,
+     INVENTORY_ASSET,
+     CUSTOMER_RECEIVABLE,
+     PERSONAL_RECEIVABLE,
+@@ -53,6 +56,9 @@ object SystemSemanticAccountResolver : SemanticAccountResolver {
+     private val codes = mapOf(
+         SemanticAccountRole.CASH to "1101",
+         SemanticAccountRole.BANK to "1102",
++        SemanticAccountRole.CARD_SETTLEMENT to "1104",
++        SemanticAccountRole.PETTY_CASH to "1103",
++        SemanticAccountRole.TREASURY_CLEARING to "2199",
+         SemanticAccountRole.INVENTORY_ASSET to "1301",
+         SemanticAccountRole.CUSTOMER_RECEIVABLE to "1201",
+         SemanticAccountRole.PERSONAL_RECEIVABLE to "1201",
+diff --git a/app/src/main/java/ir/restaurant/management/domain/treasury/TreasuryModels.kt b/app/src/main/java/ir/restaurant/management/domain/treasury/TreasuryModels.kt
+index 0465044..5138e44 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/treasury/TreasuryModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/treasury/TreasuryModels.kt
+@@ -3,6 +3,8 @@ package ir.restaurant.management.domain.treasury
+ import ir.restaurant.management.core.CorrelationId
+ import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.core.MoneyRial
++import ir.restaurant.management.domain.accounting.AccountingScope
++import ir.restaurant.management.domain.accounting.SemanticAccountRole
+ import ir.restaurant.management.domain.common.BusinessError
+ import ir.restaurant.management.domain.common.asViolation
+ 
+@@ -27,6 +29,59 @@ enum class TreasuryDirection { RECEIPT, PAYMENT }
+ enum class TreasuryAccountKind { CASH, BANK, CARD_TERMINAL, PETTY_CASH }
+ enum class TreasuryTransactionKind { RECEIPT, PAYMENT, INTERNAL_TRANSFER, SETTLEMENT, RECONCILIATION }
+ 
++/**
++ * Typed economic intent for treasury commands. `sourceType` persisted in legacy tables is derived
++ * from this enum; it is never parsed with substring/keyword heuristics to decide accounting nature.
++ */
++enum class TreasuryBusinessIntent(
++    val storedValue: String,
++    val counterpartRole: SemanticAccountRole?,
++    val direction: TreasuryDirection?,
++) {
++    CUSTOMER_RECEIVABLE_COLLECTION("RECEIVABLE_COLLECTION", SemanticAccountRole.CUSTOMER_RECEIVABLE, TreasuryDirection.RECEIPT),
++    CORPORATE_RECEIVABLE_COLLECTION("CORPORATE_RECEIVABLE_COLLECTION", SemanticAccountRole.CORPORATE_RECEIVABLE, TreasuryDirection.RECEIPT),
++    PURCHASE_PAYABLE_SETTLEMENT("PURCHASE_SETTLEMENT", SemanticAccountRole.SUPPLIER_PAYABLE, TreasuryDirection.PAYMENT),
++    SUPPLIER_SETTLEMENT("SUPPLIER_SETTLEMENT", SemanticAccountRole.SUPPLIER_PAYABLE, TreasuryDirection.PAYMENT),
++    PAYROLL_PAYMENT("PAYROLL_PAYMENT", SemanticAccountRole.PAYROLL_PAYABLE, TreasuryDirection.PAYMENT),
++    OWNER_CAPITAL("OWNER_CAPITAL", SemanticAccountRole.OWNER_CAPITAL, TreasuryDirection.RECEIPT),
++    OTHER_INCOME("OTHER_INCOME", SemanticAccountRole.OTHER_INCOME, TreasuryDirection.RECEIPT),
++    OPERATING_EXPENSE("OPERATING_EXPENSE", SemanticAccountRole.OTHER_OPERATING_EXPENSE, TreasuryDirection.PAYMENT),
++    ASSET_ACQUISITION("ASSET_ACQUISITION", SemanticAccountRole.FIXED_ASSET, TreasuryDirection.PAYMENT),
++    ASSET_MAINTENANCE("ASSET_MAINTENANCE", SemanticAccountRole.MAINTENANCE_EXPENSE, TreasuryDirection.PAYMENT),
++    ASSET_DISPOSAL_RECEIPT("ASSET_DISPOSAL_RECEIPT", SemanticAccountRole.TREASURY_CLEARING, TreasuryDirection.RECEIPT),
++    EMPLOYEE_ADVANCE_DISBURSEMENT("EMPLOYEE_ADVANCE_DISBURSEMENT", SemanticAccountRole.EMPLOYEE_ADVANCE_RECEIVABLE, TreasuryDirection.PAYMENT),
++    EMPLOYEE_ADVANCE_REPAYMENT("EMPLOYEE_ADVANCE_REPAYMENT", SemanticAccountRole.EMPLOYEE_ADVANCE_RECEIVABLE, TreasuryDirection.RECEIPT),
++    TAX_PAYMENT("TAX_PAYMENT", SemanticAccountRole.TAX_PAYABLE, TreasuryDirection.PAYMENT),
++    DAILY_SALES_SETTLEMENT("DAILY_SALES_SETTLEMENT", SemanticAccountRole.TREASURY_CLEARING, TreasuryDirection.RECEIPT),
++    INTERNAL_TRANSFER("INTERNAL_TRANSFER", null, null),
++    TREASURY_RECONCILIATION("TREASURY_RECONCILIATION", null, null),
++    ;
++
++    fun requireDirection(actual: TreasuryDirection) {
++        direction?.let { require(it == actual) { "treasury_business_intent_direction_mismatch" } }
++    }
++
++    companion object {
++        /** Exact manual/UI adapter. Unknown or module-owned financial intents fail closed. */
++        fun fromExternalSource(sourceType: String, direction: TreasuryDirection): TreasuryBusinessIntent {
++            val normalized = sourceType.trim().uppercase().replace(' ', '_')
++            val intent = when (normalized) {
++                "OWNER_CAPITAL" -> OWNER_CAPITAL
++                "OTHER_INCOME" -> OTHER_INCOME
++                "OPERATING_EXPENSE" -> OPERATING_EXPENSE
++                "TAX_PAYMENT" -> TAX_PAYMENT
++                else -> throw BusinessError.UnknownStoredValue(
++                    ownerDomain = "treasury",
++                    field = "treasury.businessIntent",
++                    storedValue = sourceType,
++                ).asViolation()
++            }
++            intent.requireDirection(direction)
++            return intent
++        }
++    }
++}
++
+ enum class SettlementStatus(val storedValue: String) {
+     PENDING("PENDING"),
+     SETTLED("SETTLED"),
+@@ -55,10 +110,21 @@ data class TreasuryAccount(
+     val name: String,
+     val kind: TreasuryAccountKind,
+     val channel: TreasuryChannel,
++    val settlementRole: SemanticAccountRole,
+     val isActive: Boolean,
+ ) {
+     init {
+         require(name.isNotBlank()) { "treasury_account_name_missing" }
++        require(settlementRole in LIQUIDITY_ROLES) { "treasury_account_gl_role_not_liquidity" }
++    }
++
++    private companion object {
++        val LIQUIDITY_ROLES = setOf(
++            SemanticAccountRole.CASH,
++            SemanticAccountRole.BANK,
++            SemanticAccountRole.CARD_SETTLEMENT,
++            SemanticAccountRole.PETTY_CASH,
++        )
+     }
+ }
+ 
+@@ -67,25 +133,26 @@ interface TreasuryAccountCatalog {
+     fun account(id: TreasuryAccountId): TreasuryAccount?
+ }
+ 
+-/**
+- * Persistence-neutral command model. Current flows can adapt to this boundary without introducing
+- * a second cash/bank source of truth before a dedicated treasury ledger migration exists.
+- */
+ sealed interface TreasuryCommand {
+     val commandId: GlobalId
+     val businessEpochDay: Long
+     val correlationId: CorrelationId
+-    val sourceType: String
++    val businessIntent: TreasuryBusinessIntent
++    val sourceType: String get() = businessIntent.storedValue
+     val sourceId: Long
+     val reason: String
++    val accountingScope: AccountingScope
++    val branchId: Long?
+ 
+     data class Receipt(
+         override val commandId: GlobalId,
+         override val businessEpochDay: Long,
+         override val correlationId: CorrelationId,
+-        override val sourceType: String,
++        override val businessIntent: TreasuryBusinessIntent,
+         override val sourceId: Long,
+         override val reason: String,
++        override val accountingScope: AccountingScope = AccountingScope.ORGANIZATION,
++        override val branchId: Long? = null,
+         val accountId: TreasuryAccountId,
+         val channel: TreasuryChannel,
+         val amount: MoneyRial,
+@@ -95,9 +162,11 @@ sealed interface TreasuryCommand {
+         override val commandId: GlobalId,
+         override val businessEpochDay: Long,
+         override val correlationId: CorrelationId,
+-        override val sourceType: String,
++        override val businessIntent: TreasuryBusinessIntent,
+         override val sourceId: Long,
+         override val reason: String,
++        override val accountingScope: AccountingScope = AccountingScope.ORGANIZATION,
++        override val branchId: Long? = null,
+         val accountId: TreasuryAccountId,
+         val channel: TreasuryChannel,
+         val amount: MoneyRial,
+@@ -107,9 +176,11 @@ sealed interface TreasuryCommand {
+         override val commandId: GlobalId,
+         override val businessEpochDay: Long,
+         override val correlationId: CorrelationId,
+-        override val sourceType: String,
++        override val businessIntent: TreasuryBusinessIntent = TreasuryBusinessIntent.INTERNAL_TRANSFER,
+         override val sourceId: Long,
+         override val reason: String,
++        override val accountingScope: AccountingScope = AccountingScope.ORGANIZATION,
++        override val branchId: Long? = null,
+         val fromAccountId: TreasuryAccountId,
+         val toAccountId: TreasuryAccountId,
+         val amount: MoneyRial,
+@@ -119,9 +190,11 @@ sealed interface TreasuryCommand {
+         override val commandId: GlobalId,
+         override val businessEpochDay: Long,
+         override val correlationId: CorrelationId,
+-        override val sourceType: String,
++        override val businessIntent: TreasuryBusinessIntent,
+         override val sourceId: Long,
+         override val reason: String,
++        override val accountingScope: AccountingScope = AccountingScope.ORGANIZATION,
++        override val branchId: Long? = null,
+         val accountId: TreasuryAccountId,
+         val direction: TreasuryDirection,
+         val channel: TreasuryChannel,
+@@ -132,9 +205,11 @@ sealed interface TreasuryCommand {
+         override val commandId: GlobalId,
+         override val businessEpochDay: Long,
+         override val correlationId: CorrelationId,
+-        override val sourceType: String,
++        override val businessIntent: TreasuryBusinessIntent = TreasuryBusinessIntent.TREASURY_RECONCILIATION,
+         override val sourceId: Long,
+         override val reason: String,
++        override val accountingScope: AccountingScope = AccountingScope.ORGANIZATION,
++        override val branchId: Long? = null,
+         val accountId: TreasuryAccountId,
+         val expected: MoneyRial,
+         val actual: MoneyRial,
+@@ -211,24 +286,41 @@ interface TreasuryLedgerReader {
+     val recentTransactions: kotlinx.coroutines.flow.Flow<List<TreasuryLedgerRecord>>
+     fun observeBalance(accountId: TreasuryAccountId): kotlinx.coroutines.flow.Flow<Long>
+     suspend fun reversalContext(transactionId: String): TreasuryReversalContext?
++    suspend fun reversalContextByJournalEntryId(journalEntryId: Long): TreasuryReversalContext?
++    suspend fun activeReversalContextsBySource(sourceType: String, sourceId: Long): List<TreasuryReversalContext>
+ }
+ 
+ fun TreasuryCommand.validated(): TreasuryCommand {
+     require(businessEpochDay > 0) { "treasury_business_date_invalid" }
+-    require(sourceType.trim().uppercase().matches(Regex("[A-Z][A-Z0-9_]{1,63}"))) {
+-        "treasury_source_type_invalid"
+-    }
+     require(sourceId > 0) { "treasury_source_id_invalid" }
+     require(reason.trim().length in 3..500) { "treasury_reason_invalid" }
++    when (accountingScope) {
++        AccountingScope.BRANCH -> require(branchId != null && branchId > 0) { "treasury_branch_scope_missing" }
++        AccountingScope.ORGANIZATION -> require(branchId == null) { "treasury_organization_scope_has_branch" }
++        AccountingScope.UNASSIGNED_LEGACY -> error("treasury_new_command_cannot_be_unassigned_legacy")
++    }
+     when (this) {
+-        is TreasuryCommand.Receipt -> require(amount > MoneyRial.ZERO) { "treasury_receipt_amount_not_positive" }
+-        is TreasuryCommand.Payment -> require(amount > MoneyRial.ZERO) { "treasury_payment_amount_not_positive" }
++        is TreasuryCommand.Receipt -> {
++            businessIntent.requireDirection(TreasuryDirection.RECEIPT)
++            require(businessIntent !in setOf(TreasuryBusinessIntent.INTERNAL_TRANSFER, TreasuryBusinessIntent.TREASURY_RECONCILIATION))
++            require(amount > MoneyRial.ZERO) { "treasury_receipt_amount_not_positive" }
++        }
++        is TreasuryCommand.Payment -> {
++            businessIntent.requireDirection(TreasuryDirection.PAYMENT)
++            require(businessIntent !in setOf(TreasuryBusinessIntent.INTERNAL_TRANSFER, TreasuryBusinessIntent.TREASURY_RECONCILIATION))
++            require(amount > MoneyRial.ZERO) { "treasury_payment_amount_not_positive" }
++        }
+         is TreasuryCommand.InternalTransfer -> {
++            require(businessIntent == TreasuryBusinessIntent.INTERNAL_TRANSFER)
+             require(amount > MoneyRial.ZERO) { "treasury_transfer_amount_not_positive" }
+             require(fromAccountId != toAccountId) { "treasury_transfer_same_account" }
+         }
+-        is TreasuryCommand.Settlement -> require(amount > MoneyRial.ZERO) { "treasury_settlement_amount_not_positive" }
+-        is TreasuryCommand.Reconciliation -> Unit
++        is TreasuryCommand.Settlement -> {
++            businessIntent.requireDirection(direction)
++            require(businessIntent !in setOf(TreasuryBusinessIntent.INTERNAL_TRANSFER, TreasuryBusinessIntent.TREASURY_RECONCILIATION))
++            require(amount > MoneyRial.ZERO) { "treasury_settlement_amount_not_positive" }
++        }
++        is TreasuryCommand.Reconciliation -> require(businessIntent == TreasuryBusinessIntent.TREASURY_RECONCILIATION)
+     }
+     return this
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt b/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
+index e56e306..b5dc1fc 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
+@@ -54,7 +54,7 @@ internal fun TreasuryScreen(
+     var amount by remember { mutableStateOf("") }
+     var expected by remember { mutableStateOf("") }
+     var actual by remember { mutableStateOf("") }
+-    var sourceType by remember { mutableStateOf("CUSTOMER_RECEIVABLE") }
++    var sourceType by remember { mutableStateOf("OTHER_INCOME") }
+     var sourceId by remember { mutableStateOf("") }
+     var reason by remember { mutableStateOf("") }
+     var settlementDirection by remember { mutableStateOf(TreasuryDirection.RECEIPT) }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/TreasuryViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/TreasuryViewModel.kt
+index 281505b..0ffab1c 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/TreasuryViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/TreasuryViewModel.kt
+@@ -9,8 +9,10 @@ import ir.restaurant.management.core.CorrelationId
+ import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.core.MoneyRial
+ import ir.restaurant.management.core.currentLocalEpochDay
++import ir.restaurant.management.domain.accounting.AccountingScope
+ import ir.restaurant.management.domain.treasury.TreasuryAccount
+ import ir.restaurant.management.domain.treasury.TreasuryAccountId
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
+ import ir.restaurant.management.domain.treasury.TreasuryCommand
+ import ir.restaurant.management.domain.treasury.TreasuryDirection
+ import ir.restaurant.management.domain.treasury.TreasuryLedgerRecord
+@@ -57,17 +59,54 @@ class TreasuryViewModel(
+ 
+     fun receipt(accountId: String, amountRial: Long, sourceType: String, sourceId: Long, reason: String) = execute { account ->
+         val id = GlobalId.new()
+-        TreasuryCommand.Receipt(id, currentLocalEpochDay(), CorrelationId.forCommand("treasury_receipt", id), normalizeSource(sourceType), sourceId, reason.trim(), account.id, account.channel, MoneyRial.of(amountRial))
++        TreasuryCommand.Receipt(
++            commandId = id,
++            businessEpochDay = currentLocalEpochDay(),
++            correlationId = CorrelationId.forCommand("treasury_receipt", id),
++            businessIntent = TreasuryBusinessIntent.fromExternalSource(sourceType, TreasuryDirection.RECEIPT),
++            sourceId = sourceId,
++            reason = reason.trim(),
++            accountingScope = AccountingScope.ORGANIZATION,
++            branchId = null,
++            accountId = account.id,
++            channel = account.channel,
++            amount = MoneyRial.of(amountRial),
++        )
+     }(accountId)
+ 
+     fun payment(accountId: String, amountRial: Long, sourceType: String, sourceId: Long, reason: String) = execute { account ->
+         val id = GlobalId.new()
+-        TreasuryCommand.Payment(id, currentLocalEpochDay(), CorrelationId.forCommand("treasury_payment", id), normalizeSource(sourceType), sourceId, reason.trim(), account.id, account.channel, MoneyRial.of(amountRial))
++        TreasuryCommand.Payment(
++            commandId = id,
++            businessEpochDay = currentLocalEpochDay(),
++            correlationId = CorrelationId.forCommand("treasury_payment", id),
++            businessIntent = TreasuryBusinessIntent.fromExternalSource(sourceType, TreasuryDirection.PAYMENT),
++            sourceId = sourceId,
++            reason = reason.trim(),
++            accountingScope = AccountingScope.ORGANIZATION,
++            branchId = null,
++            accountId = account.id,
++            channel = account.channel,
++            amount = MoneyRial.of(amountRial),
++        )
+     }(accountId)
+ 
+     fun settlement(accountId: String, direction: TreasuryDirection, amountRial: Long, sourceType: String, sourceId: Long, reason: String) = execute { account ->
+         val id = GlobalId.new()
+-        TreasuryCommand.Settlement(id, currentLocalEpochDay(), CorrelationId.forCommand("treasury_settlement", id), normalizeSource(sourceType), sourceId, reason.trim(), account.id, direction, account.channel, MoneyRial.of(amountRial))
++        TreasuryCommand.Settlement(
++            commandId = id,
++            businessEpochDay = currentLocalEpochDay(),
++            correlationId = CorrelationId.forCommand("treasury_settlement", id),
++            businessIntent = TreasuryBusinessIntent.fromExternalSource(sourceType, direction),
++            sourceId = sourceId,
++            reason = reason.trim(),
++            accountingScope = AccountingScope.ORGANIZATION,
++            branchId = null,
++            accountId = account.id,
++            direction = direction,
++            channel = account.channel,
++            amount = MoneyRial.of(amountRial),
++        )
+     }(accountId)
+ 
+     fun transfer(fromAccountId: String, toAccountId: String, amountRial: Long, reason: String) {
+@@ -75,13 +114,25 @@ class TreasuryViewModel(
+             val from = account(fromAccountId)
+             val to = account(toAccountId)
+             val id = GlobalId.new()
+-            TreasuryCommand.InternalTransfer(id, currentLocalEpochDay(), CorrelationId.forCommand("treasury_transfer", id), "INTERNAL_TRANSFER", 1L, reason.trim(), from.id, to.id, MoneyRial.of(amountRial))
++            TreasuryCommand.InternalTransfer(
++                commandId = id, businessEpochDay = currentLocalEpochDay(),
++                correlationId = CorrelationId.forCommand("treasury_transfer", id),
++                sourceId = 1L, reason = reason.trim(),
++                accountingScope = AccountingScope.ORGANIZATION, branchId = null,
++                fromAccountId = from.id, toAccountId = to.id, amount = MoneyRial.of(amountRial),
++            )
+         }
+     }
+ 
+     fun reconcile(accountId: String, expectedRial: Long, actualRial: Long, reason: String) = execute { account ->
+         val id = GlobalId.new()
+-        TreasuryCommand.Reconciliation(id, currentLocalEpochDay(), CorrelationId.forCommand("treasury_reconcile", id), "TREASURY_RECONCILIATION", 1L, reason.trim(), account.id, MoneyRial.of(expectedRial), MoneyRial.of(actualRial))
++        TreasuryCommand.Reconciliation(
++            commandId = id, businessEpochDay = currentLocalEpochDay(),
++            correlationId = CorrelationId.forCommand("treasury_reconcile", id),
++            sourceId = 1L, reason = reason.trim(),
++            accountingScope = AccountingScope.ORGANIZATION, branchId = null,
++            accountId = account.id, expected = MoneyRial.of(expectedRial), actual = MoneyRial.of(actualRial),
++        )
+     }(accountId)
+ 
+     fun reverse(transactionId: String, reason: String) {
+@@ -119,9 +170,6 @@ class TreasuryViewModel(
+         return _state.value.accounts.firstOrNull { it.id == id } ?: error("حساب خزانه فعال پیدا نشد.")
+     }
+ 
+-    private fun normalizeSource(raw: String): String = raw.trim().uppercase().replace(' ', '_').also {
+-        require(it.matches(Regex("[A-Z][A-Z0-9_]{1,63}"))) { "نوع مرجع خزانه معتبر نیست." }
+-    }
+ 
+     companion object {
+         fun factory(
+diff --git a/app/src/test/java/ir/restaurant/management/phase2/FinancialTruthContractTest.kt b/app/src/test/java/ir/restaurant/management/phase2/FinancialTruthContractTest.kt
+new file mode 100644
+index 0000000..0607198
+--- /dev/null
++++ b/app/src/test/java/ir/restaurant/management/phase2/FinancialTruthContractTest.kt
+@@ -0,0 +1,70 @@
++package ir.restaurant.management.phase2
++
++import ir.restaurant.management.core.CorrelationId
++import ir.restaurant.management.core.GlobalId
++import ir.restaurant.management.core.MoneyRial
++import ir.restaurant.management.data.treasury.DefaultTreasuryAccountCatalog
++import ir.restaurant.management.domain.accounting.AccountingScope
++import ir.restaurant.management.domain.accounting.SemanticAccountRole
++import ir.restaurant.management.domain.treasury.TreasuryAccountId
++import ir.restaurant.management.domain.treasury.TreasuryBusinessIntent
++import ir.restaurant.management.domain.treasury.TreasuryChannel
++import ir.restaurant.management.domain.treasury.TreasuryCommand
++import ir.restaurant.management.domain.treasury.TreasuryDirection
++import ir.restaurant.management.domain.common.BusinessRuleViolation
++import ir.restaurant.management.domain.treasury.validated
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertNotEquals
++import org.junit.Test
++
++class FinancialTruthContractTest {
++    @Test
++    fun treasuryAccountsHaveDistinctLiquidityGlRoles() {
++        val catalog = DefaultTreasuryAccountCatalog()
++        val cash = requireNotNull(catalog.account(TreasuryAccountId.parse("cash_main")))
++        val bank = requireNotNull(catalog.account(TreasuryAccountId.parse("bank_main")))
++        val card = requireNotNull(catalog.account(TreasuryAccountId.parse("card_terminal")))
++        val petty = requireNotNull(catalog.account(TreasuryAccountId.parse("petty_cash")))
++        assertEquals(SemanticAccountRole.CASH, cash.settlementRole)
++        assertEquals(SemanticAccountRole.BANK, bank.settlementRole)
++        assertEquals(SemanticAccountRole.CARD_SETTLEMENT, card.settlementRole)
++        assertEquals(SemanticAccountRole.PETTY_CASH, petty.settlementRole)
++        assertEquals(4, setOf(cash.settlementRole, bank.settlementRole, card.settlementRole, petty.settlementRole).size)
++    }
++
++    @Test(expected = BusinessRuleViolation::class)
++    fun unknownGenericReceiptFailsClosed() {
++        TreasuryBusinessIntent.fromExternalSource("UNKNOWN_RECEIPT", TreasuryDirection.RECEIPT)
++    }
++
++    @Test(expected = BusinessRuleViolation::class)
++    fun unknownGenericPaymentFailsClosed() {
++        TreasuryBusinessIntent.fromExternalSource("UNKNOWN_PAYMENT", TreasuryDirection.PAYMENT)
++    }
++
++    @Test(expected = IllegalArgumentException::class)
++    fun branchScopedTreasuryCommandRequiresBranch() {
++        val id = GlobalId.new()
++        TreasuryCommand.Receipt(
++            commandId = id,
++            businessEpochDay = 20_000,
++            correlationId = CorrelationId.forCommand("branch-scope", id),
++            businessIntent = TreasuryBusinessIntent.OWNER_CAPITAL,
++            sourceId = 1,
++            reason = "آزمون دامنه شعبه",
++            accountingScope = AccountingScope.BRANCH,
++            branchId = null,
++            accountId = TreasuryAccountId.parse("cash_main"),
++            channel = TreasuryChannel.CASH,
++            amount = MoneyRial.of(1_000),
++        ).validated()
++    }
++
++    @Test
++    fun personalAndCorporateCollectionsUseDifferentArRoles() {
++        assertNotEquals(
++            TreasuryBusinessIntent.CUSTOMER_RECEIVABLE_COLLECTION.counterpartRole,
++            TreasuryBusinessIntent.CORPORATE_RECEIVABLE_COLLECTION.counterpartRole,
++        )
++    }
++}

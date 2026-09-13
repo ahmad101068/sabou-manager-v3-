@@ -1,0 +1,168 @@
+ import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.AppAlertEntity
+ import ir.restaurant.management.data.db.GeneratedAlertRow
+ import ir.restaurant.management.domain.crm.ReceivableAgingCalculator
+ import ir.restaurant.management.domain.crm.ReceivableLedgerRecord
+ import ir.restaurant.management.domain.operations.AlertRepository
++import ir.restaurant.management.domain.operations.AppAlert
++import ir.restaurant.management.domain.security.AuthorizationService
++import ir.restaurant.management.domain.security.Permission
++import kotlinx.coroutines.flow.emitAll
++import kotlinx.coroutines.flow.flow
++import kotlinx.coroutines.flow.map
+ 
+-class LocalAlertRepository(private val db: AppDatabase) : AlertRepository {
+-    override fun alerts() = db.alertDao().observeVisible()
++class LocalAlertRepository(
++    private val db: AppDatabase,
++    private val authorizer: AuthorizationService,
++) : AlertRepository {
++    override fun alerts() = flow {
++        authorizer.require(Permission.ACCOUNTING)
++        emitAll(db.alertDao().observeVisible().map { rows -> rows.map { it.toDomain() } })
++    }
+ 
+-    override suspend fun refresh(todayEpochDay: Long) = db.withTransaction {
+-        require(todayEpochDay > 0)
+-        val now = System.currentTimeMillis()
+-        val horizon = todayEpochDay + 30
+-        val activeKeys = mutableSetOf<Pair<String, Long>>()
++    override suspend fun refresh(todayEpochDay: Long) {
++        authorizer.require(Permission.ACCOUNTING)
++        db.withTransaction {
++            require(todayEpochDay > 0)
++            val now = System.currentTimeMillis()
++            val horizon = todayEpochDay + 30
++            val activeKeys = mutableSetOf<Pair<String, Long>>()
+ 
+-        suspend fun upsert(sourceType: String, rows: List<GeneratedAlertRow>) {
+-            rows.forEach { row ->
+-                activeKeys += sourceType to row.sourceId
+-                val updated = db.alertDao().updateGenerated(
+-                    sourceType = sourceType,
+-                    sourceId = row.sourceId,
+-                    title = row.title,
+-                    message = row.message,
+-                    severity = row.severity,
+-                    dueEpochDay = row.dueEpochDay,
+-                    now = now,
+-                )
+-                if (updated == 0) {
+-                    db.alertDao().insertGeneratedIfAbsent(
++            suspend fun upsert(sourceType: String, rows: List<GeneratedAlertRow>) {
++                rows.forEach { row ->
++                    activeKeys += sourceType to row.sourceId
++                    val updated = db.alertDao().updateGenerated(
+                         sourceType = sourceType,
+                         sourceId = row.sourceId,
+                         title = row.title,
+@@ -38,33 +43,48 @@ class LocalAlertRepository(private val db: AppDatabase) : AlertRepository {
+                         dueEpochDay = row.dueEpochDay,
+                         now = now,
+                     )
++                    if (updated == 0) {
++                        db.alertDao().insertGeneratedIfAbsent(
++                            sourceType = sourceType,
++                            sourceId = row.sourceId,
++                            title = row.title,
++                            message = row.message,
++                            severity = row.severity,
++                            dueEpochDay = row.dueEpochDay,
++                            now = now,
++                        )
++                    }
+                 }
+             }
+-        }
+ 
+-        upsert("PURCHASE_PAYABLE", db.alertDao().overduePurchases(todayEpochDay))
+-        upsert("LOW_STOCK", db.alertDao().lowStock())
+-        upsert("LOT_EXPIRING", db.alertDao().expiringLots(todayEpochDay, horizon))
+-        upsert("LOT_EXPIRED", db.alertDao().expiredLots(todayEpochDay))
+-        upsert("CUSTOMER_RECEIVABLE", overdueReceivables(todayEpochDay))
+-        upsert("CONTRACT_EXPIRY", db.alertDao().expiringContracts(todayEpochDay, horizon))
+-        upsert("UNPAID_PAYROLL", db.alertDao().unpaidPayroll())
+-        upsert("ASSET_MAINTENANCE", db.alertDao().dueAssetMaintenance(todayEpochDay, horizon))
+-        upsert("ATTENDANCE_ANOMALY", db.alertDao().attendanceAnomalies())
+-        upsert("PURCHASE_DELIVERY_OVERDUE", db.alertDao().overdueDeliveries(todayEpochDay))
+-        upsert("INVENTORY_DISCREPANCY", db.alertDao().inventoryDiscrepancies())
++            upsert("PURCHASE_PAYABLE", db.alertDao().overduePurchases(todayEpochDay))
++            upsert("LOW_STOCK", db.alertDao().lowStock())
++            upsert("LOT_EXPIRING", db.alertDao().expiringLots(todayEpochDay, horizon))
++            upsert("LOT_EXPIRED", db.alertDao().expiredLots(todayEpochDay))
++            upsert("CUSTOMER_RECEIVABLE", overdueReceivables(todayEpochDay))
++            upsert("CONTRACT_EXPIRY", db.alertDao().expiringContracts(todayEpochDay, horizon))
++            upsert("UNPAID_PAYROLL", db.alertDao().unpaidPayroll())
++            upsert("ASSET_MAINTENANCE", db.alertDao().dueAssetMaintenance(todayEpochDay, horizon))
++            upsert("ATTENDANCE_ANOMALY", db.alertDao().attendanceAnomalies())
++            upsert("PURCHASE_DELIVERY_OVERDUE", db.alertDao().overdueDeliveries(todayEpochDay))
++            upsert("INVENTORY_DISCREPANCY", db.alertDao().inventoryDiscrepancies())
+ 
+-        db.alertDao().generatedKeys().forEach { key ->
+-            if ((key.sourceType to key.sourceId) !in activeKeys) {
+-                db.alertDao().resolveGenerated(key.sourceType, key.sourceId, now)
++            db.alertDao().generatedKeys().forEach { key ->
++                if ((key.sourceType to key.sourceId) !in activeKeys) {
++                    db.alertDao().resolveGenerated(key.sourceType, key.sourceId, now)
++                }
+             }
+         }
+     }
+ 
+-
+-    private suspend fun overdueReceivables(todayEpochDay: Long): List<GeneratedAlertRow> =
+-        db.alertDao().overdueReceivableCandidates(todayEpochDay).mapNotNull { candidate ->
+-            val ledger = db.customerReceivableDao().ledger(candidate.customerId).map { row ->
++    private suspend fun overdueReceivables(todayEpochDay: Long): List<GeneratedAlertRow> {
++        val candidates = db.alertDao().overdueReceivableCandidates(todayEpochDay)
++        if (candidates.isEmpty()) return emptyList()
++        val ledgersByCustomer = db.customerReceivableDao()
++            .ledgerForCustomers(candidates.map { it.customerId })
++            .groupBy { it.customerId }
++        return candidates.mapNotNull { candidate ->
++            val ledger = ledgersByCustomer[candidate.customerId].orEmpty().map { row ->
+                 ReceivableLedgerRecord(
+                     row.id, row.customerId, row.businessEpochDay, row.entryType, row.debitRial, row.creditRial,
+                     row.sourceType, row.sourceId, row.reference, row.dueEpochDay,
+@@ -85,24 +105,45 @@ class LocalAlertRepository(private val db: AppDatabase) : AlertRepository {
+                 )
+             }
+         }
++    }
+ 
+     override suspend fun markRead(id: Long) {
++        authorizer.require(Permission.ACCOUNTING)
+         require(db.alertDao().markRead(id, System.currentTimeMillis()) == 1) { "هشدار پیدا نشد." }
+     }
+ 
+     override suspend fun markActioned(id: Long) {
++        authorizer.require(Permission.ACCOUNTING)
+         require(db.alertDao().markActioned(id, System.currentTimeMillis()) == 1) { "هشدار قابل اقدام پیدا نشد." }
+     }
+ 
+     override suspend fun resolve(id: Long) {
++        authorizer.require(Permission.ACCOUNTING)
+         require(db.alertDao().resolve(id, System.currentTimeMillis()) == 1) { "هشدار قابل حل پیدا نشد." }
+     }
+ 
+     override suspend fun dismiss(id: Long) {
++        authorizer.require(Permission.ACCOUNTING)
+         require(db.alertDao().dismiss(id, System.currentTimeMillis()) == 1) { "هشدار پیدا نشد." }
+     }
+ 
+     override suspend fun clearDismissed() {
++        authorizer.require(Permission.ACCOUNTING)
+         db.alertDao().clearDismissed()
+     }
++
++    private fun AppAlertEntity.toDomain() = AppAlert(
++        id = id,
++        sourceType = sourceType,
++        sourceId = sourceId,
++        title = title,
++        message = message,
++        severity = severity,
++        dueEpochDay = dueEpochDay,
++        isRead = isRead,
++        isDismissed = isDismissed,
++        createdAtEpochMillis = createdAtEpochMillis,

@@ -1,0 +1,26 @@
+diff --git a/app/src/main/java/ir/restaurant/management/application/sales/SalesHistoryUseCases.kt b/app/src/main/java/ir/restaurant/management/application/sales/SalesHistoryUseCases.kt
+--- a/app/src/main/java/ir/restaurant/management/application/sales/SalesHistoryUseCases.kt
++++ b/app/src/main/java/ir/restaurant/management/application/sales/SalesHistoryUseCases.kt
+@@ -8,6 +8,7 @@ import ir.restaurant.management.domain.sales.SalesHistoryRepository
+ import ir.restaurant.management.domain.sales.SalesInvoiceDetails
+ import ir.restaurant.management.domain.sales.SalesInvoiceRecord
+ import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.first
+ 
+ /** Read/customer-management boundary for historical posted sales facts. It cannot create order-level sales. */
+ class SalesHistoryUseCases(
+@@ -28,6 +29,13 @@ class SalesHistoryUseCases(
+     )
+     fun invoiceDetails(invoiceId: Long): Flow<SalesInvoiceDetails?> = sales.observeDetails(invoiceId)
+ 
+-    suspend fun saveCustomer(id: Long?, draft: CustomerDraft): Long = sales.saveCustomer(id, draft)
++    suspend fun saveCustomer(id: Long?, draft: CustomerDraft): Long {
++        val savedId = sales.saveCustomer(id, draft)
++        // Preserve read-your-write semantics for UI callers: Room invalidation is asynchronous,
++        // so do not report completion until the canonical customer stream can observe the row.
++        sales.customers.first { rows -> rows.any { it.id == savedId } }
++        return savedId
++    }
++
+     suspend fun deactivateCustomer(id: Long) = sales.deactivateCustomer(id)
+ }

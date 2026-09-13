@@ -1,0 +1,22 @@
+     title: String,
+@@ -725,7 +814,7 @@ private fun MatchedInvoiceDialog(
+     var day by remember { mutableLongStateOf(currentEpochDay()) }
+     var dueDay by remember { mutableLongStateOf(day) }
+     val activeBranches = remember(branches) { branches.filter { it.isActive } }
+-    var selectedBranchId by remember(activeBranches) { mutableStateOf(activeBranches.singleOrNull()?.id) }
++    var selectedBranchId by rememberSaveable { mutableStateOf<Long?>(null) }
+     var costs by remember(order.id) { mutableStateOf(order.lines.filter { it.netAcceptedQtyMicros > 0 }.associate { it.id to it.unitCostRial.toString() }) }
+     var approveVariance by remember { mutableStateOf(false) }
+     var error by remember { mutableStateOf<String?>(null) }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt b/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
+index e376e02..d0cdcbf 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
+@@ -435,6 +435,7 @@ private fun AuthenticatedRestaurantManagementApp(
+                 recipes = recipes,
+                 accounting = accounting,
+                 branches = branchManagementState.branches,
++                currentUser = securityState.currentUser,
+                 navigate = { navigate(it) },
+                 navigateBack = { navigateBack() },
+             )

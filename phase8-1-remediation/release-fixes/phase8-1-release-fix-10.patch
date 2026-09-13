@@ -1,0 +1,6 @@
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalAlertRepository.kt
+@@ -27,1 +27,3 @@
+     override fun alerts() = flow {
++        authorizer.actorIdentity()
++        requireAnyAlertDomainPermission()

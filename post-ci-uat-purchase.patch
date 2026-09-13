@@ -1,0 +1,199 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
+index 02e611d..7c07661 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/BranchPurchasePostingIntegrationTest.kt
+@@ -44,6 +44,44 @@ class BranchPurchasePostingIntegrationTest {
+     @After
+     fun tearDown() = database.close()
+ 
++    @Test
++    fun blankInternalInvoiceNumber_isAllocatedUniquelyAndPersisted() = runBlocking {
++        val supplierId = database.supplierDao().insert(
++            SupplierEntity(name = "تأمین‌کننده شماره‌گذاری", createdAtEpochMillis = now, updatedAtEpochMillis = now),
++        )
++        val itemId = database.inventoryDao().insert(
++            InventoryItemEntity(
++                name = "کالای شماره‌گذاری",
++                category = "مواد اولیه",
++                unit = "عدد",
++                supplierId = supplierId,
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        suspend fun postBlank() = repository.post(
++            PurchaseDraft(
++                invoiceNo = "",
++                supplierId = supplierId,
++                purchaseEpochDay = 30_001L,
++                dueEpochDay = 30_010L,
++                paymentMethod = PurchasePaymentMethod.PAYABLE,
++                reminderEnabled = false,
++                reminderEpochDay = null,
++                lines = listOf(PurchaseLineDraft(itemId, QuantityMicros.positive(1_000_000L), MoneyRial.of(1_000_000L))),
++                branchId = 2L,
++            ),
++        )
++
++        val first = postBlank()
++        val second = postBlank()
++        org.junit.Assert.assertTrue(first.invoiceNo.isNotBlank())
++        org.junit.Assert.assertTrue(second.invoiceNo.isNotBlank())
++        org.junit.Assert.assertNotEquals(first.invoiceNo, second.invoiceNo)
++        assertEquals(first.invoiceNo, requireNotNull(database.purchaseDao().byId(first.purchaseId)).invoiceNo)
++        assertEquals(second.invoiceNo, requireNotNull(database.purchaseDao().byId(second.purchaseId)).invoiceNo)
++    }
++
+     @Test
+     fun branchPurchaseUsesCanonicalBranchButDoesNotBecomeOperatingExpense() = runBlocking {
+         val supplierId = database.supplierDao().insert(
+diff --git a/app/src/main/java/ir/restaurant/management/application/procurement/ProcurementUseCases.kt b/app/src/main/java/ir/restaurant/management/application/procurement/ProcurementUseCases.kt
+index f4edb1b..a8ee874 100644
+--- a/app/src/main/java/ir/restaurant/management/application/procurement/ProcurementUseCases.kt
++++ b/app/src/main/java/ir/restaurant/management/application/procurement/ProcurementUseCases.kt
+@@ -1,7 +1,6 @@
+ package ir.restaurant.management.application.procurement
+ 
+ import ir.restaurant.management.domain.purchase.*
+-import ir.restaurant.management.domain.purchase.PurchaseCalculator
+ 
+ /** Application boundary for procurement commands and workflow policy. */
+ class ProcurementUseCases(
+@@ -50,7 +49,7 @@ class ProcurementUseCases(
+         return repository.postMatchedInvoice(orderId, invoice, approvePriceVariance)
+     }
+ 
+-    suspend fun postPurchase(draft: PurchaseDraft): PostedPurchase = purchaseBoundary().post(PurchaseCalculator.prepare(draft).draft)
++    suspend fun postPurchase(draft: PurchaseDraft): PostedPurchase = purchaseBoundary().post(draft)
+ 
+     suspend fun settlePurchase(draft: PurchaseSettlementDraft): PostedPurchaseSettlement =
+         purchaseBoundary().settle(draft.validated())
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
+index 4180775..1253fa5 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalPurchaseRepository.kt
+@@ -155,7 +155,7 @@ class LocalPurchaseRepository(
+             }
+             syncRecorder?.record("PURCHASE", purchaseId, "CREATE", now)
+             audit("CREATE", purchaseId, "ثبت فاکتور ${normalizedDraft.invoiceNo} به مبلغ ${total.value} ریال؛ سند=${journalId ?: 0}", now)
+-            PostedPurchase(purchaseId, journalId, total)
++            PostedPurchase(purchaseId, journalId, total, normalizedDraft.invoiceNo)
+         }
+     }
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/ProcurementInvoiceMatchingService.kt b/app/src/main/java/ir/restaurant/management/data/repository/ProcurementInvoiceMatchingService.kt
+index 8eafc93..824d51c 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/ProcurementInvoiceMatchingService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/ProcurementInvoiceMatchingService.kt
+@@ -182,7 +182,7 @@ internal class ProcurementInvoiceMatchingService(
+                 now = now,
+             )
+             syncRecorder?.record("PURCHASE", purchaseId, "THREE_WAY_MATCH", now)
+-            PostedPurchase(purchaseId, journalId, prepared.total)
++            PostedPurchase(purchaseId, journalId, prepared.total, prepared.draft.invoiceNo)
+         }
+     }
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/domain/purchase/PurchaseModels.kt b/app/src/main/java/ir/restaurant/management/domain/purchase/PurchaseModels.kt
+index f058597..68f4e68 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/purchase/PurchaseModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/purchase/PurchaseModels.kt
+@@ -68,6 +68,7 @@ data class PostedPurchase(
+     val purchaseId: Long,
+     val journalEntryId: Long?,
+     val total: MoneyRial,
++    val invoiceNo: String,
+ )
+ 
+ enum class SettlementPaymentMethod(val title: String, val settlementRole: SemanticAccountRole) {
+diff --git a/app/src/main/java/ir/restaurant/management/ui/PurchaseOperationsScreens.kt b/app/src/main/java/ir/restaurant/management/ui/PurchaseOperationsScreens.kt
+index 4f50dda..de8c3ec 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/PurchaseOperationsScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/PurchaseOperationsScreens.kt
+@@ -71,6 +71,7 @@ import androidx.compose.foundation.text.KeyboardOptions
+ import androidx.compose.ui.unit.dp
+ import ir.restaurant.management.core.GlobalId
+ import ir.restaurant.management.domain.branch.BranchRecord
++import ir.restaurant.management.domain.operations.AppUserRecord
+ import ir.restaurant.management.domain.operations.InventoryItemDraft
+ import ir.restaurant.management.domain.operations.InventoryCountDraft
+ import ir.restaurant.management.domain.operations.InventoryItemRecord
+@@ -91,6 +92,7 @@ import ir.restaurant.management.domain.purchase.PurchasePaymentMethod
+ fun PurchasesScreen(
+     state: OperationsUiState,
+     branches: List<BranchRecord>,
++    currentUser: AppUserRecord?,
+     onSearch: (String) -> Unit,
+     onPurchaseToday: () -> Unit,
+     onPurchaseWeek: () -> Unit,
+@@ -103,7 +105,7 @@ fun PurchasesScreen(
+     onReverseSettlement: (ir.restaurant.management.domain.purchase.PurchaseSettlementReversalDraft, () -> Unit) -> Unit,
+     onReverse: (ir.restaurant.management.domain.purchase.PurchaseReversalDraft, () -> Unit) -> Unit,
+     onSubmitRequisition: (ir.restaurant.management.domain.purchase.PurchaseRequisitionDraft, () -> Unit) -> Unit,
+-    onReviewRequisition: (Long, Boolean) -> Unit,
++    onReviewRequisition: (Long, Boolean, String, () -> Unit) -> Unit,
+     onCreateOrder: (ir.restaurant.management.domain.purchase.PurchaseOrderDraft, () -> Unit) -> Unit,
+     onCreateSplitOrders: (ir.restaurant.management.domain.purchase.SplitPurchaseOrdersDraft, () -> Unit) -> Unit,
+     onMarkOrderSent: (Long, ir.restaurant.management.domain.purchase.PurchaseOrderDispatchChannel) -> Unit,
+@@ -122,8 +124,8 @@ fun PurchasesScreen(
+     var selectedPriceBranchId by rememberSaveable { mutableStateOf<Long?>(null) }
+     val today = remember { currentEpochDay() }
+     LaunchedEffect(activeBranches, selectedPriceBranchId) {
+-        if (selectedPriceBranchId !in activeBranches.map { it.id }) {
+-            selectedPriceBranchId = activeBranches.firstOrNull()?.id
++        if (selectedPriceBranchId != null && selectedPriceBranchId !in activeBranches.map { it.id }) {
++            selectedPriceBranchId = null
+         }
+     }
+     LaunchedEffect(selectedPriceBranchId) {
+@@ -268,6 +270,7 @@ fun PurchasesScreen(
+                 ProcurementControlPanel(
+                     state = state,
+                     branches = branches,
++                    currentUser = currentUser,
+                     onSubmit = onSubmitRequisition,
+                     onReview = onReviewRequisition,
+                     onCreateOrder = onCreateOrder,
+@@ -410,7 +413,7 @@ fun PurchaseEntryScreen(
+     var invoiceNo by remember { mutableStateOf("") }
+     var supplierId by remember { mutableStateOf<Long?>(null) }
+     val activeBranches = remember(branches) { branches.filter { it.isActive } }
+-    var selectedBranchId by remember(activeBranches) { mutableStateOf(activeBranches.singleOrNull()?.id) }
++    var selectedBranchId by rememberSaveable { mutableStateOf<Long?>(null) }
+     var purchaseEpochDay by remember { mutableLongStateOf(todayEpochDay) }
+     var dueEpochDay by remember { mutableLongStateOf(todayEpochDay) }
+     var paymentMethod by remember { mutableStateOf(PurchasePaymentMethod.PAYABLE) }
+@@ -419,6 +422,24 @@ fun PurchaseEntryScreen(
+     var nextRowId by remember { mutableIntStateOf(2) }
+     var lines by remember { mutableStateOf(listOf(PurchaseLineForm(rowId = 1))) }
+     var localError by remember { mutableStateOf<String?>(null) }
++    var postedPurchase by remember { mutableStateOf<PostedPurchase?>(null) }
++
++    postedPurchase?.let { posted ->
++        AlertDialog(
++            onDismissRequest = {},
++            title = { Text("فاکتور خرید ثبت شد") },
++            text = {
++                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                    Text("شماره داخلی فاکتور: ${posted.invoiceNo}", fontWeight = FontWeight.Bold)
++                    Text("مبلغ ثبت‌شده: ${formatMoney(posted.total.value)}")
++                    Text("این شماره توسط سیستم صادر شده و پس از ثبت تغییر نمی‌کند.", color = MaterialTheme.colorScheme.onSurfaceVariant)
++                }
++            },
++            confirmButton = {
++                Button(onClick = onBack, modifier = Modifier.testTag("purchase_invoice_issued_done")) { Text("بازگشت به خریدها") }
++            },
++        )
++    }
+ 
+     Scaffold(
+         topBar = {
+@@ -561,7 +582,7 @@ fun PurchaseEntryScreen(
+                                 )
+                             },
+                         )
+-                        onPost(draft) { onBack() }
++                        onPost(draft) { posted -> postedPurchase = posted }
+                     } catch (error: Exception) {
+                         localError = error.message ?: "اطلاعات فاکتور کامل نیست."
+                     }

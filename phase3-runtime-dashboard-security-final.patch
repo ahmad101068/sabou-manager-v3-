@@ -1,0 +1,83 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+index 6ff7b8a..202726c 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+@@ -66,10 +66,10 @@ class DashboardNavigationSettingsUx2ComposeTest {
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_section"))
+         composeRule.waitUntil(10_000) {
+             composeRule.onAllNodesWithTag("home_kpi_summary").fetchSemanticsNodes().isNotEmpty() &&
+-                composeRule.onAllNodesWithTag("home_kpi_sales").fetchSemanticsNodes().isNotEmpty()
++                composeRule.onAllNodesWithTag("home_kpi_sales", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+         }
+         composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
+-        composeRule.onNodeWithTag("home_kpi_sales").assertIsDisplayed()
++        composeRule.onNodeWithTag("home_kpi_sales", useUnmergedTree = true).assertIsDisplayed()
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_quick_actions"))
+         composeRule.onNodeWithTag("home_quick_actions").assertIsDisplayed()
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_attention_center"))
+@@ -109,10 +109,10 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     fun cashierHome_filtersSensitiveKpisAndActionsBeforeRendering() {
+         switchToRoleUser(CASHIER_USERNAME, CASHIER_PIN, UserRole.CASHIER)
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_section"))
+-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_kpi_sales").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_kpi_sales", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+         composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
+-        assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity").fetchSemanticsNodes().isEmpty())
+-        composeRule.onNodeWithTag("home_kpi_sales").assertIsDisplayed()
++        assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity", useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
++        composeRule.onNodeWithTag("home_kpi_sales", useUnmergedTree = true).assertIsDisplayed()
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_quick_actions"))
+         composeRule.onNodeWithTag("home_action_sale").assertIsDisplayed()
+         assertTrue(composeRule.onAllNodesWithTag("home_action_personnel").fetchSemanticsNodes().isEmpty())
+@@ -122,10 +122,10 @@ class DashboardNavigationSettingsUx2ComposeTest {
+     fun inventoryHome_showsInventoryContext_withoutFinancialKpis() {
+         switchToRoleUser(INVENTORY_USERNAME, INVENTORY_PIN, UserRole.INVENTORY)
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_kpi_section"))
+-        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_kpi_low_stock").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("home_kpi_low_stock", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+         composeRule.onNodeWithTag("home_kpi_summary").assertIsDisplayed()
+         composeRule.onNodeWithText("کم‌موجودی").assertIsDisplayed()
+-        assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity").fetchSemanticsNodes().isEmpty())
++        assertTrue(composeRule.onAllNodesWithTag("home_kpi_liquidity", useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
+         composeRule.onNodeWithTag("home_dashboard").performScrollToNode(hasTestTag("home_quick_actions"))
+         composeRule.onNodeWithTag("home_action_inventory").assertIsDisplayed()
+     }
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
+index 43f348b..0daf051 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/StartupAuthenticationBoundaryComposeTest.kt
+@@ -49,6 +49,7 @@ class StartupAuthenticationBoundaryComposeTest {
+     fun cashierWithoutPayrollPermission_logsInWithoutPayrollSubscription_andLogoutTearsDownProtectedGraph() {
+         val cashier = prepareCashierAndLogout()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_users_loaded").fetchSemanticsNodes().isNotEmpty() }
+ 
+         composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_user_${cashier.id}"))
+         composeRule.onNodeWithTag("security_switch_${cashier.id}").performClick()
+@@ -79,6 +80,7 @@ class StartupAuthenticationBoundaryComposeTest {
+     fun ownerWithPayrollPermission_afterLoginCanLoadPayrollWorkspace() {
+         val owner = prepareOwnerAndLogout()
+         composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_root").fetchSemanticsNodes().isNotEmpty() }
++        composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("security_users_loaded").fetchSemanticsNodes().isNotEmpty() }
+ 
+         composeRule.onNodeWithTag("security_root").performScrollToNode(hasTestTag("security_user_${owner.id}"))
+         composeRule.onNodeWithTag("security_switch_${owner.id}").performClick()
+diff --git a/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt b/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt
+index 522f3d4..25abb10 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/SecurityScreens.kt
+@@ -187,7 +187,13 @@ fun SecurityScreen(
+             verticalArrangement = Arrangement.spacedBy(14.dp),
+         ) {
+             item {
+-                CurrentUserPanel(state, onLogout)
++                Box(
++                    Modifier
++                        .fillMaxWidth()
++                        .testTag(if (state.users.isEmpty()) "security_users_empty" else "security_users_loaded"),
++                ) {
++                    CurrentUserPanel(state, onLogout)
++                }
+             }
+             item {
+                 SecuritySectionSelector(

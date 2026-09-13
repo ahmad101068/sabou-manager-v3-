@@ -1,0 +1,111 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/PostCiUatCorrectionComposeTest.kt
+@@ -1,13 +1,16 @@
+ package ir.restaurant.management.ui
+ 
++import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.setValue
+ import androidx.compose.ui.test.assertIsDisplayed
++import androidx.compose.ui.test.assertIsEnabled
+ import androidx.compose.ui.test.junit4.createComposeRule
+ import androidx.compose.ui.test.onNodeWithTag
+ import androidx.compose.ui.test.performClick
++import androidx.compose.ui.test.performScrollTo
+ import androidx.compose.ui.test.performTextInput
+ import ir.restaurant.management.domain.branch.BranchRecord
+ import ir.restaurant.management.domain.operations.AppUserRecord
+@@ -83,38 +86,42 @@ class PostCiUatCorrectionComposeTest {
+ 
+         composeRule.setContent {
+             MaterialTheme {
+-                ProcurementControlPanel(
+-                    state = state,
+-                    branches = emptyList(),
+-                    currentUser = manager,
+-                    onSubmit = { _, done -> done() },
+-                    onReview = { id, approve, reason, done ->
+-                        if (approve) approvedId = id else {
+-                            rejectedId = id
+-                            rejectedReason = reason
+-                        }
+-                        done()
+-                    },
+-                    onCreateOrder = { _, done -> done() },
+-                    onCreateSplitOrders = { _, done -> done() },
+-                    onMarkOrderSent = { _, _ -> },
+-                    onAcknowledgeOrder = { _, done -> done() },
+-                    onReceive = { _, done -> done() },
+-                    onReturn = { _, done -> done() },
+-                    onSaveReplenishmentPolicy = { _, done -> done() },
+-                    onSaveSupplierOffer = { _, done -> done() },
+-                    onSubmitSuggestedRequisition = { _, done -> done() },
+-                    onMatchInvoice = { _, _, _, done -> done() },
+-                    onConsumeLaunchAction = {},
+-                )
++                LazyColumn {
++                    item {
++                        ProcurementControlPanel(
++                            state = state,
++                            branches = emptyList(),
++                            currentUser = manager,
++                            onSubmit = { _, done -> done() },
++                            onReview = { id, approve, reason, done ->
++                                if (approve) approvedId = id else {
++                                    rejectedId = id
++                                    rejectedReason = reason
++                                }
++                                done()
++                            },
++                            onCreateOrder = { _, done -> done() },
++                            onCreateSplitOrders = { _, done -> done() },
++                            onMarkOrderSent = { _, _ -> },
++                            onAcknowledgeOrder = { _, done -> done() },
++                            onReceive = { _, done -> done() },
++                            onReturn = { _, done -> done() },
++                            onSaveReplenishmentPolicy = { _, done -> done() },
++                            onSaveSupplierOffer = { _, done -> done() },
++                            onSubmitSuggestedRequisition = { _, done -> done() },
++                            onMatchInvoice = { _, _, _, done -> done() },
++                            onConsumeLaunchAction = {},
++                        )
++                    }
++                }
+             }
+         }
+ 
+         composeRule.onNodeWithTag("procurement_workflow_stepper").assertIsDisplayed()
+-        composeRule.onNodeWithTag("procurement_approve_41").performClick()
++        composeRule.onNodeWithTag("procurement_approve_41").performScrollTo().assertIsEnabled().performClick()
+         composeRule.runOnIdle { assertEquals(41L, approvedId) }
+ 
+-        composeRule.onNodeWithTag("procurement_reject_41").performClick()
++        composeRule.onNodeWithTag("procurement_reject_41").performScrollTo().assertIsEnabled().performClick()
+         composeRule.onNodeWithTag("procurement_rejection_dialog").assertIsDisplayed()
+         composeRule.onNodeWithTag("procurement_rejection_confirm").performClick()
+         composeRule.runOnIdle {
+diff --git a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+index 9980dda..7896d5c 100644
+--- a/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
++++ b/app/src/androidTest/java/ir/restaurant/management/ui/DashboardNavigationSettingsUx2ComposeTest.kt
+@@ -13,6 +13,7 @@ import androidx.compose.ui.test.performClick
+ import androidx.compose.ui.test.performScrollTo
+ import androidx.compose.ui.test.performScrollToNode
+ import ir.restaurant.management.MainActivity
++import ir.restaurant.management.domain.branch.BranchDraft
+ import ir.restaurant.management.RestaurantManagementApplication
+ import ir.restaurant.management.domain.operations.AppUserRecord
+ import ir.restaurant.management.domain.operations.UserDraft
+@@ -48,6 +49,9 @@ class DashboardNavigationSettingsUx2ComposeTest {
+                 security.users.first().first { it.username == OWNER_USERNAME }
+             }
+             if (security.currentUser.first()?.id != resolved.id) security.switchUser(resolved.id, OWNER_PIN)
++            if (app.container.branchRepository.listActive().isEmpty()) {
++                app.container.branchRepository.create(BranchDraft(name = "شعبه UX2", code = "UX2"))
++            }
+             resolved
+         }
+         composeRule.waitUntil(15_000) { composeRule.onAllNodesWithTag("home_dashboard").fetchSemanticsNodes().isNotEmpty() }

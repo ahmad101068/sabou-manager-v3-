@@ -1,0 +1,648 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/db/Migration56To57Test.kt b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration56To57Test.kt
+new file mode 100644
+index 0000000..b09ca33
+--- /dev/null
++++ b/app/src/androidTest/java/ir/restaurant/management/data/db/Migration56To57Test.kt
+@@ -0,0 +1,65 @@
++package ir.restaurant.management.data.db
++
++import androidx.room.testing.MigrationTestHelper
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.platform.app.InstrumentationRegistry
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Rule
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@RunWith(AndroidJUnit4::class)
++class Migration56To57Test {
++    @get:Rule
++    val helper = MigrationTestHelper(
++        InstrumentationRegistry.getInstrumentation(),
++        AppDatabase::class.java,
++    )
++
++    @Test
++    fun phase4MigrationBackfillsPremiumPolicyAndAddsAttendanceBranchProvenance() {
++        helper.createDatabase(DB_NAME, 56).use { db ->
++            db.execSQL(
++                "INSERT INTO payroll_policies(id,title,versionNo,effectiveFromEpochDay,effectiveToEpochDay,overtimeHourlyRateRial,absenceDailyDeductionRial,lateMinuteDeductionRial,overtimeMultiplierBasisPoints,insuranceBasisPoints,taxBasisPoints,status,createdBy,createdByActorId,createdAtEpochMillis,correlationId) " +
++                    "VALUES(4,'Legacy payroll',3,20000,NULL,1200000,0,0,15000,700,1000,'ACTIVE','manager',NULL,1,'legacy:policy')",
++            )
++        }
++
++        helper.runMigrationsAndValidate(DB_NAME, 57, true, MIGRATION_56_57).use { db ->
++            db.query("SELECT holidayMultiplierBasisPoints,nightMultiplierBasisPoints FROM payroll_policies WHERE id=4").use { cursor ->
++                assertTrue(cursor.moveToFirst())
++                assertEquals(10_000, cursor.getInt(0))
++                assertEquals(10_000, cursor.getInt(1))
++            }
++            db.query("PRAGMA table_info(attendance_events)").use { cursor ->
++                var branchFound = false
++                val nameIndex = cursor.getColumnIndex("name")
++                while (cursor.moveToNext()) if (cursor.getString(nameIndex) == "branchId") branchFound = true
++                assertTrue(branchFound)
++            }
++            db.query("SELECT name FROM sqlite_master WHERE type='index' AND name='index_attendance_events_branchId'").use { cursor ->
++                assertTrue(cursor.moveToFirst())
++            }
++            db.query("PRAGMA table_info(payroll_snapshots)").use { cursor ->
++                val required = mutableSetOf("nightMinutes", "holidayMinutes", "nightMultiplierBasisPoints", "holidayMultiplierBasisPoints")
++                val nameIndex = cursor.getColumnIndex("name")
++                while (cursor.moveToNext()) required.remove(cursor.getString(nameIndex))
++                assertTrue(required.isEmpty())
++            }
++            db.query("PRAGMA foreign_key_check").use { cursor -> assertEquals(0, cursor.count) }
++        }
++    }
++
++    @Test
++    fun migrationRegistryContainsForwardOnly56To57() {
++        val registry = ALL_MIGRATIONS.toList()
++        assertTrue(registry.any { it.startVersion == 56 && it.endVersion == 57 })
++        assertFalse(registry.any { it.startVersion == 57 && it.endVersion == 56 })
++    }
++
++    private companion object {
++        const val DB_NAME = "phase4-migration-56-57"
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+index bda1077..32d4410 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/AppDatabase.kt
+@@ -8,7 +8,7 @@ import ir.restaurant.management.data.security.DatabaseKeyProvider
+ import java.io.File
+ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
+ 
+-internal const val APP_DATABASE_SCHEMA_VERSION = 56
++internal const val APP_DATABASE_SCHEMA_VERSION = 57
+ 
+ @Database(
+     entities = [
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/HrPayrollEntities.kt b/app/src/main/java/ir/restaurant/management/data/db/HrPayrollEntities.kt
+index ecf09b8..ea76e35 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/HrPayrollEntities.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/HrPayrollEntities.kt
+@@ -135,6 +135,7 @@ data class EmploymentContractVersionEntity(
+         Index(value = ["idempotencyKey"], unique = true),
+         Index(value = ["employeeId", "businessEpochDay", "timestampEpochMillis"]),
+         Index(value = ["employeeId", "eventType", "businessEpochDay"]),
++        Index("branchId"),
+         Index("correlationId"),
+     ],
+ )
+@@ -150,6 +151,7 @@ data class AttendanceEventEntity(
+     val source: String,
+     val deviceId: String?,
+     val locationId: Long?,
++    val branchId: Long?,
+     val createdByActorId: Long?,
+     val reason: String?,
+     val correlationId: String,
+@@ -431,6 +433,10 @@ data class PayrollSnapshotEntity(
+     val overtimeMultiplierBasisPoints: Int?,
+     val insuranceBasisPoints: Int?,
+     val taxBasisPoints: Int?,
++    @ColumnInfo(defaultValue = "0") val nightMinutes: Int = 0,
++    @ColumnInfo(defaultValue = "0") val holidayMinutes: Int = 0,
++    @ColumnInfo(defaultValue = "10000") val nightMultiplierBasisPoints: Int = 10_000,
++    @ColumnInfo(defaultValue = "10000") val holidayMultiplierBasisPoints: Int = 10_000,
+     val grossPayRial: Long,
+     val totalDeductionsRial: Long,
+     val netPayRial: Long,
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/PersonnelEntities.kt b/app/src/main/java/ir/restaurant/management/data/db/PersonnelEntities.kt
+index e2d0963..a126b44 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/PersonnelEntities.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/PersonnelEntities.kt
+@@ -149,6 +149,8 @@ data class PayrollPolicyEntity(
+     @ColumnInfo(defaultValue = "10000") val overtimeMultiplierBasisPoints: Int = 10_000,
+     @ColumnInfo(defaultValue = "0") val insuranceBasisPoints: Int = 0,
+     @ColumnInfo(defaultValue = "0") val taxBasisPoints: Int = 0,
++    @ColumnInfo(defaultValue = "10000") val holidayMultiplierBasisPoints: Int = 10_000,
++    @ColumnInfo(defaultValue = "10000") val nightMultiplierBasisPoints: Int = 10_000,
+     @ColumnInfo(defaultValue = "'ACTIVE'") val status: String = "ACTIVE",
+     val createdBy: String,
+     val createdByActorId: Long? = null,
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
+index 022c17c..4364a4a 100644
+--- a/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/AppMigrations.kt
+@@ -59,4 +59,5 @@ internal val ALL_MIGRATIONS: Array<Migration> = arrayOf(
+     MIGRATION_53_54,
+     MIGRATION_54_55,
+     MIGRATION_55_56,
++    MIGRATION_56_57,
+ )
+diff --git a/app/src/main/java/ir/restaurant/management/data/db/migration/Phase4HrPayrollMigration.kt b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase4HrPayrollMigration.kt
+new file mode 100644
+index 0000000..a547d5f
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/data/db/migration/Phase4HrPayrollMigration.kt
+@@ -0,0 +1,20 @@
++package ir.restaurant.management.data.db
++
++import androidx.room.migration.Migration
++import androidx.sqlite.db.SupportSQLiteDatabase
++
++/** Phase 4 — HR attendance provenance and versioned payroll premium policy. */
++internal val MIGRATION_56_57 = object : Migration(56, 57) {
++    override fun migrate(db: SupportSQLiteDatabase) {
++        db.execSQL("ALTER TABLE attendance_events ADD COLUMN branchId INTEGER")
++        db.execSQL("CREATE INDEX IF NOT EXISTS index_attendance_events_branchId ON attendance_events(branchId)")
++
++        db.execSQL("ALTER TABLE payroll_policies ADD COLUMN holidayMultiplierBasisPoints INTEGER NOT NULL DEFAULT 10000")
++        db.execSQL("ALTER TABLE payroll_policies ADD COLUMN nightMultiplierBasisPoints INTEGER NOT NULL DEFAULT 10000")
++
++        db.execSQL("ALTER TABLE payroll_snapshots ADD COLUMN nightMinutes INTEGER NOT NULL DEFAULT 0")
++        db.execSQL("ALTER TABLE payroll_snapshots ADD COLUMN holidayMinutes INTEGER NOT NULL DEFAULT 0")
++        db.execSQL("ALTER TABLE payroll_snapshots ADD COLUMN nightMultiplierBasisPoints INTEGER NOT NULL DEFAULT 10000")
++        db.execSQL("ALTER TABLE payroll_snapshots ADD COLUMN holidayMultiplierBasisPoints INTEGER NOT NULL DEFAULT 10000")
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalHrPayrollService.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalHrPayrollService.kt
+index 7a7db84..f593093 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalHrPayrollService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalHrPayrollService.kt
+@@ -950,6 +950,10 @@ class LocalHrPayrollService(
+             overtimeMultiplierBasisPoints = input.overtimeMultiplierBasisPoints,
+             insuranceBasisPoints = input.insuranceBasisPoints,
+             taxBasisPoints = input.taxBasisPoints,
++            nightMinutes = input.nightMinutes,
++            holidayMinutes = input.holidayMinutes,
++            nightMultiplierBasisPoints = input.nightMultiplierBasisPoints,
++            holidayMultiplierBasisPoints = input.holidayMultiplierBasisPoints,
+             grossPayRial = result.grossPayRial,
+             totalDeductionsRial = result.totalDeductionsRial,
+             netPayRial = result.netPayRial,
+@@ -1006,6 +1010,10 @@ class LocalHrPayrollService(
+             snapshot.overtimeMultiplierBasisPoints,
+             snapshot.insuranceBasisPoints,
+             snapshot.taxBasisPoints,
++            snapshot.nightMinutes,
++            snapshot.holidayMinutes,
++            snapshot.nightMultiplierBasisPoints,
++            snapshot.holidayMultiplierBasisPoints,
+             snapshot.calculationVersion,
+             grossPayRial,
+             totalDeductionsRial,
+@@ -1250,6 +1258,10 @@ private fun PayrollSnapshotEntity.toDomainRequired() = PayrollInputSnapshot(
+     insuranceBasisPoints = requireNotNull(insuranceBasisPoints),
+     taxBasisPoints = requireNotNull(taxBasisPoints),
+     calculationVersion = requireNotNull(calculationVersion),
++    nightMinutes = nightMinutes,
++    holidayMinutes = holidayMinutes,
++    nightMultiplierBasisPoints = nightMultiplierBasisPoints,
++    holidayMultiplierBasisPoints = holidayMultiplierBasisPoints,
+ ).validated()
+ 
+ private fun PayrollComponentEntity.toDraft() = PayrollComponentDraftV2(
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt
+index 9456d93..c8fd7aa 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalPersonnelRepository.kt
+@@ -195,6 +195,7 @@ class LocalPersonnelRepository(
+             it.id, it.title, it.effectiveFromEpochDay, it.effectiveToEpochDay, it.overtimeHourlyRateRial,
+             it.absenceDailyDeductionRial, it.lateMinuteDeductionRial, it.createdBy, it.versionNo,
+             it.overtimeMultiplierBasisPoints, it.insuranceBasisPoints, it.taxBasisPoints,
++            it.holidayMultiplierBasisPoints, it.nightMultiplierBasisPoints,
+         ) }
+     }
+ 
+@@ -202,8 +203,9 @@ class LocalPersonnelRepository(
+         val actor = authorizer.require(Permission.PAYROLL_CREATE)
+         val valid = draft.validated()
+         return database.withTransaction {
+-            personnel.openPayrollPolicyBefore(valid.effectiveFromEpochDay)?.let { previous ->
+-                check(personnel.closeOpenPayrollPolicy(previous.id, valid.effectiveFromEpochDay - 1L) == 1) {
++            val previous = personnel.openPayrollPolicyBefore(valid.effectiveFromEpochDay)
++            previous?.let { row ->
++                check(personnel.closeOpenPayrollPolicy(row.id, valid.effectiveFromEpochDay - 1L) == 1) {
+                     "بستن نسخه قبلی سیاست حقوق انجام نشد."
+                 }
+             }
+@@ -215,8 +217,10 @@ class LocalPersonnelRepository(
+                 title = valid.title, effectiveFromEpochDay = valid.effectiveFromEpochDay,
+                 effectiveToEpochDay = valid.effectiveToEpochDay, overtimeHourlyRateRial = valid.overtimeHourlyRateRial,
+                 absenceDailyDeductionRial = valid.absenceDailyDeductionRial, lateMinuteDeductionRial = valid.lateMinuteDeductionRial,
+-                versionNo = 1, overtimeMultiplierBasisPoints = valid.overtimeMultiplierBasisPoints,
++                versionNo = (previous?.versionNo ?: 0) + 1, overtimeMultiplierBasisPoints = valid.overtimeMultiplierBasisPoints,
+                 insuranceBasisPoints = valid.insuranceBasisPoints, taxBasisPoints = valid.taxBasisPoints,
++                holidayMultiplierBasisPoints = valid.holidayMultiplierBasisPoints,
++                nightMultiplierBasisPoints = valid.nightMultiplierBasisPoints,
+                 createdBy = actor.displayName, createdByActorId = actor.id, createdAtEpochMillis = now,
+                 correlationId = "payroll_policy:${GlobalId.new().value}",
+             )).also { syncRecorder?.record("PAYROLL_POLICY", it, "CREATE", now) }
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt b/app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt
+index ce22f8b..138dec0 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/PayrollBatchPreparationService.kt
+@@ -368,6 +368,10 @@ internal class PayrollBatchPreparationService(private val database: AppDatabase)
+                 insuranceBasisPoints = policy.insuranceBasisPoints,
+                 taxBasisPoints = policy.taxBasisPoints,
+                 calculationVersion = CALCULATION_VERSION,
++                nightMinutes = totals.nightMinutes,
++                holidayMinutes = totals.holidayMinutes,
++                nightMultiplierBasisPoints = policy.nightMultiplierBasisPoints,
++                holidayMultiplierBasisPoints = policy.holidayMultiplierBasisPoints,
+             ).validated()
+             val result = try {
+                 PayrollCalculationService.calculate(
+@@ -564,6 +568,8 @@ internal class PayrollBatchPreparationService(private val database: AppDatabase)
+                 lateMinutes = snapshot.lateMinutes,
+                 paidLeaveMinutes = scheduledMinutes.takeIf { snapshot.status == DailyAttendanceStatus.PAID_LEAVE } ?: 0,
+                 unpaidLeaveMinutes = scheduledMinutes.takeIf { snapshot.status == DailyAttendanceStatus.UNPAID_LEAVE } ?: 0,
++                nightMinutes = if (shiftTemplate?.nightShift == true) snapshot.workedMinutes else 0,
++                holidayMinutes = if (snapshot.status == DailyAttendanceStatus.HOLIDAY) snapshot.workedMinutes else 0,
+                 exceptions = exceptions,
+             )
+         }
+@@ -615,6 +621,7 @@ internal class PayrollBatchPreparationService(private val database: AppDatabase)
+                 overtimeMinutes = calc.payrollOvertimeMinutes,
+                 absenceMinutes = (scheduledMinutes - sessionSummary.workedMinutes).coerceAtLeast(0),
+                 lateMinutes = calc.payableLateMinutes,
++                nightMinutes = if (template.nightShift) sessionSummary.workedMinutes else 0,
+                 exceptions = exceptions,
+             )
+         }
+@@ -631,11 +638,27 @@ internal class PayrollBatchPreparationService(private val database: AppDatabase)
+                     overtimeMinutes = legacy.approvedOvertimeMinutes,
+                     absenceMinutes = legacy.earlyLeaveMinutes,
+                     lateMinutes = legacy.payableLateMinutes,
++                    nightMinutes = if (shiftTemplate?.nightShift == true && legacy.checkInMinute != null && legacy.checkOutMinute != null) {
++                        if (legacy.checkOutMinute >= legacy.checkInMinute) (legacy.checkOutMinute - legacy.checkInMinute - plannedShift.breakMinutes).coerceAtLeast(0)
++                        else (1440 - legacy.checkInMinute + legacy.checkOutMinute - plannedShift.breakMinutes).coerceAtLeast(0)
++                    } else 0,
+                     exceptions = exceptions,
+                 )
+                 "ABSENT" -> PayrollDayTotals(absenceMinutes = scheduledMinutes, exceptions = exceptions)
+                 "LEAVE" -> PayrollDayTotals(exceptions = exceptions + exception("LEGACY_LEAVE_PAY_STATUS_UNKNOWN", employee.id, false, "businessDay=$businessDay"))
+-                "MISSION", "HOLIDAY", "OFF_DAY" -> PayrollDayTotals(exceptions = exceptions)
++                "HOLIDAY" -> {
++                    val worked = if (legacy.checkInMinute != null && legacy.checkOutMinute != null) {
++                        if (legacy.checkOutMinute >= legacy.checkInMinute) (legacy.checkOutMinute - legacy.checkInMinute - plannedShift.breakMinutes).coerceAtLeast(0)
++                        else (1440 - legacy.checkInMinute + legacy.checkOutMinute - plannedShift.breakMinutes).coerceAtLeast(0)
++                    } else 0
++                    PayrollDayTotals(
++                        workedMinutes = worked,
++                        holidayMinutes = worked,
++                        nightMinutes = if (shiftTemplate?.nightShift == true) worked else 0,
++                        exceptions = exceptions,
++                    )
++                }
++                "MISSION", "OFF_DAY" -> PayrollDayTotals(exceptions = exceptions)
+                 else -> PayrollDayTotals(
+                     absenceMinutes = scheduledMinutes,
+                     exceptions = exceptions + exception("UNKNOWN_LEGACY_ATTENDANCE", employee.id, true, "businessDay=$businessDay;status=${legacy.status}"),
+@@ -713,6 +736,8 @@ private data class PayrollDayTotals(
+     val lateMinutes: Int = 0,
+     val paidLeaveMinutes: Int = 0,
+     val unpaidLeaveMinutes: Int = 0,
++    val nightMinutes: Int = 0,
++    val holidayMinutes: Int = 0,
+     val exceptions: List<PayrollExceptionRecord> = emptyList(),
+ )
+ 
+@@ -729,6 +754,10 @@ private class PayrollAttendanceTotals {
+         private set
+     var unpaidLeaveMinutes: Int = 0
+         private set
++    var nightMinutes: Int = 0
++        private set
++    var holidayMinutes: Int = 0
++        private set
+ 
+     fun add(day: PayrollDayTotals) {
+         workedMinutes = Math.addExact(workedMinutes, day.workedMinutes)
+@@ -737,6 +766,8 @@ private class PayrollAttendanceTotals {
+         lateMinutes = Math.addExact(lateMinutes, day.lateMinutes)
+         paidLeaveMinutes = Math.addExact(paidLeaveMinutes, day.paidLeaveMinutes)
+         unpaidLeaveMinutes = Math.addExact(unpaidLeaveMinutes, day.unpaidLeaveMinutes)
++        nightMinutes = Math.addExact(nightMinutes, day.nightMinutes)
++        holidayMinutes = Math.addExact(holidayMinutes, day.holidayMinutes)
+     }
+ }
+ 
+@@ -777,6 +808,7 @@ private fun AttendanceEventEntity.toDomain() = AttendanceEvent(
+     createdByActorId = createdByActorId,
+     reason = reason,
+     correlationId = CorrelationId.parse(correlationId),
++    branchId = branchId,
+ )
+ 
+ private fun AttendanceAnomaly.toException(employeeId: Long, businessDay: Long) = PayrollExceptionRecord(
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt b/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
+index ee8e92e..b5d86a4 100644
+--- a/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
++++ b/app/src/main/java/ir/restaurant/management/data/repository/PersonnelAttendanceService.kt
+@@ -93,7 +93,7 @@ internal class PersonnelAttendanceService(
+ 
+             if (id == null) {
+                 val attendanceId = personnel.insertAttendance(entity)
+-                appendInputEvents(valid, actor.id, correlation, baseKey, calculation)
++                appendInputEvents(valid, actor.id, correlation, baseKey, calculation, employee.branchId, employee.locationId)
+                 if (calculation != null) syncOvertimeApproval(valid, calculation, actor.id, correlation)
+                 auditWriter.appendAuthorized(
+                     authorizer, "CREATE", "ATTENDANCE", attendanceId, "ثبت حضور و غیاب روزانه",
+@@ -136,6 +136,7 @@ internal class PersonnelAttendanceService(
+                         source = AttendanceSource.MANUAL.storedValue,
+                         deviceId = null,
+                         locationId = employee.locationId,
++                        branchId = employee.branchId,
+                         createdByActorId = actor.id,
+                         reason = valid.correctionReason,
+                         correlationId = correlation,
+@@ -441,6 +442,8 @@ internal class PersonnelAttendanceService(
+         correlationId: String,
+         baseIdempotencyKey: String,
+         calculation: AttendanceCalculationEngine.Result?,
++        branchId: Long?,
++        locationId: Long?,
+     ) {
+         suspend fun append(type: AttendanceEventType, minuteOfDay: Int, key: String, globalId: String, timestampOverride: Long? = null) {
+             hr.insertAttendanceEvent(
+@@ -454,7 +457,8 @@ internal class PersonnelAttendanceService(
+                     minuteOfDay = minuteOfDay,
+                     source = draft.source.storedValue,
+                     deviceId = null,
+-                    locationId = null,
++                    locationId = locationId,
++                    branchId = branchId,
+                     createdByActorId = actorId,
+                     reason = draft.notes.takeIf { it.isNotBlank() },
+                     correlationId = correlationId,
+@@ -497,6 +501,7 @@ private fun AttendanceEventEntity.toAttendanceDomain() = AttendanceEvent(
+     createdByActorId = createdByActorId,
+     reason = reason,
+     correlationId = CorrelationId.parse(correlationId),
++    branchId = branchId,
+ )
+ 
+ private fun AttendanceCorrectionEntity.toDailySummary(): DailyAttendanceSummaryV2 {
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollModels.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollModels.kt
+index 56071d6..bc9ad83 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollModels.kt
+@@ -74,6 +74,7 @@ data class AttendanceEvent(
+     val createdByActorId: Long?,
+     val reason: String?,
+     val correlationId: CorrelationId,
++    val branchId: Long? = null,
+ )
+ 
+ data class AttendanceAnomaly(
+@@ -219,6 +220,10 @@ data class PayrollInputSnapshot(
+     val insuranceBasisPoints: Int,
+     val taxBasisPoints: Int,
+     val calculationVersion: String,
++    val nightMinutes: Int = 0,
++    val holidayMinutes: Int = 0,
++    val nightMultiplierBasisPoints: Int = 10_000,
++    val holidayMultiplierBasisPoints: Int = 10_000,
+ ) {
+     fun validated(): PayrollInputSnapshot {
+         require(employeeId > 0 && contractId > 0 && payrollPolicyId > 0)
+@@ -226,9 +231,13 @@ data class PayrollInputSnapshot(
+         MoneyRial.of(baseSalaryRial)
+         require(standardPeriodMinutes > 0)
+         require(eligiblePeriodMinutes in 0..standardPeriodMinutes)
+-        require(listOf(actualWorkMinutes, overtimeMinutes, absenceMinutes, lateMinutes, paidLeaveMinutes, unpaidLeaveMinutes).all { it >= 0 })
++        require(listOf(actualWorkMinutes, overtimeMinutes, absenceMinutes, lateMinutes, paidLeaveMinutes, unpaidLeaveMinutes, nightMinutes, holidayMinutes).all { it >= 0 })
++        require(nightMinutes <= actualWorkMinutes) { "payroll_night_minutes_exceed_work" }
++        require(holidayMinutes <= actualWorkMinutes) { "payroll_holiday_minutes_exceed_work" }
+         MoneyRial.of(overtimeRateRialPerHour)
+         require(overtimeMultiplierBasisPoints in 0..100_000)
++        require(nightMultiplierBasisPoints in 10_000..100_000) { "payroll_night_multiplier_invalid" }
++        require(holidayMultiplierBasisPoints in 10_000..100_000) { "payroll_holiday_multiplier_invalid" }
+         require(insuranceBasisPoints in 0..10_000 && taxBasisPoints in 0..10_000)
+         require(calculationVersion.matches(Regex("[A-Za-z0-9._-]{1,40}")))
+         return this
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollTypes.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollTypes.kt
+index 17015d8..ec93a3f 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollTypes.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/HrPayrollTypes.kt
+@@ -224,6 +224,8 @@ enum class PayrollPayslipStatus(val storedValue: String) {
+ enum class PayrollComponentType(val storedValue: String) {
+     BASE_SALARY("BASE_SALARY"),
+     OVERTIME("OVERTIME"),
++    NIGHT_DIFFERENTIAL("NIGHT_DIFFERENTIAL"),
++    HOLIDAY_PREMIUM("HOLIDAY_PREMIUM"),
+     BONUS("BONUS"),
+     ALLOWANCE("ALLOWANCE"),
+     COMMISSION("COMMISSION"),
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/PayrollAccountingPlanner.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/PayrollAccountingPlanner.kt
+index 3c940fe..fdb619b 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/personnel/PayrollAccountingPlanner.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/PayrollAccountingPlanner.kt
+@@ -59,7 +59,9 @@ object PayrollAccountingPlanner {
+     }
+ 
+     private fun earningExpenseRole(type: PayrollComponentType): SemanticAccountRole = when (type) {
+-        PayrollComponentType.OVERTIME -> SemanticAccountRole.OVERTIME_EXPENSE
++        PayrollComponentType.OVERTIME,
++        PayrollComponentType.NIGHT_DIFFERENTIAL,
++        PayrollComponentType.HOLIDAY_PREMIUM -> SemanticAccountRole.OVERTIME_EXPENSE
+         PayrollComponentType.BONUS -> SemanticAccountRole.BONUS_EXPENSE
+         PayrollComponentType.ALLOWANCE -> SemanticAccountRole.ALLOWANCE_EXPENSE
+         PayrollComponentType.BASE_SALARY,
+@@ -91,6 +93,8 @@ object PayrollAccountingPlanner {
+ 
+         PayrollComponentType.BASE_SALARY,
+         PayrollComponentType.OVERTIME,
++        PayrollComponentType.NIGHT_DIFFERENTIAL,
++        PayrollComponentType.HOLIDAY_PREMIUM,
+         PayrollComponentType.BONUS,
+         PayrollComponentType.ALLOWANCE,
+         PayrollComponentType.COMMISSION,
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/PayrollCalculationService.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/PayrollCalculationService.kt
+index fc357ed..b3ead44 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/personnel/PayrollCalculationService.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/PayrollCalculationService.kt
+@@ -60,6 +60,20 @@ object PayrollCalculationService {
+                     )
+                 }
+             }
++            addPremiumEarning(
++                type = PayrollComponentType.NIGHT_DIFFERENTIAL,
++                description = "فوق‌العاده شب‌کاری",
++                minutes = input.nightMinutes,
++                multiplierBasisPoints = input.nightMultiplierBasisPoints,
++                input = input,
++            )
++            addPremiumEarning(
++                type = PayrollComponentType.HOLIDAY_PREMIUM,
++                description = "فوق‌العاده کار در تعطیل",
++                minutes = input.holidayMinutes,
++                multiplierBasisPoints = input.holidayMultiplierBasisPoints,
++                input = input,
++            )
+             addMinuteDeduction(
+                 type = PayrollComponentType.ABSENCE_DEDUCTION,
+                 description = "کسر غیبت",
+@@ -158,6 +172,40 @@ object PayrollCalculationService {
+         )
+     }
+ 
++    private fun MutableList<PayrollComponentDraftV2>.addPremiumEarning(
++        type: PayrollComponentType,
++        description: String,
++        minutes: Int,
++        multiplierBasisPoints: Int,
++        input: PayrollInputSnapshot,
++    ) {
++        if (minutes <= 0 || multiplierBasisPoints <= 10_000) return
++        val baseForMinutes = FixedPointRatio.multiplyDivide(
++            value = input.baseSalaryRial,
++            multiplier = minutes.toLong(),
++            divisor = input.standardPeriodMinutes.toLong(),
++            rounding = FixedPointRounding.HALF_UP,
++        )
++        val premium = FixedPointRatio.multiplyDivide(
++            value = baseForMinutes,
++            multiplier = (multiplierBasisPoints - 10_000).toLong(),
++            divisor = 10_000,
++            rounding = FixedPointRounding.HALF_UP,
++        )
++        if (premium > 0) add(
++            component(
++                type,
++                "$description $minutes دقیقه",
++                minutes.toLong(),
++                null,
++                premium,
++                PayrollComponentDirection.EARNING,
++                PayrollComponentSourceType.ATTENDANCE,
++                null,
++            ),
++        )
++    }
++
+     private fun MutableList<PayrollComponentDraftV2>.addMinuteDeduction(
+         type: PayrollComponentType,
+         description: String,
+diff --git a/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelModels.kt b/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelModels.kt
+index 4b4196b..1d878a7 100644
+--- a/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelModels.kt
++++ b/app/src/main/java/ir/restaurant/management/domain/personnel/PersonnelModels.kt
+@@ -345,6 +345,8 @@ data class PayrollPolicyRecord(
+     val overtimeMultiplierBasisPoints: Int = 10_000,
+     val insuranceBasisPoints: Int = 0,
+     val taxBasisPoints: Int = 0,
++    val holidayMultiplierBasisPoints: Int = 10_000,
++    val nightMultiplierBasisPoints: Int = 10_000,
+ )
+ 
+ data class PayrollPolicyDraft(
+@@ -357,6 +359,8 @@ data class PayrollPolicyDraft(
+     val overtimeMultiplierBasisPoints: Int = 10_000,
+     val insuranceBasisPoints: Int = 0,
+     val taxBasisPoints: Int = 0,
++    val holidayMultiplierBasisPoints: Int = 10_000,
++    val nightMultiplierBasisPoints: Int = 10_000,
+ ) {
+     fun validated(): PayrollPolicyDraft {
+         require(title.trim().length >= 2) { "عنوان سیاست حقوق معتبر نیست." }
+@@ -366,6 +370,8 @@ data class PayrollPolicyDraft(
+         require(overtimeMultiplierBasisPoints in 0..100_000) { "ضریب اضافه‌کاری معتبر نیست." }
+         require(insuranceBasisPoints in 0..10_000) { "نرخ بیمه معتبر نیست." }
+         require(taxBasisPoints in 0..10_000) { "نرخ مالیات معتبر نیست." }
++        require(holidayMultiplierBasisPoints in 10_000..100_000) { "ضریب کار در تعطیل معتبر نیست." }
++        require(nightMultiplierBasisPoints in 10_000..100_000) { "ضریب شب‌کاری معتبر نیست." }
+         return copy(title = title.trim())
+     }
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/PersonnelScreens.kt b/app/src/main/java/ir/restaurant/management/ui/PersonnelScreens.kt
+index 5d327e5..52d0d84 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/PersonnelScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/PersonnelScreens.kt
+@@ -220,6 +220,11 @@ internal fun PayrollPolicyDialog(onDismiss: () -> Unit, onSave: (PayrollPolicyDr
+     var overtimeRate by remember { mutableStateOf("") }
+     var absenceRate by remember { mutableStateOf("") }
+     var lateRate by remember { mutableStateOf("0") }
++    var overtimeMultiplierPercent by remember { mutableStateOf("100") }
++    var insurancePercent by remember { mutableStateOf("0") }
++    var taxPercent by remember { mutableStateOf("0") }
++    var holidayMultiplierPercent by remember { mutableStateOf("100") }
++    var nightMultiplierPercent by remember { mutableStateOf("100") }
+     var error by remember { mutableStateOf<String?>(null) }
+     AlertDialog(
+         onDismissRequest = onDismiss,
+@@ -233,10 +238,33 @@ internal fun PayrollPolicyDialog(onDismiss: () -> Unit, onSave: (PayrollPolicyDr
+             MoneyField(overtimeRate, { overtimeRate = it }, "نرخ هر ساعت اضافه‌کار (${currencyUnitLabel()})")
+             MoneyField(absenceRate, { absenceRate = it }, "کسر هر روز غیبت (${currencyUnitLabel()})")
+             MoneyField(lateRate, { lateRate = it }, "کسر هر دقیقه تأخیر (${currencyUnitLabel()})")
++            OutlinedTextField(overtimeMultiplierPercent, { overtimeMultiplierPercent = it.filter(Char::isDigit).take(4) }, label = { Text("ضریب اضافه‌کاری (درصد)") }, modifier = Modifier.fillMaxWidth())
++            OutlinedTextField(holidayMultiplierPercent, { holidayMultiplierPercent = it.filter(Char::isDigit).take(4) }, label = { Text("ضریب کار در تعطیل (درصد)") }, modifier = Modifier.fillMaxWidth())
++            OutlinedTextField(nightMultiplierPercent, { nightMultiplierPercent = it.filter(Char::isDigit).take(4) }, label = { Text("ضریب شب‌کاری (درصد)") }, modifier = Modifier.fillMaxWidth())
++            OutlinedTextField(insurancePercent, { insurancePercent = it.filter(Char::isDigit).take(3) }, label = { Text("بیمه سهم کارمند (درصد)") }, modifier = Modifier.fillMaxWidth())
++            OutlinedTextField(taxPercent, { taxPercent = it.filter(Char::isDigit).take(3) }, label = { Text("مالیات حقوق (درصد)") }, modifier = Modifier.fillMaxWidth())
+         } },
+         confirmButton = { Button(onClick = {
+-            runCatching { PayrollPolicyDraft(title, from, to, parseMoneyInputOrZero(overtimeRate), parseMoneyInputOrZero(absenceRate), parseMoneyInputOrZero(lateRate)).validated() }
+-                .onSuccess(onSave).onFailure { error = it.message }
++            runCatching {
++                fun percentBasisPoints(raw: String, minimum: Int = 0): Int {
++                    val percent = raw.toIntOrNull() ?: error("درصد واردشده معتبر نیست.")
++                    require(percent >= minimum) { "درصد واردشده کمتر از حد مجاز است." }
++                    return Math.multiplyExact(percent, 100)
++                }
++                PayrollPolicyDraft(
++                    title = title,
++                    effectiveFromEpochDay = from,
++                    effectiveToEpochDay = to,
++                    overtimeHourlyRateRial = parseMoneyInputOrZero(overtimeRate),
++                    absenceDailyDeductionRial = parseMoneyInputOrZero(absenceRate),
++                    lateMinuteDeductionRial = parseMoneyInputOrZero(lateRate),
++                    overtimeMultiplierBasisPoints = percentBasisPoints(overtimeMultiplierPercent),
++                    insuranceBasisPoints = percentBasisPoints(insurancePercent),
++                    taxBasisPoints = percentBasisPoints(taxPercent),
++                    holidayMultiplierBasisPoints = percentBasisPoints(holidayMultiplierPercent, 100),
++                    nightMultiplierBasisPoints = percentBasisPoints(nightMultiplierPercent, 100),
++                ).validated()
++            }.onSuccess(onSave).onFailure { error = it.message }
+         }) { Text("ثبت نسخه سیاست") } },
+         dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } },
+     )
+diff --git a/app/src/test/java/ir/restaurant/management/domain/personnel/PayrollCalculationServiceV2Test.kt b/app/src/test/java/ir/restaurant/management/domain/personnel/PayrollCalculationServiceV2Test.kt
+index e898e5b..60e2883 100644
+--- a/app/src/test/java/ir/restaurant/management/domain/personnel/PayrollCalculationServiceV2Test.kt
++++ b/app/src/test/java/ir/restaurant/management/domain/personnel/PayrollCalculationServiceV2Test.kt
+@@ -131,6 +131,36 @@ class PayrollCalculationServiceV2Test {
+         }
+     }
+ 
++    @Test
++    fun nightAndHolidayPremiumsUseVersionedPolicyWithoutDoubleCountingBaseSalary() {
++        val result = calculate(
++            snapshot().copy(
++                eligiblePeriodMinutes = 14_400,
++                actualWorkMinutes = 14_400,
++                overtimeMinutes = 0,
++                absenceMinutes = 0,
++                lateMinutes = 0,
++                paidLeaveMinutes = 0,
++                unpaidLeaveMinutes = 0,
++                insuranceBasisPoints = 0,
++                taxBasisPoints = 0,
++                nightMinutes = 600,
++                holidayMinutes = 480,
++                nightMultiplierBasisPoints = 12_000,
++                holidayMultiplierBasisPoints = 15_000,
++            ),
++        )
++
++        assertEquals(30_750_000L, result.grossPayRial)
++        assertEquals(250_000L, result.components.single { it.componentType == PayrollComponentType.NIGHT_DIFFERENTIAL }.amountRial)
++        assertEquals(500_000L, result.components.single { it.componentType == PayrollComponentType.HOLIDAY_PREMIUM }.amountRial)
++        assertEquals(30_750_000L, result.netPayRial)
++
++        val changedFuturePolicy = calculate(result.snapshot.copy(nightMultiplierBasisPoints = 20_000, holidayMultiplierBasisPoints = 20_000))
++        assertNotEquals(result.grossPayRial, changedFuturePolicy.grossPayRial)
++        assertEquals(30_750_000L, calculate(result.snapshot).grossPayRial)
++    }
++
+     @Test
+     fun accountingAccrualIsBalancedAndUsesSemanticDestinations() {
+         val result = calculate(snapshot())

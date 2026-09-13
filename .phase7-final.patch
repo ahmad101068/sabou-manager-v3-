@@ -1,0 +1,2265 @@
+diff --git a/app/src/androidTest/java/ir/restaurant/management/data/repository/GlobalSearchIntegrationTest.kt b/app/src/androidTest/java/ir/restaurant/management/data/repository/GlobalSearchIntegrationTest.kt
+new file mode 100644
+index 0000000..2ac2494
+--- /dev/null
++++ b/app/src/androidTest/java/ir/restaurant/management/data/repository/GlobalSearchIntegrationTest.kt
+@@ -0,0 +1,79 @@
++package ir.restaurant.management.data.repository
++
++import android.content.Context
++import androidx.test.core.app.ApplicationProvider
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.data.db.CustomerEntity
++import ir.restaurant.management.data.db.InventoryItemEntity
++import ir.restaurant.management.data.security.SessionAuthorizer
++import ir.restaurant.management.domain.operations.UserDraft
++import ir.restaurant.management.domain.operations.UserRole
++import ir.restaurant.management.domain.search.GlobalSearchTarget
++import kotlinx.coroutines.runBlocking
++import org.junit.After
++import org.junit.Assert.assertTrue
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@RunWith(AndroidJUnit4::class)
++class GlobalSearchIntegrationTest {
++    private lateinit var database: AppDatabase
++    private lateinit var authorizer: SessionAuthorizer
++    private lateinit var security: LocalSecurityRepository
++    private var now = 1_800_200_000_000L
++
++    @Before
++    fun setUp() = runBlocking {
++        database = AppDatabase.createInMemory(ApplicationProvider.getApplicationContext<Context>())
++        authorizer = SessionAuthorizer(database)
++        security = LocalSecurityRepository(database, authorizer = authorizer, clock = { now })
++        security.save(null, UserDraft("phase7-search-owner", "مالک جست‌وجوی فاز هفت", "123456", UserRole.OWNER, "87654321"))
++        Unit
++    }
++
++    @After
++    fun tearDown() = database.close()
++
++    @Test
++    fun searchesRealDatabaseWithPersianNormalizationAndTypedTargets() = runBlocking {
++        val itemId = database.inventoryDao().insert(
++            InventoryItemEntity(
++                name = "چای کیسه‌ای ویژه",
++                category = "نوشیدنی",
++                unit = "عدد",
++                sku = "TEA-123",
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++        val customerId = database.salesDao().insertCustomer(
++            CustomerEntity(
++                customerCode = "C-456",
++                name = "مشتری نمونه",
++                phone = "07112345678",
++                nationalId = "0012345678",
++                creditLimitRial = 0,
++                notes = "",
++                createdAtEpochMillis = now,
++                updatedAtEpochMillis = now,
++            ),
++        )
++
++        val repository = LocalGlobalSearchRepository(database, authorizer)
++
++        val normalizedKafResults = repository.search("كي")
++        assertTrue(
++            normalizedKafResults.any { result ->
++                result.target == GlobalSearchTarget.InventoryItem(itemId) && result.title.contains("کیسه")
++            },
++        )
++
++        val persianDigitResults = repository.search("۱۲۳")
++        assertTrue(persianDigitResults.any { it.target == GlobalSearchTarget.InventoryItem(itemId) })
++
++        val customerResults = repository.search("مشتری نمونه")
++        assertTrue(customerResults.any { it.target == GlobalSearchTarget.Customer(customerId) })
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/data/AppContainer.kt b/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
+index 7062129..a6ebede 100644
+--- a/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
++++ b/app/src/main/java/ir/restaurant/management/data/AppContainer.kt
+@@ -67,7 +67,9 @@ import ir.restaurant.management.data.repository.InventoryUsageVarianceRule
+ import ir.restaurant.management.data.repository.ManagementRuleEngine
+ import ir.restaurant.management.data.repository.ControlSettingsService
+ import ir.restaurant.management.data.repository.LocalCostControlReadService
++import ir.restaurant.management.data.repository.LocalGlobalSearchRepository
+ import ir.restaurant.management.domain.control.CostControlReadService
++import ir.restaurant.management.domain.search.GlobalSearchRepository
+ import ir.restaurant.management.data.treasury.DefaultTreasuryAccountCatalog
+ import ir.restaurant.management.data.treasury.LocalTreasuryServiceV2
+ import ir.restaurant.management.data.security.DatabaseKeyProvider
+@@ -186,6 +188,7 @@ class AppContainer(context: Context) {
+     private val authorizer by lazy { SessionAuthorizer(database) }
+     val authorizationService: AuthorizationService by lazy { authorizer }
+     val auditService: AuditService by lazy { LocalAuditEventWriter(database) }
++    val globalSearchRepository: GlobalSearchRepository by lazy { LocalGlobalSearchRepository(database, authorizer) }
+     val branchRepository: BranchRepository by lazy { LocalBranchRepository(database, authorizer) }
+     val accountingPostingService: AccountingPostingService by lazy {
+         LocalAccountingPostingEngine(database)
+diff --git a/app/src/main/java/ir/restaurant/management/data/repository/LocalGlobalSearchRepository.kt b/app/src/main/java/ir/restaurant/management/data/repository/LocalGlobalSearchRepository.kt
+new file mode 100644
+index 0000000..87aeb3f
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/data/repository/LocalGlobalSearchRepository.kt
+@@ -0,0 +1,174 @@
++package ir.restaurant.management.data.repository
++
++import androidx.sqlite.db.SimpleSQLiteQuery
++import ir.restaurant.management.data.db.AppDatabase
++import ir.restaurant.management.domain.search.GlobalSearchRepository
++import ir.restaurant.management.domain.search.GlobalSearchResult
++import ir.restaurant.management.domain.search.GlobalSearchTarget
++import ir.restaurant.management.domain.search.normalizePersianSearchText
++import ir.restaurant.management.domain.security.AuthorizationService
++import ir.restaurant.management.domain.security.Permission
++import ir.restaurant.management.domain.security.UserRole
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.withContext
++
++/**
++ * Bounded, authorization-aware search against the real Room database.
++ * UI state caches are intentionally not used as a search source.
++ */
++class LocalGlobalSearchRepository(
++    private val database: AppDatabase,
++    private val authorizer: AuthorizationService,
++) : GlobalSearchRepository {
++    private val dataScope = LocalDataScopeService(database, authorizer)
++
++    override suspend fun search(query: String, limit: Int): List<GlobalSearchResult> {
++        val normalized = normalizePersianSearchText(query)
++        if (normalized.length < 2) return emptyList()
++        val boundedLimit = limit.coerceIn(1, MAX_TOTAL_RESULTS)
++        val actor = authorizer.actorIdentity()
++        val branchIds = if (actor.role == UserRole.OWNER) null else dataScope.activeBranches().map { it.id }.distinct()
++        val locationIds = if (actor.role == UserRole.OWNER) null else dataScope.activeLocations().map { it.id }.distinct()
++        val canInventory = authorizer.can(Permission.INVENTORY)
++        val canPurchases = authorizer.can(Permission.PURCHASES)
++        val canAccounting = authorizer.can(Permission.ACCOUNTING)
++        val canPersonnel = authorizer.can(Permission.PERSONNEL_VIEW)
++        val canCustomers = authorizer.can(Permission.CUSTOMERS)
++        return withContext(Dispatchers.IO) {
++            buildList {
++                if (canInventory) {
++                    addAll(searchInventory(normalized, PER_TYPE_LIMIT))
++                    addAll(searchMovements(normalized, locationIds, PER_TYPE_LIMIT))
++                }
++                if (canPurchases) addAll(searchPurchases(normalized, branchIds, PER_TYPE_LIMIT))
++                if (canAccounting) {
++                    addAll(searchAccounts(normalized, PER_TYPE_LIMIT))
++                    addAll(searchJournals(normalized, branchIds, PER_TYPE_LIMIT))
++                }
++                if (canPersonnel) addAll(searchEmployees(normalized, branchIds, PER_TYPE_LIMIT))
++                if (canCustomers) addAll(searchCustomers(normalized, PER_TYPE_LIMIT))
++            }.distinctBy(GlobalSearchResult::stableKey).take(boundedLimit)
++        }
++    }
++
++    private fun searchInventory(query: String, limit: Int): List<GlobalSearchResult> = queryRows(
++        sql = """
++            SELECT id,name,category,sku FROM inventory_items
++            WHERE isActive=1 AND ${matches(query, listOf("name", "category", "sku", "brand", "primaryBarcode")).first}
++            ORDER BY name COLLATE NOCASE,id LIMIT ?
++        """.trimIndent(),
++        args = matches(query, listOf("name", "category", "sku", "brand", "primaryBarcode")).second + limit,
++    ) { c ->
++        val id = c.getLong(0)
++        val name = c.getString(1)
++        val category = c.getString(2)
++        val sku = c.getString(3).orEmpty()
++        GlobalSearchResult(name, listOf("کالا", category, sku.takeIf { it.isNotBlank() }?.let { "SKU $it" }).filterNotNull().joinToString(" · "), GlobalSearchTarget.InventoryItem(id))
++    }
++
++    private fun searchMovements(query: String, locationIds: List<Long>?, limit: Int): List<GlobalSearchResult> {
++        val match = matches(query, listOf("i.name", "i.sku", "m.referenceType", "m.notes", "m.movementType"))
++        val scope = scopeClause("m.locationId", locationIds)
++        return queryRows(
++            sql = """
++                SELECT m.id,m.itemId,i.name,m.movementType,m.referenceType
++                FROM stock_movements m JOIN inventory_items i ON i.id=m.itemId
++                WHERE ${match.first}${scope.first}
++                ORDER BY m.movementEpochDay DESC,m.id DESC LIMIT ?
++            """.trimIndent(),
++            args = match.second + scope.second + limit,
++        ) { c ->
++            val id = c.getLong(0)
++            val itemId = c.getLong(1)
++            val itemName = c.getString(2)
++            val movementType = c.getString(3)
++            val referenceType = c.getString(4)
++            GlobalSearchResult(itemName, "گردش موجودی · $movementType · $referenceType", GlobalSearchTarget.StockMovement(id, itemId))
++        }
++    }
++
++    private fun searchPurchases(query: String, branchIds: List<Long>?, limit: Int): List<GlobalSearchResult> {
++        val match = matches(query, listOf("p.invoiceNo", "p.normalizedInvoiceNo", "s.name", "s.code"))
++        val scope = scopeClause("p.branchId", branchIds)
++        return queryRows(
++            sql = """
++                SELECT p.id,p.invoiceNo,s.name FROM purchases p JOIN suppliers s ON s.id=p.supplierId
++                WHERE ${match.first}${scope.first}
++                ORDER BY p.purchaseEpochDay DESC,p.id DESC LIMIT ?
++            """.trimIndent(),
++            args = match.second + scope.second + limit,
++        ) { c -> GlobalSearchResult("فاکتور ${c.getString(1)}", "خرید · ${c.getString(2)}", GlobalSearchTarget.Purchase(c.getLong(0))) }
++    }
++
++    private fun searchAccounts(query: String, limit: Int): List<GlobalSearchResult> {
++        val match = matches(query, listOf("code", "name", "type"))
++        return queryRows(
++            sql = "SELECT code,name FROM accounts WHERE isActive=1 AND ${match.first} ORDER BY code LIMIT ?",
++            args = match.second + limit,
++        ) { c -> GlobalSearchResult("${c.getString(0)} — ${c.getString(1)}", "حساب حسابداری", GlobalSearchTarget.Account(c.getString(0))) }
++    }
++
++    private fun searchJournals(query: String, branchIds: List<Long>?, limit: Int): List<GlobalSearchResult> {
++        val match = matches(query, listOf("entryNo", "description", "sourceType"))
++        val scope = scopeClause("branchId", branchIds)
++        return queryRows(
++            sql = "SELECT id,entryNo,description FROM journal_entries WHERE ${match.first}${scope.first} ORDER BY entryEpochDay DESC,id DESC LIMIT ?",
++            args = match.second + scope.second + limit,
++        ) { c -> GlobalSearchResult(c.getString(1), "سند حسابداری · ${c.getString(2)}", GlobalSearchTarget.Journal(c.getLong(0))) }
++    }
++
++    private fun searchEmployees(query: String, branchIds: List<Long>?, limit: Int): List<GlobalSearchResult> {
++        val match = matches(query, listOf("name", "displayName", "employeeCode", "jobTitle", "department", "phone"))
++        val scope = scopeClause("branchId", branchIds)
++        return queryRows(
++            sql = "SELECT id,COALESCE(NULLIF(displayName,''),name),jobTitle,employeeCode FROM employees WHERE status!='TERMINATED' AND ${match.first}${scope.first} ORDER BY name,id LIMIT ?",
++            args = match.second + scope.second + limit,
++        ) { c ->
++            val code = if (c.isNull(3)) "" else c.getString(3)
++            GlobalSearchResult(c.getString(1), listOf(c.getString(2), code.takeIf { it.isNotBlank() }?.let { "کد $it" }).filterNotNull().joinToString(" · "), GlobalSearchTarget.Employee(c.getLong(0)))
++        }
++    }
++
++    private fun searchCustomers(query: String, limit: Int): List<GlobalSearchResult> {
++        val match = matches(query, listOf("name", "customerCode", "phone", "mobile", "nationalId"))
++        return queryRows(
++            sql = "SELECT id,name,customerCode,COALESCE(NULLIF(mobile,''),phone) FROM customers WHERE isActive=1 AND ${match.first} ORDER BY name,id LIMIT ?",
++            args = match.second + limit,
++        ) { c -> GlobalSearchResult(c.getString(1), "مشتری · کد ${c.getString(2)} · ${c.getString(3)}", GlobalSearchTarget.Customer(c.getLong(0))) }
++    }
++
++    private fun matches(query: String, columns: List<String>): Pair<String, List<Any>> {
++        val pattern = "%$query%"
++        return columns.joinToString(" OR ", prefix = "(", postfix = ")") { "${normalizedSql(it)} LIKE ?" } to List(columns.size) { pattern }
++    }
++
++    private fun scopeClause(column: String, ids: List<Long>?): Pair<String, List<Any>> = when {
++        ids == null -> "" to emptyList()
++        ids.isEmpty() -> " AND 1=0" to emptyList()
++        else -> " AND $column IN (${ids.joinToString(",") { "?" }})" to ids.map { it as Any }
++    }
++
++    private fun normalizedSql(column: String): String {
++        var expression = "LOWER(COALESCE($column,''))"
++        val replacements = listOf(
++            "ي" to "ی", "ى" to "ی", "ك" to "ک",
++            "۰" to "0", "۱" to "1", "۲" to "2", "۳" to "3", "۴" to "4", "۵" to "5", "۶" to "6", "۷" to "7", "۸" to "8", "۹" to "9",
++            "٠" to "0", "١" to "1", "٢" to "2", "٣" to "3", "٤" to "4", "٥" to "5", "٦" to "6", "٧" to "7", "٨" to "8", "٩" to "9",
++        )
++        replacements.forEach { (from, to) -> expression = "REPLACE($expression,'$from','$to')" }
++        return expression
++    }
++
++    private fun <T> queryRows(sql: String, args: List<Any>, mapper: (android.database.Cursor) -> T): List<T> {
++        return database.openHelper.readableDatabase.query(SimpleSQLiteQuery(sql, args.toTypedArray())).use { cursor ->
++            buildList {
++                while (cursor.moveToNext()) add(mapper(cursor))
++            }
++        }
++    }
++
++    private companion object {
++        const val PER_TYPE_LIMIT = 30
++        const val MAX_TOTAL_RESULTS = 160
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/domain/search/GlobalSearchModels.kt b/app/src/main/java/ir/restaurant/management/domain/search/GlobalSearchModels.kt
+new file mode 100644
+index 0000000..cbd3fd7
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/domain/search/GlobalSearchModels.kt
+@@ -0,0 +1,55 @@
++package ir.restaurant.management.domain.search
++
++sealed interface GlobalSearchTarget {
++    data class InventoryItem(val id: Long) : GlobalSearchTarget
++    data class StockMovement(val id: Long, val itemId: Long) : GlobalSearchTarget
++    data class Purchase(val id: Long) : GlobalSearchTarget
++    data class Account(val code: String) : GlobalSearchTarget
++    data class Journal(val id: Long) : GlobalSearchTarget
++    data class Employee(val id: Long) : GlobalSearchTarget
++    data class Customer(val id: Long) : GlobalSearchTarget
++}
++
++data class GlobalSearchResult(
++    val title: String,
++    val subtitle: String,
++    val target: GlobalSearchTarget,
++) {
++    val stableKey: String get() = when (val value = target) {
++        is GlobalSearchTarget.InventoryItem -> "inventory:${value.id}"
++        is GlobalSearchTarget.StockMovement -> "movement:${value.id}:${value.itemId}"
++        is GlobalSearchTarget.Purchase -> "purchase:${value.id}"
++        is GlobalSearchTarget.Account -> "account:${value.code}"
++        is GlobalSearchTarget.Journal -> "journal:${value.id}"
++        is GlobalSearchTarget.Employee -> "employee:${value.id}"
++        is GlobalSearchTarget.Customer -> "customer:${value.id}"
++    }
++}
++
++interface GlobalSearchRepository {
++    suspend fun search(query: String, limit: Int = 120): List<GlobalSearchResult>
++}
++
++/** Canonical Persian search normalization shared by DB retrieval and tests. */
++fun normalizePersianSearchText(raw: String): String = buildString(raw.length) {
++    raw.trim().lowercase().forEach { ch ->
++        append(
++            when (ch) {
++                'ي', 'ى' -> 'ی'
++                'ك' -> 'ک'
++                '۰', '٠' -> '0'
++                '۱', '١' -> '1'
++                '۲', '٢' -> '2'
++                '۳', '٣' -> '3'
++                '۴', '٤' -> '4'
++                '۵', '٥' -> '5'
++                '۶', '٦' -> '6'
++                '۷', '٧' -> '7'
++                '۸', '٨' -> '8'
++                '۹', '٩' -> '9'
++                '\u200c', '\u200f', '\u200e' -> ' '
++                else -> ch
++            },
++        )
++    }
++}.replace(Regex("\\s+"), " ").trim()
+diff --git a/app/src/main/java/ir/restaurant/management/ui/BranchManagementScreen.kt b/app/src/main/java/ir/restaurant/management/ui/BranchManagementScreen.kt
+index 27d90f8..aa71b45 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/BranchManagementScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/BranchManagementScreen.kt
+@@ -41,7 +41,7 @@ internal fun BranchManagementScreen(
+     var renameTarget by remember { mutableStateOf<BranchRecord?>(null) }
+ 
+     Scaffold(
+-        topBar = { ProfessionalTopBar("مدیریت شعب", "هویت شعبه بر پایه شناسه Canonical", onBack) },
++        topBar = { ProfessionalTopBar("مدیریت شعب", "هویت شعبه بر پایه شناسه مرجع یکتا", onBack) },
+         bottomBar = { ErpBottomNavigation(AppScreen.BRANCHES, onNavigateTopLevel) },
+     ) { padding ->
+         LazyColumn(
+diff --git a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+index a95f4d1..b970c8a 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/CrmScreen.kt
+@@ -176,13 +176,13 @@ internal fun CrmScreen(
+                             state.collectedTodayRial?.let { ErpDisplayFormatters.money(it) } ?: "— · داده کافی موجود نیست",
+                         )
+                         state.branchReceivableAging?.let { aging ->
+-                            CompactInfoRow("Aging جاری", ErpDisplayFormatters.money(aging.currentRial))
++                            CompactInfoRow("سن مطالبات جاری", ErpDisplayFormatters.money(aging.currentRial))
+                             CompactInfoRow("۱–۷ روز", ErpDisplayFormatters.money(aging.overdue1To7Rial))
+                             CompactInfoRow("۸–۳۰ روز", ErpDisplayFormatters.money(aging.overdue8To30Rial))
+                             CompactInfoRow("۳۱–۶۰ روز", ErpDisplayFormatters.money(aging.overdue31To60Rial))
+                             CompactInfoRow("۶۱–۹۰ روز", ErpDisplayFormatters.money(aging.overdue61To90Rial))
+                             CompactInfoRow("بیش از ۹۰ روز", ErpDisplayFormatters.money(aging.overdueOver90Rial))
+-                        } ?: Text("Aging: — · داده کافی موجود نیست", style = MaterialTheme.typography.bodySmall)
++                        } ?: Text("سن مطالبات: — · داده کافی موجود نیست", style = MaterialTheme.typography.bodySmall)
+         }
+     }
+ }
+@@ -290,7 +290,7 @@ internal fun CrmScreen(
+             item {
+                 Text("حساب ${selected.name}", style = MaterialTheme.typography.titleMedium)
+                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+-                    Button(enabled = !state.busy, onClick = { onRefreshAging(selected.id) }) { Text("محاسبه Aging") }
++                    Button(enabled = !state.busy, onClick = { onRefreshAging(selected.id) }) { Text("محاسبه سن مطالبات") }
+                     OutlinedButton(enabled = !state.busy, onClick = { onDetectDuplicates(selected.id) }) { Text("بررسی تکراری") }
+                     OutlinedButton(enabled = !state.busy, onClick = { editingCustomer = selected }) { Text("ویرایش اطلاعات") }
+                 }
+@@ -311,7 +311,7 @@ internal fun CrmScreen(
+                 item {
+                     Card(Modifier.fillMaxWidth()) {
+                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+-                            Text("Aging مطالبات", style = MaterialTheme.typography.titleSmall)
++                            Text("سن مطالبات", style = MaterialTheme.typography.titleSmall)
+                             Text("جاری: ${formatMoney(aging.currentRial)}")
+                             Text("۱–۳۰: ${formatMoney(aging.days1To30Rial)} · ۳۱–۶۰: ${formatMoney(aging.days31To60Rial)}")
+                             Text("۶۱–۹۰: ${formatMoney(aging.days61To90Rial)} · بیش از ۹۰: ${formatMoney(aging.over90Rial)}")
+@@ -500,7 +500,7 @@ private fun CustomerMasterDialog(
+                 }
+                 OutlinedTextField(creditLimit, { creditLimit = it }, Modifier.fillMaxWidth().testTag("crm_customer_credit_limit"), label = { Text("سقف اعتبار (ریال)") })
+                 OutlinedTextField(paymentTerms, { paymentTerms = it.filter(Char::isDigit) }, Modifier.fillMaxWidth().testTag("crm_customer_payment_terms"), label = { Text("مهلت پرداخت (روز)") })
+-                OutlinedTextField(status, { status = it.uppercase() }, Modifier.fillMaxWidth().testTag("crm_customer_status"), label = { Text("وضعیت: ACTIVE / ON_HOLD / INACTIVE") })
++                OutlinedTextField(status, { status = it.uppercase() }, Modifier.fillMaxWidth().testTag("crm_customer_status"), label = { Text("وضعیت (فعال / متوقف / غیرفعال)") })
+                 OutlinedTextField(notes, { notes = it }, Modifier.fillMaxWidth().testTag("crm_customer_notes"), label = { Text("یادداشت") })
+             }
+         },
+diff --git a/app/src/main/java/ir/restaurant/management/ui/DailySalesScreens.kt b/app/src/main/java/ir/restaurant/management/ui/DailySalesScreens.kt
+index 6903faa..26d21cd 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/DailySalesScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DailySalesScreens.kt
+@@ -72,7 +72,7 @@ fun DailySalesScreen(
+     var closeTarget by remember { mutableStateOf<DailySalesItem?>(null) }
+     var reopenTarget by remember { mutableStateOf<DailySalesItem?>(null) }
+     Scaffold(
+-        topBar = { ProfessionalTopBar("ثبت فروش روزانه", "DRAFT → CONFIRMED → POSTED با پنج روش تسویه", onBack) },
++        topBar = { ProfessionalTopBar("ثبت فروش روزانه", "پیش‌نویس ← تأییدشده ← ثبت نهایی، با پنج روش تسویه", onBack) },
+         bottomBar = { ErpBottomNavigation(AppScreen.SALES, onNavigateTopLevel) },
+         floatingActionButton = { Button(onClick = { editingTarget = null; showEntry = true }, enabled = !state.busy) { Text("پیش‌نویس فروش") } },
+     ) { padding ->
+@@ -82,6 +82,7 @@ fun DailySalesScreen(
+             verticalArrangement = Arrangement.spacedBy(12.dp),
+         ) {
+             state.message?.let { item { MessageCard(it) } }
++            state.error?.let { item { MessageCard(it, isError = true) } }
+             item { PremiumHero("فروش ۳۰ روز", formatMoney(state.activeSalesRial), "نسیه جدید ثبت‌شده ${formatMoney(state.receivablesRial)}") }
+             item { OutlinedTextField(search, { search = it; onSearch(it) }, label = { Text("جست‌وجوی یادداشت یا تاریخ") }, modifier = Modifier.fillMaxWidth()) }
+             item { OutlinedButton(onClick = { showReport = true }, modifier = Modifier.fillMaxWidth()) { Text("گزارش بازه‌ای و مهندسی منو") } }
+@@ -94,7 +95,7 @@ fun DailySalesScreen(
+                             StatusPill(if (sale.isReversed) "VOIDED" else sale.status.name)
+                         }
+                         val branchLabel = state.branches.firstOrNull { it.id == sale.branchId }?.name ?: "#${sale.branchId}"
+-                        Text("شعبه $branchLabel · Net Sales ${formatMoney(sale.netSalesRial)} · درآمد ${formatMoney(sale.revenueRial)} · مالیات ${formatMoney(sale.taxRial)} · قابل‌تسویه ${formatMoney(sale.amountToSettleRial)}")
++                        Text("شعبه $branchLabel · فروش خالص ${formatMoney(sale.netSalesRial)} · درآمد ${formatMoney(sale.revenueRial)} · مالیات ${formatMoney(sale.taxRial)} · قابل‌تسویه ${formatMoney(sale.amountToSettleRial)}")
+                         Text("نقد ${formatMoney(sale.cashRial)} · کارت ${formatMoney(sale.cardRial)} · حواله ${formatMoney(sale.transferRial)}", style = MaterialTheme.typography.bodySmall)
+                         val personal = sale.settlements.filter { it.type == SalesSettlementType.PERSONAL_CREDIT }.sumOf { it.amountRial }
+                         val corporate = sale.settlements.filter { it.type == SalesSettlementType.CORPORATE_CREDIT }.sumOf { it.amountRial }
+@@ -132,6 +133,7 @@ fun DailySalesScreen(
+         branches = state.branches,
+         locations = state.locations,
+         initial = editingTarget,
++        commandMessage = state.error,
+         onDismiss = { showEntry = false; editingTarget = null },
+         onSave = onSaveDraft,
+     )
+@@ -236,6 +238,7 @@ private fun DailySalesEntryDialog(
+     branches: List<BranchRecord>,
+     locations: List<InventoryLocationRecord>,
+     initial: DailySalesItem?,
++    commandMessage: String?,
+     onDismiss: () -> Unit,
+     onSave: (Long?, Long, Long, Long, Long, Long, Long, Long, Long, String, List<DailyMenuSaleDraft>, List<DailySalesSettlementDraft>, () -> Unit) -> Unit,
+ ) {
+@@ -299,7 +302,7 @@ private fun DailySalesEntryDialog(
+                             label = "شعبه فروش",
+                             tag = "daily_sales_branch_selector",
+                         )
+-                        if (branches.isEmpty()) Text("برای ثبت فروش ابتدا یک Branch فعال باید در Master شعب ایجاد شود.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
++                        if (branches.isEmpty()) Text("برای ثبت فروش ابتدا یک شعبه فعال در بخش مدیریت شعب تعریف کنید.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                     }
+                 }
+                 item {
+@@ -315,7 +318,7 @@ private fun DailySalesEntryDialog(
+                         if (branchId != null && branchLocations.isEmpty()) Text("برای شعبه انتخاب‌شده انبار مجاز و فعال وجود ندارد.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                     }
+                 }
+-                item { OutlinedTextField(grossHeader, { grossHeader = formatMoneyInput(it) }, label = { Text("فروش ناخالص Header") }, supportingText = { Text("مستقل از مبلغ ردیف‌های منو؛ مبلغ ردیف‌ها اختیاری است.") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)) }
++                item { OutlinedTextField(grossHeader, { grossHeader = formatMoneyInput(it) }, label = { Text("فروش ناخالص سربرگ") }, supportingText = { Text("مستقل از مبلغ ردیف‌های منو؛ مبلغ ردیف‌ها اختیاری است.") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)) }
+                 item { Text("ترکیب فروش (مبلغ هر آیتم اختیاری)", fontWeight = FontWeight.ExtraBold) }
+                 items(menuItems, key = { it.id }) { menu ->
+                     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+@@ -349,17 +352,17 @@ private fun DailySalesEntryDialog(
+                 item {
+                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                         Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+-                            CompactInfoRow("Gross Sales", formatMoney(gross.coerceAtLeast(0)))
+-                            CompactInfoRow("Discounts", formatMoney(discountRial))
+-                            CompactInfoRow("Returns", formatMoney(returnRial))
+-                            CompactInfoRow("Net Sales", formatMoney(netSales.coerceAtLeast(0)))
+-                            CompactInfoRow("Service Revenue", formatMoney(serviceRial))
+-                            CompactInfoRow("Tax", formatMoney(taxRial))
+-                            CompactInfoRow("Revenue", formatMoney(revenue.coerceAtLeast(0)))
+-                            CompactInfoRow("Amount To Settle", formatMoney(amountToSettle.coerceAtLeast(0)))
+-                            CompactInfoRow("Settlement Total", formatMoney(settlementTotal))
++                            CompactInfoRow("فروش ناخالص", formatMoney(gross.coerceAtLeast(0)))
++                            CompactInfoRow("تخفیف", formatMoney(discountRial))
++                            CompactInfoRow("برگشت فروش", formatMoney(returnRial))
++                            CompactInfoRow("فروش خالص", formatMoney(netSales.coerceAtLeast(0)))
++                            CompactInfoRow("درآمد حق سرویس", formatMoney(serviceRial))
++                            CompactInfoRow("مالیات و عوارض", formatMoney(taxRial))
++                            CompactInfoRow("درآمد", formatMoney(revenue.coerceAtLeast(0)))
++                            CompactInfoRow("مبلغ قابل تسویه", formatMoney(amountToSettle.coerceAtLeast(0)))
++                            CompactInfoRow("جمع تسویه‌ها", formatMoney(settlementTotal))
+                             CompactInfoRow(
+-                                "Difference",
++                                "مغایرت",
+                                 settlementDifference?.let(::formatMoney) ?: "—",
+                                 settlementDifference != 0L,
+                             )
+@@ -368,6 +371,7 @@ private fun DailySalesEntryDialog(
+                 }
+                 item { OutlinedTextField(notes, { notes = it }, label = { Text("یادداشت") }, modifier = Modifier.fillMaxWidth()) }
+                 error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
++                commandMessage?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
+             }
+         },
+         confirmButton = {
+@@ -388,7 +392,7 @@ private fun DailySalesEntryDialog(
+                     invalidMoneyInput -> error = "یکی از مبالغ نامعتبر است."
+                     branchId == null || branchId <= 0 -> error = "یک شعبه فعال انتخاب کنید."
+                     locationId == null || locationId <= 0 || branchLocations.none { it.id == locationId } -> error = "یک انبار/مکان مصرف مجاز از همان شعبه انتخاب کنید."
+-                    gross <= 0 -> error = "فروش ناخالص Header باید مثبت باشد."
++                    gross <= 0 -> error = "فروش ناخالص سربرگ باید مثبت باشد."
+                     lines.isEmpty() -> error = "حداقل یک ردیف فروش با تعداد معتبر لازم است؛ مبلغ ردیف اختیاری است."
+                     netSales <= 0 -> error = "فروش خالص باید مثبت باشد."
+                     settlementRows.isEmpty() -> error = "حداقل یک روش تسویه وارد کنید."
+@@ -462,7 +466,7 @@ private fun DailySalesReportDialog(state: DailySalesUiState, onDismiss: () -> Un
+             state.report?.let { report -> item {
+                 val it = report
+                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+-                    Text("روزهای دارای رویداد فروش/برگشت: ${it.dayCount}")
++                    Text("روزهای دارای رویداد فروش/برگشت: ${ErpDisplayFormatters.integer(it.dayCount)}")
+                     Text("فروش خالص: ${formatMoney(it.salesRial)}")
+                     Text("بهای مواد مصرف‌شده: ${formatMoney(it.costOfGoodsRial)}")
+                     Text("حاشیه پس از هزینه مواد: ${formatMoney(it.grossProfitRial)}", fontWeight = FontWeight.Bold)
+@@ -471,7 +475,7 @@ private fun DailySalesReportDialog(state: DailySalesUiState, onDismiss: () -> Un
+                         Text("حاشیه پس از بهای کامل: ${formatMoney(it.fullMarginRial)}", fontWeight = FontWeight.ExtraBold)
+                     } else if (it.totalLineCount > 0) {
+                         Text(
+-                            "پوشش بهای کامل ${it.fullCostCoverageLineCount} از ${it.totalLineCount} ردیف است؛ جمع دوره برای جلوگیری از گزارش گمراه‌کننده نمایش داده نمی‌شود.",
++                            "پوشش بهای کامل ${ErpDisplayFormatters.integer(it.fullCostCoverageLineCount)} از ${ErpDisplayFormatters.integer(it.totalLineCount)} ردیف است؛ جمع دوره برای جلوگیری از گزارش گمراه‌کننده نمایش داده نمی‌شود.",
+                             color = MaterialTheme.colorScheme.error,
+                         )
+                     }
+@@ -495,8 +499,8 @@ private fun DailySalesReportDialog(state: DailySalesUiState, onDismiss: () -> Un
+                     Card(Modifier.fillMaxWidth()) {
+                         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                             Text(row.name, fontWeight = FontWeight.Bold)
+-                            Text("${row.unitsSold} واحد · فروش ${row.salesRial?.let(::formatMoney) ?: "نامشخص"} · هزینه مواد ${formatMoney(row.foodCostRial)}", style = MaterialTheme.typography.bodySmall)
+-                            val full = row.fullMarginRial?.let(::formatMoney) ?: "فاقد Snapshot بهای کامل"
++                            Text("${ErpDisplayFormatters.integer(row.unitsSold)} واحد · فروش ${row.salesRial?.let(::formatMoney) ?: "نامشخص"} · هزینه مواد ${formatMoney(row.foodCostRial)}", style = MaterialTheme.typography.bodySmall)
++                            val full = row.fullMarginRial?.let(::formatMoney) ?: "فاقد تصویر ثابت بهای کامل"
+                             Text("حاشیه کامل: $full", style = MaterialTheme.typography.bodySmall, color = if (row.fullMarginRial?.let { it < 0 } == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                         }
+                     }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/DailySalesViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/DailySalesViewModel.kt
+index e7271f9..f6e10b7 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/DailySalesViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DailySalesViewModel.kt
+@@ -47,6 +47,7 @@ data class DailySalesUiState(
+     val reportToEpochDay: Long = currentEpochDay(),
+     val busy: Boolean = false,
+     val message: String? = null,
++    val error: String? = null,
+ ) {
+     val activeSalesRial: Long get() = report?.salesRial ?: 0
+     val grossProfitRial: Long get() = report?.grossProfitRial ?: 0
+@@ -70,6 +71,7 @@ class DailySalesViewModel(
+     private val range = MutableStateFlow((currentEpochDay() - 29) to currentEpochDay())
+     private val busy = MutableStateFlow(false)
+     private val message = MutableStateFlow<String?>(null)
++    private val commandError = MutableStateFlow<String?>(null)
+     private val sales = query.debounce(250).distinctUntilChanged().flatMapLatest(repository::observe)
+     private val report = range.flatMapLatest { repository.observeReport(it.first, it.second) }
+ 
+@@ -95,7 +97,7 @@ class DailySalesViewModel(
+         Content(base.first, scope.first, scope.second, base.second, base.third, base.fourth, base.fifth)
+     }
+ 
+-    val state: StateFlow<DailySalesUiState> = combine(content, busy, message) { base, isBusy, currentMessage ->
++    val state: StateFlow<DailySalesUiState> = combine(content, busy, message, commandError) { base, isBusy, currentMessage, currentError ->
+         DailySalesUiState(
+             sales = base.sales,
+             branches = base.branches,
+@@ -107,6 +109,7 @@ class DailySalesViewModel(
+             reportToEpochDay = base.range.second,
+             busy = isBusy,
+             message = currentMessage,
++            error = currentError,
+         )
+     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DailySalesUiState())
+ 
+@@ -184,11 +187,12 @@ class DailySalesViewModel(
+         viewModelScope.launch {
+             busy.value = true
+             message.value = null
++            commandError.value = null
+             try {
+                 action()
+                 done()
+             } catch (error: Exception) {
+-                message.value = UiErrorHandler.message(source, error)
++                commandError.value = UiErrorHandler.message(source, error)
+             } finally {
+                 busy.value = false
+             }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt b/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt
+index c4f6732..3e857bc 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DashboardScreen.kt
+@@ -478,7 +478,25 @@ private fun HomeManagementOverview(
+         HomeManagementMetric("وظایف معوق", readModel?.overdueTasks?.let { toPersianDigits(it.toString()) }, AppScreen.MANAGEMENT_TASKS),
+     )
+     Column(Modifier.fillMaxWidth().testTag("home_management_overview"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+-        Text("نمای مدیریتی", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black, color = ErpPalette.Ink)
++        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
++            Text("نمای مدیریتی قطعی", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black, color = ErpPalette.Ink)
++            overview.asOfEpochDay?.let { day ->
++                Text(
++                    "تا ${epochDayToPersian(day).display()}",
++                    style = MaterialTheme.typography.labelMedium,
++                    color = ErpPalette.Muted,
++                    modifier = Modifier.testTag("home_management_as_of"),
++                )
++            }
++        }
++        if (overview.isError) {
++            Text(
++                overview.unavailableMessage ?: "خطا در دریافت شاخص‌های مدیریتی قطعی",
++                color = ErpPalette.Red,
++                style = MaterialTheme.typography.bodySmall,
++                modifier = Modifier.testTag("home_management_error"),
++            )
++        }
+         metrics.chunked(if (currentErpWindowClass() == ErpWindowClass.COMPACT) 2 else 4).forEach { chunk ->
+             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                 chunk.forEach { metric ->
+@@ -519,7 +537,7 @@ private data class HomeManagementMetric(
+ internal fun formatPercentBasisPoints(value: Long): String {
+     val whole = value / 100L
+     val fraction = kotlin.math.abs(value % 100L).toString().padStart(2, '0')
+-    return "$whole.$fraction%"
++    return "${toPersianDigits("$whole.$fraction")}٪"
+ }
+ 
+ @Composable
+diff --git a/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
+index 3cd9271..0e871f2 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/DashboardViewModel.kt
+@@ -115,7 +115,7 @@ class DashboardViewModel(
+         val effectiveBranchId = selected.branchId
+         when {
+             selected.period != DashboardPeriod.TODAY -> HomeManagementOverviewRequest.Unavailable(
+-                "شاخص‌های مدیریتی Canonical برای Home در نمای امروز ارائه می‌شوند.",
++                "شاخص‌های مدیریتی قطعی برای صفحه اصلی در نمای امروز ارائه می‌شوند.",
+             )
+             effectiveBranchId == null -> HomeManagementOverviewRequest.Unavailable(
+                 "برای مشاهده شاخص‌های مدیریتی، ابتدا یک شعبه فعال انتخاب کنید.",
+@@ -141,10 +141,12 @@ class DashboardViewModel(
+                             revenueTrend = readModels.map {
+                                 HomeRevenueTrendPoint(it.businessEpochDay, it.revenueRial)
+                             },
++                            asOfEpochDay = readModels.last().businessEpochDay,
+                         )
+                     }.getOrElse {
+                         HomeManagementOverviewUiState(
+-                            unavailableMessage = "داده کافی موجود نیست یا دسترسی شاخص‌های مدیریتی فراهم نیست.",
++                            unavailableMessage = "دریافت شاخص‌های مدیریتی قطعی ناموفق بود. دوباره تلاش کنید.",
++                            isError = true,
+                         )
+                     },
+                 )
+@@ -262,4 +264,6 @@ data class HomeManagementOverviewUiState(
+     val readModel: DailyManagementKpiReadModel? = null,
+     val revenueTrend: List<HomeRevenueTrendPoint> = emptyList(),
+     val unavailableMessage: String? = null,
++    val asOfEpochDay: Long? = null,
++    val isError: Boolean = false,
+ )
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt b/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt
+index 3d820d7..4607c8b 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ErpDashboardComponents.kt
+@@ -63,7 +63,7 @@ internal object ErpPalette {
+     val AmberSoft = Color(0xFFFFF4DD)
+     val Red = Color(0xFFD84D4D)
+     val RedSoft = Color(0xFFFFEEEE)
+-    val Blue = Color(0xFF3977C7)
++    val Blue = Color(0xFF255A9B)
+     val BlueSoft = Color(0xFFEAF3FF)
+     val Purple = Color(0xFF7B61B3)
+     val PurpleSoft = Color(0xFFF2ECFF)
+diff --git a/app/src/main/java/ir/restaurant/management/ui/GlobalSearchViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/GlobalSearchViewModel.kt
+new file mode 100644
+index 0000000..a2dcac5
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/ui/GlobalSearchViewModel.kt
+@@ -0,0 +1,62 @@
++package ir.restaurant.management.ui
++
++import androidx.lifecycle.ViewModel
++import androidx.lifecycle.ViewModelProvider
++import androidx.lifecycle.viewModelScope
++import ir.restaurant.management.domain.search.GlobalSearchRepository
++import ir.restaurant.management.domain.search.GlobalSearchResult
++import kotlinx.coroutines.ExperimentalCoroutinesApi
++import kotlinx.coroutines.FlowPreview
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.SharingStarted
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.catch
++import kotlinx.coroutines.flow.debounce
++import kotlinx.coroutines.flow.distinctUntilChanged
++import kotlinx.coroutines.flow.flatMapLatest
++import kotlinx.coroutines.flow.flow
++import kotlinx.coroutines.flow.stateIn
++
++
++data class GlobalSearchUiState(
++    val query: String = "",
++    val results: List<GlobalSearchResult> = emptyList(),
++    val loading: Boolean = false,
++    val error: String? = null,
++)
++
++@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
++class GlobalSearchViewModel(private val repository: GlobalSearchRepository) : ViewModel() {
++    private val query = MutableStateFlow("")
++
++    val state: StateFlow<GlobalSearchUiState> = query
++        .debounce(220)
++        .distinctUntilChanged()
++        .flatMapLatest { value ->
++            flow {
++                if (value.trim().length < 2) {
++                    emit(GlobalSearchUiState(query = value))
++                } else {
++                    emit(GlobalSearchUiState(query = value, loading = true))
++                    emit(GlobalSearchUiState(query = value, results = repository.search(value)))
++                }
++            }.catch { error ->
++                emit(GlobalSearchUiState(query = value, error = UiErrorHandler.message("GlobalSearchViewModel.search", error)))
++            }
++        }
++        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GlobalSearchUiState())
++
++    fun search(value: String) {
++        query.value = value.take(120)
++    }
++
++    companion object {
++        fun factory(repository: GlobalSearchRepository): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
++            @Suppress("UNCHECKED_CAST")
++            override fun <T : ViewModel> create(modelClass: Class<T>): T {
++                require(modelClass.isAssignableFrom(GlobalSearchViewModel::class.java))
++                return GlobalSearchViewModel(repository) as T
++            }
++        }
++    }
++}
+diff --git a/app/src/main/java/ir/restaurant/management/ui/HrPayrollDialogs.kt b/app/src/main/java/ir/restaurant/management/ui/HrPayrollDialogs.kt
+index f0d2449..e26e6a9 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/HrPayrollDialogs.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/HrPayrollDialogs.kt
+@@ -215,7 +215,7 @@ internal fun Employee360Dialog(
+                                     Column(Modifier.fillMaxWidth().padding(10.dp)) {
+                                         Text("${contract.contractNumber.ifBlank { "قرارداد #${contract.id}" }} · نسخه ${contract.versionNo}", fontWeight = FontWeight.Bold)
+                                         CompactInfoRow("بازه", "${epochDayToPersian(contract.startEpochDay).display()} تا ${contract.endEpochDay?.let { epochDayToPersian(it).display() } ?: "باز"}")
+-                                        CompactInfoRow("حقوق Snapshot", formatMoney(contract.baseSalaryRial))
++                                        CompactInfoRow("حقوق تصویر ثابت", formatMoney(contract.baseSalaryRial))
+                                         StatusPill(contract.typedStatus.storedValue)
+                                         if (contract.typedStatus == EmploymentContractStatus.PENDING_APPROVAL) OutlinedButton(onClick = { onApproveContract(contract.id) }, modifier = Modifier.fillMaxWidth()) { Text("تأیید قرارداد") }
+                                         OutlinedButton(
+@@ -316,7 +316,7 @@ internal fun Employee360Dialog(
+                                         Text(audit.reason.ifBlank { "بدون توضیح" })
+                                         audit.beforeSnapshot?.takeIf { it.isNotBlank() }?.let { Text("قبل: $it", style = MaterialTheme.typography.labelSmall) }
+                                         audit.afterSnapshot?.takeIf { it.isNotBlank() }?.let { Text("بعد: $it", style = MaterialTheme.typography.labelSmall) }
+-                                        Text("Correlation: ${audit.correlationId}", style = MaterialTheme.typography.labelSmall)
++                                        Text("شناسه هم‌بستگی: ${audit.correlationId}", style = MaterialTheme.typography.labelSmall)
+                                     }
+                                 }
+                             }
+@@ -367,15 +367,15 @@ internal fun PayslipDetailDialog(
+                         }
+                     }
+                 }
+-                item { SectionHeading("Attendance & Leave Snapshot", "ورودی‌های تأییدشده همان دوره") }
++                item { SectionHeading("تصویر ثابت حضور و مرخصی", "ورودی‌های تأییدشده همان دوره") }
+                 detail.snapshot?.let { snapshot ->
+                     item { CompactInfoRow("کارکرد / اضافه‌کاری", "${snapshot.actualWorkMinutes} / ${snapshot.overtimeMinutes} دقیقه") }
+                     item { CompactInfoRow("غیبت / تأخیر", "${snapshot.absenceMinutes} / ${snapshot.lateMinutes} دقیقه") }
+                     item { CompactInfoRow("مرخصی باحقوق / بی‌حقوق", "${snapshot.paidLeaveMinutes} / ${snapshot.unpaidLeaveMinutes} دقیقه") }
+                     item { CompactInfoRow("قرارداد / نسخه", "${snapshot.contractId} / ${snapshot.contractVersionNo}") }
+-                    item { CompactInfoRow("حقوق پایه Snapshot", formatMoney(snapshot.baseSalaryRial)) }
++                    item { CompactInfoRow("حقوق پایه تصویر ثابت", formatMoney(snapshot.baseSalaryRial)) }
+                     item { CompactInfoRow("Policy / نسخه", "${snapshot.payrollPolicyId} / ${snapshot.payrollPolicyVersion}") }
+-                } ?: item { Text("Legacy: Snapshot کامل در منبع قبلی وجود نداشته است.", color = MaterialTheme.colorScheme.error) }
++                } ?: item { Text("داده تاریخی: تصویر ثابت کامل در منبع قبلی وجود نداشته است.", color = MaterialTheme.colorScheme.error) }
+                 item { SectionHeading("Advance allocations", "کسرها از مانده مساعده بیشتر نمی‌شوند") }
+                 items(detail.advanceAllocations) { allocation -> CompactInfoRow("مساعده #${allocation.advanceId}", formatMoney(allocation.amountRial)) }
+                 item { SectionHeading("Payment ledger", "پرداخت کامل/جزئی و برگشت جبرانی") }
+@@ -449,7 +449,7 @@ internal fun PayrollBatchDialog(periods: List<PayrollPeriodRecordV2>, onDismiss:
+     val commandId = remember { GlobalId.new().value }
+     AlertDialog(
+         onDismissRequest = onDismiss,
+-        title = { Text("Payroll Batch") },
++        title = { Text("دسته پرداخت حقوق") },
+         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+             error?.let { MessageCard(it, true) }
+             Text("هر Batch یک سند مستقل با Calculator، Reviewer، Approver و Correlation ID است.")
+@@ -525,7 +525,7 @@ internal fun ManualAdjustmentDialog(
+         title = { Text("تعدیل دستی حقوق") },
+         text = { Column(Modifier.heightIn(max = 540.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+             error?.let { MessageCard(it, true) }
+-            Text("Reason و تأیید کاربر مستقل الزامی است.")
++            Text("ثبت دلیل و تأیید کاربر مستقل الزامی است.")
+             state.employees.filter { it.isActive }.forEach { employee -> FilterChip(employeeId == employee.id, { employeeId = employee.id }, { Text(employee.displayName) }) }
+             periods.filter { it.status != PayrollPeriodStatus.CLOSED }.forEach { period -> FilterChip(periodId == period.id, { periodId = period.id }, { Text(period.periodKey) }) }
+             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+@@ -578,7 +578,7 @@ internal fun ContractVersionDialog(
+             OutlinedTextField(dailyMinutes, { dailyMinutes = it.filter(Char::isDigit) }, label = { Text("دقیقه کار روزانه") }, modifier = Modifier.fillMaxWidth())
+             OutlinedTextField(weeklyDays, { weeklyDays = it.filter(Char::isDigit) }, label = { Text("روز کار هفتگی") }, modifier = Modifier.fillMaxWidth())
+             Text("برنامه کاری", fontWeight = FontWeight.Bold)
+-            if (state.workSchedules.isEmpty()) MessageCard("ابتدا از بخش شیفت و برنامه کاری، Work Schedule معتبر بسازید.", true)
++            if (state.workSchedules.isEmpty()) MessageCard("ابتدا از بخش شیفت و برنامه کاری، برنامه کاری معتبر بسازید.", true)
+             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                 items(state.workSchedules.filter { it.active }, key = { it.id }) { schedule ->
+                     FilterChip(workScheduleId == schedule.id, { workScheduleId = schedule.id }, { Text(schedule.name) })
+diff --git a/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt b/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt
+index 5ec0a9d..6f329ea 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/HrPayrollScreens.kt
+@@ -875,7 +875,7 @@ internal fun PayslipHistoryRow(
+             }
+             CompactInfoRow("ناخالص / کسورات / خالص", "${formatMoney(payslip.grossPay.value)} / ${formatMoney(payslip.totalDeductions.value)} / ${formatMoney(payslip.netPay.value)}")
+             CompactInfoRow("پرداخت / مانده", "${formatMoney(payslip.paidAmount.value)} / ${formatMoney(payslip.remainingAmount.value)}", payslip.remainingAmount.value > 0)
+-            if (!payslip.componentDetailComplete) Text("Legacy: جزئیات مؤلفه‌ها در منبع تاریخی موجود نبوده و ساخته نشده است.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
++            if (!payslip.componentDetailComplete) Text("داده تاریخی: جزئیات مؤلفه‌ها در منبع قبلی موجود نبوده و ساخته نشده است.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+         }
+     }
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryCountCenterScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryCountCenterScreen.kt
+index 207cca1..1bdfc0b 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryCountCenterScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryCountCenterScreen.kt
+@@ -70,7 +70,7 @@ internal fun InventoryCountCenterScreen(
+                 Text("جلسه انبارگردانی جدید")
+             }
+         }
+-        item { SectionHeading("چرخه شمارش", "Draft → Open → Counting/Recount → Approval → Posted") }
++        item { SectionHeading("چرخه شمارش", "پیش‌نویس ← باز ← شمارش/بازشماری ← تأیید ← ثبت نهایی") }
+         if (!state.loading && state.countSessions.isEmpty()) item { InventoryEmptyState("جلسه انبارگردانی ثبت نشده است.") }
+         items(state.countSessions, key = { "count-session-${it.id}" }) { session ->
+             val location = state.locations.firstOrNull { it.id == session.locationId }
+@@ -81,7 +81,7 @@ internal fun InventoryCountCenterScreen(
+                     CompactInfoRow("شعبه", location?.branchName?.ifBlank { "سطح سازمان" } ?: "—")
+                     CompactInfoRow("وضعیت", countStatusTitle(session.status), session.status in setOf(InventoryCountStatus.RECOUNT_REQUIRED, InventoryCountStatus.PENDING_APPROVAL))
+                     CompactInfoRow("نوع", if (session.blindCount) "شمارش کور" else "شمارش با نمایش مانده")
+-                    session.assignedToActorId?.let { CompactInfoRow("شمارشگر", "Actor #$it") }
++                    session.assignedToActorId?.let { CompactInfoRow("شمارشگر", "کاربر #$it") }
+                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                         if (session.status == InventoryCountStatus.DRAFT && canCreate) {
+                             Button(onClick = { viewModel.openCount(session.id) }, modifier = Modifier.weight(1f).testTag("inventory_count_open_${session.id}")) { Text("باز کردن") }
+@@ -158,7 +158,7 @@ private fun CreateInventoryCountDialog(
+                 OutlinedTextField(notes, { notes = it.take(500) }, label = { Text("یادداشت و دستور شمارش") })
+             }
+         },
+-        confirmButton = { Button(enabled = !state.busy && locationId > 0, onClick = { onSave(locationId, selectedItemId, blind, notes) }) { Text("ایجاد Draft") } },
++        confirmButton = { Button(enabled = !state.busy && locationId > 0, onClick = { onSave(locationId, selectedItemId, blind, notes) }) { Text("ایجاد پیش‌نویس") } },
+         dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } },
+     )
+ }
+@@ -187,7 +187,7 @@ private fun InventoryCountSessionDialog(
+                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                         Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                             Text(state.items.firstOrNull { it.id == line.itemId }?.name ?: "کالا #${line.itemId}", fontWeight = FontWeight.Bold)
+-                            line.systemQuantityMicros?.let { CompactInfoRow("مانده Snapshot", formatQuantity(it)) }
++                            line.systemQuantityMicros?.let { CompactInfoRow("مانده تصویر ثابت", formatQuantity(it)) }
+                             line.finalCountQuantityMicros?.let { CompactInfoRow("شمارش نهایی", formatQuantity(it), line.varianceQuantityMicros != 0L) }
+                             line.varianceQuantityMicros?.let { CompactInfoRow("مغایرت", formatQuantity(it), it != 0L) }
+                             CompactInfoRow(
+diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryExpiryCenterScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryExpiryCenterScreen.kt
+index 034e1ad..f1489b2 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryExpiryCenterScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryExpiryCenterScreen.kt
+@@ -223,7 +223,7 @@ private fun ExpiredLotWasteDialog(
+         title = { Text("ایجاد سند ضایعات لات ${lot.lotNumber}") },
+         text = {
+             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+-                Text("این اقدام فقط سند ایجاد می‌کند؛ کاهش موجودی پس از Posting صریح انجام می‌شود.")
++                Text("این اقدام فقط سند ایجاد می‌کند؛ کاهش موجودی پس از ثبت نهایی صریح انجام می‌شود.")
+                 error?.let { MessageCard(it, true) }
+                 OutlinedTextField(quantity, { quantity = it }, label = { Text("مقدار") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                 OutlinedTextField(notes, { notes = it.take(500) }, label = { Text("توضیحات") })
+diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
+index 74c2113..a8cf9b6 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryItemCenterScreen.kt
+@@ -208,7 +208,7 @@ private fun InventoryItemMasterDialog(
+             ) {
+                 error?.let { MessageCard(it, true) }
+                 Text("اطلاعات پایه", fontWeight = FontWeight.Bold)
+-                OutlinedTextField(sku, { sku = it.uppercase().take(40) }, label = { Text("SKU یکتا") }, enabled = existing == null)
++                OutlinedTextField(sku, { sku = it.uppercase().take(40) }, label = { Text("کد یکتای کالا (SKU)") }, enabled = existing == null)
+                 OutlinedTextField(name, { name = it.take(120) }, label = { Text("نام کالا") })
+                 OutlinedTextField(category, { category = it.take(80) }, label = { Text("دسته‌بندی") })
+                 SelectionField("نوع کالا", itemTypeTitle(itemType), InventoryItemType.entries.mapIndexed { index, value -> index.toLong() to itemTypeTitle(value) }) { itemType = InventoryItemType.entries[it.toInt()] }
+@@ -241,7 +241,7 @@ private fun InventoryItemMasterDialog(
+                     OutlinedTextField(maximum, { maximum = it }, label = { Text("حداکثر موجودی؛ صفر یعنی بدون سقف") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                     OutlinedTextField(safety, { safety = it }, label = { Text("ذخیره ایمن") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                     OutlinedTextField(reorder, { reorder = it }, label = { Text("نقطه سفارش") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+-                    OutlinedTextField(leadTime, { leadTime = it.filter(Char::isDigit) }, label = { Text("Lead time (روز)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
++                    OutlinedTextField(leadTime, { leadTime = it.filter(Char::isDigit) }, label = { Text("زمان تأمین (روز)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                 }
+             }
+         },
+diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryItemDetailScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryItemDetailScreen.kt
+index a7977d4..008d32c 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryItemDetailScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryItemDetailScreen.kt
+@@ -59,9 +59,9 @@ internal fun InventoryItemDetail2Dialog(
+                                 CompactInfoRow("واحد خرید", "${item.purchaseUnit} · ${item.purchaseToBaseNumerator}/${item.purchaseToBaseDenominator}")
+                                 CompactInfoRow("واحد رسپی", "${item.recipeUnit} · ${item.recipeToBaseNumerator}/${item.recipeToBaseDenominator}")
+                                 item.primaryBarcode?.let { CompactInfoRow("بارکد", it.value) }
+-                                CompactInfoRow("Lot / Expiry", "${if (item.trackLot) "فعال" else "غیرفعال"} / ${if (item.trackExpiry) "فعال" else "غیرفعال"}")
++                                CompactInfoRow("رهگیری بچ / انقضا", "${if (item.trackLot) "فعال" else "غیرفعال"} / ${if (item.trackExpiry) "فعال" else "غیرفعال"}")
+                                 CompactInfoRow("حداقل / نقطه سفارش", "${formatQuantity(item.minimumStockMicros)} / ${formatQuantity(item.reorderPointMicros)}")
+-                                CompactInfoRow("ذخیره ایمن / Lead time", "${formatQuantity(item.safetyStockMicros)} / ${item.leadTimeDays} روز")
++                                CompactInfoRow("ذخیره ایمن / زمان تأمین", "${formatQuantity(item.safetyStockMicros)} / ${item.leadTimeDays} روز")
+                             }
+                         }
+                         InventoryItemDetailSection.LOCATIONS -> {
+diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryMovementCenterScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryMovementCenterScreen.kt
+index 972dfc9..812e299 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryMovementCenterScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryMovementCenterScreen.kt
+@@ -39,11 +39,11 @@ internal fun InventoryMovementCenterScreen(state: InventoryWorkspaceUiState) {
+                     )
+                     CompactInfoRow("تغییر مقدار", "${formatQuantity(movement.quantityDeltaMicros)} ${movement.baseUnit}", movement.quantityDeltaMicros < 0)
+                     CompactInfoRow("تغییر ارزش", formatMoney(movement.valueDeltaRial), movement.valueDeltaRial < 0)
+-                    CompactInfoRow("محل", movement.locationName ?: "Legacy / نامشخص", movement.locationId == null)
++                    CompactInfoRow("محل", movement.locationName ?: "داده تاریخی / نامشخص", movement.locationId == null)
+                     movement.lotNumbers?.takeIf { it.isNotBlank() }?.let { CompactInfoRow("لات", it) }
+                     CompactInfoRow("سند مبدأ", "${referenceTypeTitle(movement.sourceType)} #${movement.sourceId}")
+-                    CompactInfoRow("Actor", movement.actorId?.let { "#$it" } ?: "Legacy", movement.actorId == null)
+-                    CompactInfoRow("Correlation", movement.correlationId)
++                    CompactInfoRow("ثبت‌کننده", movement.actorId?.let { "#$it" } ?: "داده تاریخی", movement.actorId == null)
++                    CompactInfoRow("شناسه هم‌بستگی", movement.correlationId)
+                     movement.reversalOfMovementId?.let { CompactInfoRow("برگشت گردش", "#$it", true) }
+                     if (movement.reason.isNotBlank()) Text(movement.reason, style = MaterialTheme.typography.bodySmall)
+                 }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryReplenishmentCenterScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryReplenishmentCenterScreen.kt
+index 1762f2e..46fbf02 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryReplenishmentCenterScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryReplenishmentCenterScreen.kt
+@@ -47,8 +47,8 @@ internal fun InventoryReplenishmentCenterScreen(
+             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                     Text("تصمیم تأمین", fontWeight = FontWeight.Bold)
+-                    Text("موجودی قابل مصرف + در راه + سفارش باز در برابر Lead Time و Safety Stock سنجیده می‌شود.")
+-                    Text("FEFO روش انتخاب لات است و روش ارزش‌گذاری نیست.", style = MaterialTheme.typography.bodySmall)
++                    Text("موجودی قابل مصرف + در راه + سفارش باز در برابر زمان تأمین و موجودی اطمینان سنجیده می‌شود.")
++                    Text("روش FEFO برای انتخاب لات است و روش ارزش‌گذاری نیست.", style = MaterialTheme.typography.bodySmall)
+                 }
+             }
+         }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryWasteCenterScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryWasteCenterScreen.kt
+index 42ca57d..4c3d212 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryWasteCenterScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryWasteCenterScreen.kt
+@@ -72,7 +72,7 @@ internal fun InventoryWasteCenterScreen(
+             }
+         }
+         item { Button(onClick = { showCreate = true }, enabled = canCreate && state.items.isNotEmpty() && state.locations.isNotEmpty() && !state.busy) { Text("سند ضایعات جدید") } }
+-        item { SectionHeading("اسناد ضایعات", "کاهش موجودی و اثر حسابداری فقط در Posting اتمیک انجام می‌شود") }
++        item { SectionHeading("اسناد ضایعات", "کاهش موجودی و اثر حسابداری فقط در ثبت نهایی اتمیک انجام می‌شود") }
+         if (!state.loading && state.wasteDocuments.isEmpty()) item { InventoryEmptyState("سند ضایعاتی ثبت نشده است.") }
+         items(state.wasteDocuments, key = { "waste-${it.id}" }) { document ->
+             val item = state.items.firstOrNull { it.id == document.itemId }
+@@ -190,7 +190,7 @@ internal fun wasteReasonTitle(reason: WasteReason): String = when (reason) {
+ 
+ private fun wasteStatusTitle(status: WasteStatus): String = when (status) {
+     WasteStatus.PENDING_APPROVAL -> "در انتظار تأیید"
+-    WasteStatus.APPROVED -> "تأییدشده؛ آماده Posting"
++    WasteStatus.APPROVED -> "تأییدشده؛ آماده ثبت نهایی"
+     WasteStatus.POSTED -> "ثبت‌شده"
+     WasteStatus.LEGACY_UNKNOWN -> "وضعیت قدیمی نامعتبر"
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/InventoryWorkspaceScreen.kt b/app/src/main/java/ir/restaurant/management/ui/InventoryWorkspaceScreen.kt
+index 21ce4a5..b12ab65 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/InventoryWorkspaceScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/InventoryWorkspaceScreen.kt
+@@ -641,7 +641,7 @@ private val inventoryCenters = listOf(
+     InventoryWorkspaceSection.ITEMS to "کالا، SKU، بارکد، محل و مانده",
+     InventoryWorkspaceSection.EXPIRY to "FEFO، انقضا، قرنطینه و لات",
+     InventoryWorkspaceSection.MOVEMENTS to "دفتر غیرقابل‌ویرایش گردش موجودی",
+-    InventoryWorkspaceSection.COUNTS to "شمارش کور، بازشماری، تأیید و Posting",
++    InventoryWorkspaceSection.COUNTS to "شمارش کور، بازشماری، تأیید و ثبت نهایی",
+     InventoryWorkspaceSection.WASTE to "ضایعات ردیابی‌پذیر و بهای ثبت‌شده",
+     InventoryWorkspaceSection.TRANSFERS to "انتقال سندمحور و کالای در راه",
+     InventoryWorkspaceSection.REPLENISHMENT to "پوشش، نقطه سفارش و درخواست خرید",
+@@ -662,13 +662,13 @@ internal fun inventorySectionTitle(section: InventoryWorkspaceSection): String =
+ 
+ private fun inventorySectionSubtitle(section: InventoryWorkspaceSection): String = when (section) {
+     InventoryWorkspaceSection.OVERVIEW -> "آنچه اکنون نیازمند تصمیم و اقدام است"
+-    InventoryWorkspaceSection.ITEMS -> "Master Data، موجودی مکان‌محور و جست‌وجوی سریع"
++    InventoryWorkspaceSection.ITEMS -> "اطلاعات پایه، موجودی مکان‌محور و جست‌وجوی سریع"
+     InventoryWorkspaceSection.EXPIRY -> "مصرف FEFO، قرنطینه و تبدیل صریح به ضایعات"
+-    InventoryWorkspaceSection.MOVEMENTS -> "ردیابی تا سند مبدأ، Actor و correlationId"
+-    InventoryWorkspaceSection.COUNTS -> "چرخه Draft تا Posted با تفکیک وظایف"
++    InventoryWorkspaceSection.MOVEMENTS -> "ردیابی تا سند مبدأ، کاربر ثبت‌کننده و شناسه همبستگی"
++    InventoryWorkspaceSection.COUNTS -> "چرخه پیش‌نویس تا ثبت نهایی با تفکیک وظایف"
+     InventoryWorkspaceSection.WASTE -> "مقدار، علت، بهای تاریخی، تأیید و ثبت"
+     InventoryWorkspaceSection.TRANSFERS -> "درخواست، صدور، کالای در راه و دریافت"
+-    InventoryWorkspaceSection.REPLENISHMENT -> "تقاضا، Lead Time، Safety Stock و Procurement"
++    InventoryWorkspaceSection.REPLENISHMENT -> "تقاضا، زمان تأمین، موجودی اطمینان و تدارکات"
+     InventoryWorkspaceSection.PERIODS -> "کنترل ثبت اسناد Backdated موجودی"
+ }
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementControlScreen.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementControlScreen.kt
+index 63d7cd9..3e7b92a 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementControlScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementControlScreen.kt
+@@ -250,7 +250,7 @@ private fun CashReconciliationDialog(onDismiss: () -> Unit, onSave: (CashReconci
+ 
+ @Composable private fun BudgetDialog(onDismiss: () -> Unit, onSave: (BudgetDraft) -> Unit) {
+     var name by remember { mutableStateOf("") }; var category by remember { mutableStateOf(BudgetCategory.PURCHASE) }; var center by remember { mutableStateOf("کل مجموعه") }; var from by remember { mutableLongStateOf(currentEpochDay()) }; var to by remember { mutableLongStateOf(currentEpochDay() + 30) }; var limit by remember { mutableStateOf("") }; var error by remember { mutableStateOf<String?>(null) }
+-    AlertDialog(onDismissRequest = onDismiss, title = { Text("تعریف بودجه") }, text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) { error?.let { MessageCard(it, true) }; OutlinedTextField(name, { name = it.take(80) }, label = { Text("نام بودجه") }); SelectionField("نوع", category.name, BudgetCategory.entries.mapIndexed { index, value -> index.toLong() to value.name }) { category = BudgetCategory.entries[it.toInt()] }; OutlinedTextField(center, { center = it.take(80) }, label = { Text("مرکز هزینه") }); PersianDateField("شروع", from) { from = it }; PersianDateField("پایان", to) { to = it }; OutlinedTextField(limit, { limit = formatMoneyInput(it) }, label = { Text("سقف بودجه") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)) } }, confirmButton = { Button(onClick = { runCatching { BudgetDraft(name, category, center, from, to, parseMoneyInputOrZero(limit)).validated() }.onSuccess(onSave).onFailure { error = it.message } }) { Text("ذخیره") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } })
++    AlertDialog(onDismissRequest = onDismiss, title = { Text("تعریف بودجه") }, text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) { error?.let { MessageCard(it, true) }; OutlinedTextField(name, { name = it.take(80) }, label = { Text("نام بودجه") }); SelectionField("نوع", budgetCategoryTitle(category), BudgetCategory.entries.mapIndexed { index, value -> index.toLong() to budgetCategoryTitle(value) }) { category = BudgetCategory.entries[it.toInt()] }; OutlinedTextField(center, { center = it.take(80) }, label = { Text("مرکز هزینه") }); PersianDateField("شروع", from) { from = it }; PersianDateField("پایان", to) { to = it }; OutlinedTextField(limit, { limit = formatMoneyInput(it) }, label = { Text("سقف بودجه") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)) } }, confirmButton = { Button(onClick = { runCatching { BudgetDraft(name, category, center, from, to, parseMoneyInputOrZero(limit)).validated() }.onSuccess(onSave).onFailure { error = it.message } }) { Text("ذخیره") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } })
+ }
+ 
+ @Composable private fun SpendDialog(budget: BudgetRecord, onDismiss: () -> Unit, onSave: (Long, Long, String) -> Unit) {
+@@ -277,3 +277,11 @@ private fun CashReconciliationDialog(onDismiss: () -> Unit, onSave: (CashReconci
+     var start by remember { mutableStateOf((shift.startMinute + 180).toString()) }; var end by remember { mutableStateOf((shift.startMinute + 210).coerceAtMost(shift.endMinute).toString()) }; var error by remember { mutableStateOf<String?>(null) }
+     AlertDialog(onDismissRequest = onDismiss, title = { Text("ثبت استراحت ${shift.employeeName}") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { error?.let { MessageCard(it, true) }; Text("شیفت: ${shift.startMinute} تا ${shift.endMinute}"); OutlinedTextField(start, { start = it.filter(Char::isDigit) }, label = { Text("شروع به دقیقه از نیمه‌شب") }); OutlinedTextField(end, { end = it.filter(Char::isDigit) }, label = { Text("پایان به دقیقه از نیمه‌شب") }) } }, confirmButton = { Button(onClick = { runCatching { start.toInt() to end.toInt() }.onSuccess { (from, to) -> onSave(from, to) }.onFailure { error = it.message ?: "زمان استراحت معتبر نیست." } }) { Text("ثبت") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } })
+ }
++
++
++private fun budgetCategoryTitle(value: BudgetCategory): String = when (value) {
++    BudgetCategory.PURCHASE -> "خرید"
++    BudgetCategory.LABOR -> "نیروی انسانی"
++    BudgetCategory.WASTE -> "ضایعات"
++    BudgetCategory.OTHER -> "سایر"
++}
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt
+index 1a01f92..800eace 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementDataGrid.kt
+@@ -18,7 +18,12 @@ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.OutlinedTextField
+ import androidx.compose.material3.Surface
+ import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
+ import androidx.compose.ui.focus.FocusDirection
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+@@ -348,6 +353,25 @@ internal fun EditableQuantityCell(
+     )
+ }
+ 
++@Composable
++internal fun UiPagingBar(window: UiPageWindow, onPageChange: (Int) -> Unit) {
++    Row(
++        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
++        verticalAlignment = Alignment.CenterVertically,
++        horizontalArrangement = Arrangement.spacedBy(8.dp),
++    ) {
++        TextButton(enabled = window.hasPrevious, onClick = { onPageChange(window.pageIndex - 1) }) { Text("قبلی") }
++        Text(
++            "صفحه ${toPersianDigits((window.pageIndex + 1).toString())} از ${toPersianDigits(window.pageCount.toString())} · ${ErpDisplayFormatters.integer(window.totalCount)} رکورد",
++            Modifier.weight(1f),
++            textAlign = TextAlign.Center,
++            style = MaterialTheme.typography.labelMedium,
++            color = MaterialTheme.colorScheme.onSurfaceVariant,
++        )
++        TextButton(enabled = window.hasNext, onClick = { onPageChange(window.pageIndex + 1) }) { Text("بعدی") }
++    }
++}
++
+ @Composable
+ internal fun InlineWarning(message: String, modifier: Modifier = Modifier) {
+     Surface(
+@@ -384,7 +408,16 @@ internal fun <T> AdaptiveManagementList(
+     listTestTag: String? = null,
+     rowTestTag: ((T) -> String)? = null,
+     editAdapter: ManagementGridEditAdapter<T>? = null,
++    pageSize: Int = 50,
+ ) {
++    val firstKey = rows.firstOrNull()?.let(key)
++    val lastKey = rows.lastOrNull()?.let(key)
++    var requestedPage by remember(rows.size, firstKey, lastKey) { mutableStateOf(0) }
++    val pageWindow = uiPageWindow(rows.size, requestedPage, pageSize)
++    val visibleRows = rows.page(pageWindow)
++    val pager: @Composable () -> Unit = {
++        if (pageWindow.pageCount > 1) UiPagingBar(pageWindow) { requestedPage = it }
++    }
+     if (currentErpWindowClass() == ErpWindowClass.COMPACT) {
+         LazyColumn(
+             modifier = modifier.fillMaxWidth().heightIn(max = 720.dp).then(listTestTag?.let { Modifier.testTag(it) } ?: Modifier),
+@@ -401,7 +434,7 @@ internal fun <T> AdaptiveManagementList(
+                     )
+                 }
+             } else {
+-                items(rows, key = key) { row ->
++                items(visibleRows, key = key) { row ->
+                     MobileSmartRow(
+                         title = mobileTitle(row),
+                         primaryValue = mobilePrimaryValue(row),
+@@ -412,18 +445,22 @@ internal fun <T> AdaptiveManagementList(
+                     )
+                 }
+             }
++            if (pageWindow.pageCount > 1) item(key = "management_mobile_pager") { pager() }
+             summary?.let { footer -> item(key = "management_mobile_summary") { footer() } }
+         }
+     } else {
+         ManagementDataGrid(
+-            rows = rows,
++            rows = visibleRows,
+             columns = columns,
+             key = key,
+             modifier = modifier,
+             rowState = rowState,
+             emptyMessage = emptyMessage,
+             commandBar = commandBar,
+-            summary = summary,
++            summary = {
++                pager()
++                summary?.invoke()
++            },
+             onRowClick = onRowClick,
+             editAdapter = editAdapter,
+         )
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
+index 3bcab20..a058baa 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementRoutes.kt
+@@ -1,6 +1,7 @@
+ package ir.restaurant.management.ui
+ 
+ import ir.restaurant.management.domain.operations.AlertDrillDownTarget
++import ir.restaurant.management.domain.search.GlobalSearchTarget
+ import androidx.compose.runtime.Composable
+ import ir.restaurant.management.data.repository.DashboardSnapshot
+ import ir.restaurant.management.domain.operations.AppUserRecord
+@@ -16,6 +17,9 @@ internal fun ManagementRoutes(
+     inventory: InventoryWorkspaceViewModel,
+     accountingState: AccountingUiState,
+     accounting: AccountingViewModel,
++    globalSearchState: GlobalSearchUiState,
++    globalSearch: GlobalSearchViewModel,
++    crm: CrmViewModel,
+     salesState: DailySalesUiState,
+     sales: DailySalesViewModel,
+     personnelState: PersonnelUiState,
+@@ -145,30 +149,18 @@ internal fun ManagementRoutes(
+ 
+         AppScreen.GLOBAL_SEARCH -> GlobalSearchScreen(
+             currentUser = currentUser,
+-            operations = operationsState,
+-            accounting = accountingState,
+-            personnel = personnelState,
++            state = globalSearchState,
++            onSearch = globalSearch::search,
+             onOpen = navigate,
+-            onOpenEntity = { target, key ->
+-                when {
+-                    key.startsWith("item-") -> {
+-                        key.removePrefix("item-").toLongOrNull()?.let(inventory::focusItem)
+-                    }
+-                    key.startsWith("purchase-") -> {
+-                        operations.selectPurchase(key.removePrefix("purchase-").toLongOrNull())
+-                    }
+-                    key.startsWith("journal-") -> {
+-                        accounting.selectJournal(key.removePrefix("journal-").toLongOrNull())
+-                    }
+-                    key.startsWith("account-") -> accounting.selectLedger(key.removePrefix("account-"))
+-                    key.startsWith("employee-") -> {
+-                        onRequestEmployeeProfile(key.removePrefix("employee-").toLongOrNull())
+-                    }
+-                    key.startsWith("movement-") -> {
+-                        key.removePrefix("movement-").substringBefore('-').toLongOrNull()?.let { itemId ->
+-                            inventory.focusItem(itemId, InventoryWorkspaceSection.MOVEMENTS)
+-                        }
+-                    }
++            onOpenEntity = { result ->
++                val target = when (val entity = result.target) {
++                    is GlobalSearchTarget.InventoryItem -> { inventory.focusItem(entity.id); AppScreen.INVENTORY }
++                    is GlobalSearchTarget.StockMovement -> { inventory.focusItem(entity.itemId, InventoryWorkspaceSection.MOVEMENTS); AppScreen.STOCK_MOVEMENTS }
++                    is GlobalSearchTarget.Purchase -> { operations.selectPurchase(entity.id); AppScreen.PURCHASES }
++                    is GlobalSearchTarget.Account -> { accounting.selectLedger(entity.code); AppScreen.ACCOUNTING }
++                    is GlobalSearchTarget.Journal -> { accounting.selectJournal(entity.id); AppScreen.ACCOUNTING }
++                    is GlobalSearchTarget.Employee -> { onRequestEmployeeProfile(entity.id); AppScreen.PERSONNEL }
++                    is GlobalSearchTarget.Customer -> { crm.select(entity.id); AppScreen.CRM }
+                 }
+                 navigate(target)
+             },
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
+index f781e4e..0a54f85 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ManagementWorkflowScreens.kt
+@@ -489,7 +489,7 @@ private fun ChecklistItemDialog(item: ChecklistRunItemRecord, onDismiss: () -> U
+ @Composable
+ private fun DailyBriefScreen(state: ManagementWorkflowUiState, briefState: DailyBriefUiState, branches: List<BranchRecord>, workflow: ManagementWorkflowViewModel, navigateTopLevel: (AppScreen) -> Unit, onBack: () -> Unit) {
+     WorkflowScaffold(
+-        "گزارش روزانه مدیریت", "فروش، نقدینگی، Food Cost و سیگنال‌های کنترلی", state, branches, workflow::selectBranch, onBack, navigateTopLevel,
++        "گزارش روزانه مدیریت", "فروش، نقدینگی، هزینه مواد غذایی و سیگنال‌های کنترلی", state, branches, workflow::selectBranch, onBack, navigateTopLevel,
+         actions = { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PersianDateField("تاریخ", state.businessEpochDay, workflow::setDay); OutlinedButton(onClick = workflow::refreshBrief) { Text("بازخوانی") } } },
+     ) {
+         when {
+@@ -501,22 +501,22 @@ private fun DailyBriefScreen(state: ManagementWorkflowUiState, briefState: Daily
+                 val brief = briefState.brief
+                 val readModel = briefState.readModel
+                 Column(Modifier.verticalScroll(rememberScrollState()).testTag("daily_management_brief"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+-                    BriefMetricCard("Revenue", formatMoney(readModel.revenueRial))
+-                    BriefMetricCard("Collections", formatMoney(readModel.collectionsRial))
+-                    BriefMetricCard("New Receivables", formatMoney(readModel.newReceivablesRial))
+-                    BriefMetricCard("Outstanding Receivables", formatMoney(readModel.outstandingReceivablesRial))
+-                    BriefMetricCard("COGS", readModel.cogsRial?.let(::formatMoney) ?: unavailableMetricValue())
+-                    BriefMetricCard("Gross Profit", readModel.grossProfitRial?.let(::formatMoney) ?: unavailableMetricValue())
+-                    BriefMetricCard("Food Cost", readModel.foodCostBasisPoints?.let(::formatPercentBasisPoints) ?: unavailableMetricValue())
+-                    BriefMetricCard("Operating Expenses", readModel.operatingExpensesRial?.let(::formatMoney) ?: unavailableMetricValue())
+-                    BriefMetricCard("Payroll", readModel.payrollRial?.let(::formatMoney) ?: unavailableMetricValue())
+-                    BriefMetricCard("Estimated Operating Profit", readModel.estimatedOperatingProfitRial?.let(::formatMoney) ?: unavailableMetricValue(readModel.unavailableReason))
+-                    BriefMetricCard("Waste", readModel.wasteCostRial?.let(::formatMoney) ?: unavailableMetricValue())
+-                    BriefMetricCard("Cash Variance", readModel.cashVarianceRial?.let(::formatMoney) ?: unavailableMetricValue())
+-                    BriefMetricCard("Critical Issues", toPersianDigits(readModel.criticalIssues.toString()))
+-                    BriefMetricCard("Open Issues", toPersianDigits(readModel.openIssues.toString()))
+-                    BriefMetricCard("Overdue Tasks", toPersianDigits(readModel.overdueTasks.toString()))
+-                    BriefMetricCard("Checklist Failures", toPersianDigits(readModel.failedChecklists.toString()))
++                    BriefMetricCard("درآمد", formatMoney(readModel.revenueRial))
++                    BriefMetricCard("وصول مطالبات", formatMoney(readModel.collectionsRial))
++                    BriefMetricCard("مطالبات جدید", formatMoney(readModel.newReceivablesRial))
++                    BriefMetricCard("مانده مطالبات", formatMoney(readModel.outstandingReceivablesRial))
++                    BriefMetricCard("بهای تمام‌شده کالای فروش‌رفته", readModel.cogsRial?.let(::formatMoney) ?: unavailableMetricValue())
++                    BriefMetricCard("سود ناخالص", readModel.grossProfitRial?.let(::formatMoney) ?: unavailableMetricValue())
++                    BriefMetricCard("درصد هزینه مواد غذایی", readModel.foodCostBasisPoints?.let(::formatPercentBasisPoints) ?: unavailableMetricValue())
++                    BriefMetricCard("هزینه‌های عملیاتی", readModel.operatingExpensesRial?.let(::formatMoney) ?: unavailableMetricValue())
++                    BriefMetricCard("حقوق و دستمزد", readModel.payrollRial?.let(::formatMoney) ?: unavailableMetricValue())
++                    BriefMetricCard("سود عملیاتی برآوردی", readModel.estimatedOperatingProfitRial?.let(::formatMoney) ?: unavailableMetricValue(readModel.unavailableReason))
++                    BriefMetricCard("هزینه ضایعات", readModel.wasteCostRial?.let(::formatMoney) ?: unavailableMetricValue())
++                    BriefMetricCard("مغایرت نقدی", readModel.cashVarianceRial?.let(::formatMoney) ?: unavailableMetricValue())
++                    BriefMetricCard("مسائل بحرانی", toPersianDigits(readModel.criticalIssues.toString()))
++                    BriefMetricCard("مسائل باز", toPersianDigits(readModel.openIssues.toString()))
++                    BriefMetricCard("وظایف معوق", toPersianDigits(readModel.overdueTasks.toString()))
++                    BriefMetricCard("موارد ناموفق چک‌لیست", toPersianDigits(readModel.failedChecklists.toString()))
+                     if (brief.importantEvents.isNotEmpty()) BriefListCard("رویدادهای مهم", brief.importantEvents)
+                     if (brief.recommendations.isNotEmpty()) BriefListCard("اقدام‌های پیشنهادی", brief.recommendations)
+                 }
+@@ -532,7 +532,24 @@ private fun DailyBriefScreen(state: ManagementWorkflowUiState, briefState: Daily
+ 
+ private fun severityTitle(value: ManagementIssueSeverity) = when (value) { ManagementIssueSeverity.CRITICAL -> "بحرانی"; ManagementIssueSeverity.HIGH -> "بالا"; ManagementIssueSeverity.MEDIUM -> "متوسط"; ManagementIssueSeverity.LOW -> "کم"; ManagementIssueSeverity.INFO -> "اطلاع" }
+ private fun issueStatusTitle(value: ManagementIssueStatus) = when (value) { ManagementIssueStatus.NEW -> "جدید"; ManagementIssueStatus.ACKNOWLEDGED -> "مشاهده‌شده"; ManagementIssueStatus.ASSIGNED -> "ارجاع‌شده"; ManagementIssueStatus.IN_PROGRESS -> "در حال رسیدگی"; ManagementIssueStatus.WAITING_APPROVAL -> "در انتظار تأیید"; ManagementIssueStatus.RESOLVED -> "حل‌شده"; ManagementIssueStatus.DISMISSED -> "مختومه" }
+-private fun issueTypeTitle(issue: ManagementIssueRecord) = issue.type.name.replace('_', ' ')
++private fun issueTypeTitle(issue: ManagementIssueRecord) = when (issue.type) {
++    ir.restaurant.management.domain.control.ManagementIssueType.LOW_STOCK -> "کمبود موجودی"
++    ir.restaurant.management.domain.control.ManagementIssueType.INVENTORY_DISCREPANCY -> "مغایرت موجودی"
++    ir.restaurant.management.domain.control.ManagementIssueType.ABNORMAL_INVENTORY_USAGE -> "مصرف غیرعادی موجودی"
++    ir.restaurant.management.domain.control.ManagementIssueType.WASTE_SPIKE -> "افزایش غیرعادی ضایعات"
++    ir.restaurant.management.domain.control.ManagementIssueType.FOOD_COST_VARIANCE -> "مغایرت هزینه مواد غذایی"
++    ir.restaurant.management.domain.control.ManagementIssueType.PURCHASE_PRICE_SPIKE -> "افزایش غیرعادی قیمت خرید"
++    ir.restaurant.management.domain.control.ManagementIssueType.PURCHASE_DELIVERY_OVERDUE -> "تأخیر در تحویل خرید"
++    ir.restaurant.management.domain.control.ManagementIssueType.CASH_VARIANCE -> "مغایرت صندوق"
++    ir.restaurant.management.domain.control.ManagementIssueType.CARD_SETTLEMENT_VARIANCE -> "مغایرت تسویه کارتخوان"
++    ir.restaurant.management.domain.control.ManagementIssueType.OVERDUE_RECEIVABLE -> "مطالبه سررسیدگذشته"
++    ir.restaurant.management.domain.control.ManagementIssueType.UNALLOCATED_RECEIVABLE -> "دریافت تخصیص‌نیافته"
++    ir.restaurant.management.domain.control.ManagementIssueType.CREDIT_LIMIT_EXCEEDED -> "عبور از سقف اعتبار"
++    ir.restaurant.management.domain.control.ManagementIssueType.BUDGET_OVERRUN -> "عبور از بودجه"
++    ir.restaurant.management.domain.control.ManagementIssueType.ATTENDANCE_ANOMALY -> "ناهنجاری حضور و غیاب"
++    ir.restaurant.management.domain.control.ManagementIssueType.TASK_OVERDUE -> "وظیفه معوق"
++    ir.restaurant.management.domain.control.ManagementIssueType.CHECKLIST_FAILED -> "چک‌لیست ناموفق"
++}
+ private fun issueRecommendation(issue: ManagementIssueRecord) = when (issue.type) {
+     ir.restaurant.management.domain.control.ManagementIssueType.LOW_STOCK -> "موجودی و نقطه سفارش بازبینی و اقدام تأمین ثبت شود."
+     ir.restaurant.management.domain.control.ManagementIssueType.WASTE_SPIKE -> "علت ضایعات با ثبت انبار و شیفت مربوط تطبیق داده شود."
+diff --git a/app/src/main/java/ir/restaurant/management/ui/NavigationSettingsScreens.kt b/app/src/main/java/ir/restaurant/management/ui/NavigationSettingsScreens.kt
+index fc73af4..3b0ae82 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/NavigationSettingsScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/NavigationSettingsScreens.kt
+@@ -1,6 +1,8 @@
+ package ir.restaurant.management.ui
+ 
+ import ir.restaurant.management.BuildConfig
++import ir.restaurant.management.domain.search.GlobalSearchResult
++import ir.restaurant.management.domain.search.GlobalSearchTarget
+ 
+ import androidx.compose.foundation.BorderStroke
+ import androidx.compose.foundation.clickable
+@@ -98,7 +100,7 @@ internal val navigationDestinations = listOf(
+     NavigationDestination("تولید و رسپی", "محصول و مواد اولیه", "رسپی تولید محصول مواد اولیه", AppScreen.RECIPES),
+     NavigationDestination("حسابداری", "اسناد، حساب‌ها و گزارش‌های مالی", "حسابداری سند حساب دفتر تراز سود", AppScreen.ACCOUNTING),
+     NavigationDestination("خزانه‌داری", "دریافت، پرداخت، انتقال داخلی، تسویه و مغایرت", "خزانه صندوق بانک دریافت پرداخت تسویه مغایرت", AppScreen.TREASURY),
+-    NavigationDestination("طرف‌حساب‌ها و مطالبات", "دفتر مشتری، Aging، سقف اعتبار و ادغام کنترل‌شده", "مشتری حساب دریافتنی بدهکار aging اعتبار ادغام", AppScreen.CRM),
++    NavigationDestination("طرف‌حساب‌ها و مطالبات", "دفتر مشتری، سن مطالبات، سقف اعتبار و ادغام کنترل‌شده", "مشتری حساب دریافتنی بدهکار aging اعتبار ادغام", AppScreen.CRM),
+     NavigationDestination("ثبت سند جدید", "سند دستی حسابداری", "سند جدید حسابداری", AppScreen.NEW_JOURNAL),
+     NavigationDestination("پرسنل و حقوق", "کارکنان و پرداخت حقوق", "پرسنل کارمند حقوق", AppScreen.PERSONNEL),
+     NavigationDestination("دارایی‌های ثابت", "اموال و استهلاک", "دارایی اموال استهلاک", AppScreen.ASSETS),
+@@ -112,56 +114,25 @@ internal val navigationDestinations = listOf(
+ @Composable
+ internal fun GlobalSearchScreen(
+     currentUser: ir.restaurant.management.domain.operations.AppUserRecord?,
+-    operations: OperationsUiState,
+-    accounting: AccountingUiState,
+-    personnel: PersonnelUiState,
++    state: GlobalSearchUiState,
++    onSearch: (String) -> Unit,
+     onOpen: (AppScreen) -> Unit,
+-    onOpenEntity: (AppScreen, String) -> Unit,
++    onOpenEntity: (GlobalSearchResult) -> Unit,
+     onBack: () -> Unit,
+ ) {
+-    var query by rememberSaveable { mutableStateOf("") }
++    val normalized = state.query.trim()
+     val allowed = navigationDestinations.filter { destination ->
+         canOpenScreen(currentUser, destination.screen)
+     }
+-    val normalized = query.trim()
+     val destinations = if (normalized.isBlank()) allowed else allowed.filter {
+-        it.title.contains(normalized, ignoreCase = true) ||
+-            it.subtitle.contains(normalized, ignoreCase = true) ||
+-            it.keywords.contains(normalized, ignoreCase = true)
+-    }
+-    data class EntityResult(val group: String, val title: String, val subtitle: String, val screen: AppScreen, val key: String)
+-    val entityResults = if (normalized.length < 2) emptyList() else buildList {
+-        if (canOpenScreen(currentUser, AppScreen.INVENTORY)) operations.inventoryItems.filter {
+-            businessTextMatches(normalized, it.name, it.category)
+-        }.take(8).forEach { add(EntityResult("کالاها", it.name, "${it.category} · ${formatQuantity(it.stockMicros)} ${it.unit} · ${formatMoney(it.inventoryValueRial)}", AppScreen.INVENTORY, "item-${it.id}")) }
+-        if (canOpenScreen(currentUser, AppScreen.STOCK_MOVEMENTS)) operations.recentStockMovements.filter { movement ->
+-            val item = operations.inventoryItems.firstOrNull { it.id == movement.itemId }
+-            businessTextMatches(
+-                normalized,
+-                item?.name,
+-                movement.referenceType.storedValue,
+-                movement.notes,
+-                movement.movementType.storedValue,
+-            )
+-        }.take(8).forEach { movement ->
+-            val item = operations.inventoryItems.firstOrNull { it.id == movement.itemId }
+-            add(EntityResult("گردش موجودی", item?.name ?: "کالا #${movement.itemId}", "${stockMovementSearchTitle(movement.movementType)} · ${formatQuantity(movement.quantityDeltaMicros)} ${item?.unit.orEmpty()} · ${epochDayToPersian(movement.movementEpochDay).display()}", AppScreen.STOCK_MOVEMENTS, "movement-${movement.itemId}-${movement.id}"))
+-        }
+-        if (canOpenScreen(currentUser, AppScreen.PURCHASES)) operations.purchases.filter {
+-            businessTextMatches(normalized, it.invoiceNo, it.supplierName)
+-        }.take(8).forEach { add(EntityResult("فاکتورهای خرید", it.invoiceNo, "${it.supplierName} · مانده ${formatMoney(it.outstandingRial)}", AppScreen.PURCHASES, "purchase-${it.id}")) }
+-        if (canOpenScreen(currentUser, AppScreen.ACCOUNTING)) accounting.accounts.filter {
+-            businessTextMatches(normalized, it.code, it.name)
+-        }.take(8).forEach { add(EntityResult("حساب‌ها", "${it.code} — ${it.name}", "مانده بدهکار ${formatMoney(it.debitBalanceRial)} · بستانکار ${formatMoney(it.creditBalanceRial)}", AppScreen.ACCOUNTING, "account-${it.code}")) }
+-        if (canOpenScreen(currentUser, AppScreen.ACCOUNTING)) accounting.journals.filter {
+-            businessTextMatches(normalized, it.entryNo, it.description)
+-        }.take(8).forEach { add(EntityResult("اسناد حسابداری", it.entryNo, "${it.description} · ${formatMoney(it.totalDebitRial)}", AppScreen.ACCOUNTING, "journal-${it.id}")) }
+-        if (canOpenScreen(currentUser, AppScreen.PERSONNEL)) personnel.employees.filter {
+-            businessTextMatches(normalized, it.name, it.jobTitle, it.employeeCode)
+-        }.take(8).forEach { add(EntityResult("پرسنل", it.name, "${it.jobTitle} · ${if (it.isActive) "فعال" else "غیرفعال"}", AppScreen.PERSONNEL, "employee-${it.id}")) }
++        businessTextMatches(normalized, it.title, it.subtitle, it.keywords)
+     }
++    val entityResults = state.results
++    var entityPage by remember(normalized, entityResults.size) { mutableStateOf(0) }
++    val entityPageWindow = uiPageWindow(entityResults.size, entityPage, pageSize = 20)
++    val visibleEntityResults = entityResults.page(entityPageWindow)
+ 
+-    Scaffold(topBar = { ProfessionalTopBar("جست‌وجوی سراسری", "دسترسی سریع به همه بخش‌های مجاز", onBack) }) { padding ->
++    Scaffold(topBar = { ProfessionalTopBar("جست‌وجوی سراسری", "جست‌وجوی مستقیم و مجاز در پایگاه داده", onBack) }) { padding ->
+         LazyColumn(
+             modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+             verticalArrangement = Arrangement.spacedBy(12.dp),
+@@ -169,31 +140,43 @@ internal fun GlobalSearchScreen(
+             item {
+                 Spacer(Modifier.height(4.dp))
+                 OutlinedTextField(
+-                    value = query,
+-                    onValueChange = { query = it },
++                    value = state.query,
++                    onValueChange = onSearch,
+                     modifier = Modifier.fillMaxWidth(),
+-                    label = { Text("نام بخش یا عملیات") },
+-                    placeholder = { Text("مثلاً انبار، حقوق یا سند") },
++                    label = { Text("نام، کد، فاکتور یا عملیات") },
++                    placeholder = { Text("مثلاً برنج، ۱۲۳، تأمین‌کننده یا نام پرسنل") },
+                     singleLine = true,
+                     shape = RoundedCornerShape(18.dp),
+                 )
+             }
+             item {
+                 Text(
+-                    if (query.isBlank()) "همه میان‌برها" else "${destinations.size + entityResults.size} نتیجه در بخش‌ها و داده‌ها",
++                    when {
++                        state.loading -> "در حال جست‌وجوی پایگاه داده…"
++                        state.query.length < 2 && state.query.isNotBlank() -> "برای جست‌وجوی داده‌ها حداقل دو نویسه وارد کنید"
++                        state.query.isBlank() -> "همه میان‌برها"
++                        else -> "${ErpDisplayFormatters.integer(destinations.size + entityResults.size)} نتیجه در بخش‌ها و داده‌ها"
++                    },
+                     style = MaterialTheme.typography.titleMedium,
+                     fontWeight = FontWeight.Bold,
+                 )
+             }
+-            if (destinations.isEmpty() && entityResults.isEmpty()) {
+-                item { EmptyStatePanel("نتیجه‌ای پیدا نشد", "عبارت کوتاه‌تری وارد کنید یا نام بخش را تغییر دهید.") }
++            state.error?.let { error ->
++                item { MessageCard(error, isError = true) }
++            }
++            if (!state.loading && destinations.isEmpty() && entityResults.isEmpty()) {
++                item { EmptyStatePanel("نتیجه‌ای پیدا نشد", "عبارت کوتاه‌تری وارد کنید یا نام/کد را تغییر دهید.") }
+             } else {
+                 if (entityResults.isNotEmpty()) {
+-                    val grouped = entityResults.groupBy { it.group }
++                    val grouped = visibleEntityResults.groupBy { globalSearchGroupTitle(it.target) }
+                     grouped.forEach { (group, groupResults) ->
+-                        item(key = "group-$group") { SectionHeading(group, "${groupResults.size} نتیجه مرتبط") }
+-                        items(groupResults, key = { it.key }) { result ->
+-                            Card(modifier = Modifier.fillMaxWidth().clickable { onOpenEntity(result.screen, result.key) }, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = .25f))) {
++                        item(key = "group-$group") { SectionHeading(group, "${ErpDisplayFormatters.integer(groupResults.size)} نتیجه در این صفحه") }
++                        items(groupResults, key = { it.stableKey }) { result ->
++                            Card(
++                                modifier = Modifier.fillMaxWidth().clickable { onOpenEntity(result) },
++                                shape = RoundedCornerShape(18.dp),
++                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = .25f)),
++                            ) {
+                                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                     Text(result.title, fontWeight = FontWeight.ExtraBold)
+                                     Text(result.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+@@ -201,6 +184,9 @@ internal fun GlobalSearchScreen(
+                             }
+                         }
+                     }
++                    if (entityPageWindow.pageCount > 1) {
++                        item(key = "global_search_pager") { UiPagingBar(entityPageWindow) { entityPage = it } }
++                    }
+                 }
+                 if (destinations.isNotEmpty()) item { SectionHeading("میان‌برها", "بخش‌های مرتبط با عبارت جست‌وجو") }
+                 items(destinations, key = { "destination-${it.screen.name}" }) { destination ->
+@@ -231,36 +217,19 @@ internal fun GlobalSearchScreen(
+                     }
+                 }
+             }
+-            item { Spacer(Modifier.height(20.dp)) }
++            item { Spacer(Modifier.height(18.dp)) }
+         }
+     }
+ }
+ 
+-private fun stockMovementSearchTitle(type: InventoryMovementType): String = when (type) {
+-    InventoryMovementType.PURCHASE,
+-    InventoryMovementType.GOODS_RECEIPT,
+-    -> "ورود خرید"
+-    InventoryMovementType.PURCHASE_RETURN,
+-    InventoryMovementType.PURCHASE_REVERSAL,
+-    -> "برگشت خرید"
+-    InventoryMovementType.DAILY_SALES_CONSUMPTION,
+-    InventoryMovementType.LEGACY_SALE_CONSUMPTION,
+-    -> "مصرف فروش"
+-    InventoryMovementType.DAILY_SALES_REVERSAL -> "برگشت مصرف فروش"
+-    InventoryMovementType.SALES_INVOICE_CONSUMPTION -> "مصرف فاکتور فروش"
+-    InventoryMovementType.SALES_RETURN -> "مرجوعی فروش"
+-    InventoryMovementType.SALES_VOID -> "ابطال فروش"
+-    InventoryMovementType.RECIPE_CONSUMPTION -> "مصرف رسپی"
+-    InventoryMovementType.PRODUCTION_OUTPUT -> "خروجی تولید"
+-    InventoryMovementType.WASTE -> "ضایعات"
+-    InventoryMovementType.INVENTORY_COUNT -> "اصلاح شمارش"
+-    InventoryMovementType.COUNT_VARIANCE -> "مغایرت شمارش"
+-    InventoryMovementType.INVENTORY_ADJUSTMENT -> "اصلاح موجودی"
+-    InventoryMovementType.TRANSFER_IN -> "انتقال ورودی"
+-    InventoryMovementType.TRANSFER_OUT -> "انتقال خروجی"
+-    InventoryMovementType.OPENING_BALANCE -> "مانده افتتاحیه"
+-    InventoryMovementType.REVERSAL -> "برگشت گردش"
+-    InventoryMovementType.LEGACY_UNKNOWN -> "گردش قدیمی ناشناخته"
++private fun globalSearchGroupTitle(target: GlobalSearchTarget): String = when (target) {
++    is GlobalSearchTarget.InventoryItem -> "کالاها"
++    is GlobalSearchTarget.StockMovement -> "گردش موجودی"
++    is GlobalSearchTarget.Purchase -> "فاکتورهای خرید"
++    is GlobalSearchTarget.Account -> "حساب‌ها"
++    is GlobalSearchTarget.Journal -> "اسناد حسابداری"
++    is GlobalSearchTarget.Employee -> "پرسنل"
++    is GlobalSearchTarget.Customer -> "مشتریان"
+ }
+ 
+ @Composable
+@@ -517,7 +486,7 @@ private fun SyncConfigurationPanel(
+         OutlinedTextField(
+             accessToken,
+             { accessToken = it },
+-            label = { Text("Access token") },
++            label = { Text("توکن دسترسی") },
+             modifier = Modifier.fillMaxWidth(),
+             singleLine = true,
+             visualTransformation = PasswordVisualTransformation(),
+@@ -525,7 +494,7 @@ private fun SyncConfigurationPanel(
+         OutlinedTextField(
+             refreshToken,
+             { refreshToken = it },
+-            label = { Text("Refresh token") },
++            label = { Text("توکن نوسازی") },
+             modifier = Modifier.fillMaxWidth(),
+             singleLine = true,
+             visualTransformation = PasswordVisualTransformation(),
+@@ -540,7 +509,7 @@ private fun SyncConfigurationPanel(
+             Text(if (state.running) "در حال اجرا…" else "همگام‌سازی اکنون")
+         }
+         if (state.queue.deadLetters > 0) OutlinedButton(onClick = onRequeue, enabled = !state.running, modifier = Modifier.fillMaxWidth()) {
+-            Text("بازگردانی ${state.queue.deadLetters} پیام Dead-letter")
++            Text("بازگردانی ${ErpDisplayFormatters.integer(state.queue.deadLetters)} پیام ناموفق")
+         }
+         state.issues.forEach { issue ->
+             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = .45f))) {
+@@ -572,6 +541,6 @@ private fun SyncHealthPanel(state: SyncUiState) {
+             CompactInfoRow("همگام‌شده", summary.synced.toString())
+             CompactInfoRow("تعارض", summary.conflicts.toString())
+         }
+-        if (state.queue.deadLetters > 0) CompactInfoRow("Dead-letter", state.queue.deadLetters.toString(), true)
++        if (state.queue.deadLetters > 0) CompactInfoRow("پیام‌های ناموفق", ErpDisplayFormatters.integer(state.queue.deadLetters), true)
+     }
+ }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/PersonnelSchedulingScreens.kt b/app/src/main/java/ir/restaurant/management/ui/PersonnelSchedulingScreens.kt
+index 95086f5..cb96598 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/PersonnelSchedulingScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/PersonnelSchedulingScreens.kt
+@@ -88,7 +88,7 @@ internal fun PersonnelSchedulingCenter(
+         }
+         item { Text("برنامه‌های کاری", fontWeight = FontWeight.Black) }
+         if (state.workSchedules.isEmpty()) {
+-            item { EmptyStatePanel("برنامه کاری وجود ندارد", "Work Schedule را بسازید و سپس در قرارداد پرسنل انتخاب کنید.") }
++            item { EmptyStatePanel("برنامه کاری وجود ندارد", "برنامه کاری را بسازید و سپس در قرارداد پرسنل انتخاب کنید.") }
+         } else {
+             items(state.workSchedules, key = { "schedule:${it.id}" }) { schedule ->
+                 Card {
+@@ -105,9 +105,9 @@ internal fun PersonnelSchedulingCenter(
+         }
+         item { Text("شیفت‌های برنامه‌ریزی‌شده پرسنل انتخابی", fontWeight = FontWeight.Black) }
+         if (state.selectedEmployeeId == null) {
+-            item { MessageCard("برای مشاهده Planned Shift، از بخش افراد یک پرسنل را انتخاب کنید.") }
++            item { MessageCard("برای مشاهده شیفت برنامه‌ریزی‌شده، از بخش افراد یک پرسنل را انتخاب کنید.") }
+         } else if (state.plannedShifts.isEmpty()) {
+-            item { EmptyStatePanel("شیفت برنامه‌ریزی‌شده‌ای نیست", "شیفت‌ها در زمان نیاز از Work Schedule قرارداد materialize می‌شوند یا دستی قابل برنامه‌ریزی‌اند.") }
++            item { EmptyStatePanel("شیفت برنامه‌ریزی‌شده‌ای نیست", "شیفت‌ها هنگام نیاز از برنامه کاری قرارداد ساخته می‌شوند یا می‌توان آن‌ها را دستی برنامه‌ریزی کرد.") }
+         } else {
+             items(state.plannedShifts.take(30), key = { "planned:${it.id}" }) { planned ->
+                 Card {
+@@ -156,7 +156,7 @@ internal fun ShiftTemplateDialog(onDismiss: () -> Unit, onSave: (ShiftTemplateDr
+     var error by remember { mutableStateOf<String?>(null) }
+     AlertDialog(
+         onDismissRequest = onDismiss,
+-        title = { Text("Shift Master") },
++        title = { Text("تعریف شیفت") },
+         text = {
+             Column(Modifier.heightIn(max = 620.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                 error?.let { MessageCard(it, true) }
+@@ -209,7 +209,7 @@ internal fun WorkScheduleDialog(state: PersonnelUiState, onDismiss: () -> Unit,
+     val labels = listOf("دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه", "یکشنبه")
+     AlertDialog(
+         onDismissRequest = onDismiss,
+-        title = { Text("Work Schedule هفتگی") },
++        title = { Text("برنامه کاری هفتگی") },
+         text = {
+             Column(Modifier.heightIn(max = 650.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                 error?.let { MessageCard(it, true) }
+@@ -273,7 +273,7 @@ internal fun PlannedShiftDialog(state: PersonnelUiState, onDismiss: () -> Unit,
+     var error by remember { mutableStateOf<String?>(null) }
+     AlertDialog(
+         onDismissRequest = onDismiss,
+-        title = { Text("Planned Shift") },
++        title = { Text("شیفت برنامه‌ریزی‌شده") },
+         text = {
+             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                 error?.let { MessageCard(it, true) }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/PersonnelViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/PersonnelViewModel.kt
+index 694ec39..84ddec4 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/PersonnelViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/PersonnelViewModel.kt
+@@ -261,7 +261,7 @@ class PersonnelViewModel(
+                 message.value = if (outcome.hasBlockingExceptions) {
+                     "محاسبه به‌دلیل ${outcome.exceptions.count { it.blocking }} استثنای مسدودکننده متوقف شد."
+                 } else {
+-                    "${outcome.payslipIds.size} فیش حقوق با Snapshot ثابت محاسبه شد."
++                    "${outcome.payslipIds.size} فیش حقوق با تصویر ثابت محاسبه شد."
+                 }
+             }
+             .onFailure { message.value = UiErrorHandler.message("PersonnelViewModel.payrollV2.calculate", it) }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ProductExplorer.kt b/app/src/main/java/ir/restaurant/management/ui/ProductExplorer.kt
+index dd7f1d3..34e9fcc 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ProductExplorer.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ProductExplorer.kt
+@@ -1,9 +1,11 @@
+ package ir.restaurant.management.ui
+ 
++import ir.restaurant.management.domain.search.normalizePersianSearchText
++
+ /** Shared matching rules for data-heavy business screens. */
+ internal fun businessTextMatches(query: String, vararg fields: String?): Boolean {
+-    val normalized = query.trim()
+-    return normalized.isBlank() || fields.any { it.orEmpty().contains(normalized, ignoreCase = true) }
++    val normalized = normalizePersianSearchText(query)
++    return normalized.isBlank() || fields.any { normalizePersianSearchText(it.orEmpty()).contains(normalized) }
+ }
+ 
+ internal fun businessActivityMatches(filter: String, isActive: Boolean): Boolean = when (filter) {
+diff --git a/app/src/main/java/ir/restaurant/management/ui/RecipeScreens.kt b/app/src/main/java/ir/restaurant/management/ui/RecipeScreens.kt
+index d1fe576..1ea8565 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/RecipeScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/RecipeScreens.kt
+@@ -445,12 +445,12 @@ private fun RecipeEditorDialog(
+                                         TextButton(enabled = !busy, onClick = { onActivate(revision.id) }, modifier = Modifier.testTag("recipe_activate_${revision.id}")) { Text("فعال‌سازی") }
+                                     }
+                                     RecipeLifecycleState.ACTIVE -> {
+-                                        TextButton(enabled = !busy, onClick = { onCreateDraft(revision.id) }, modifier = Modifier.testTag("recipe_create_draft_${revision.id}")) { Text("Draft جدید") }
++                                        TextButton(enabled = !busy, onClick = { onCreateDraft(revision.id) }, modifier = Modifier.testTag("recipe_create_draft_${revision.id}")) { Text("پیش‌نویس جدید") }
+                                         TextButton(enabled = !busy, onClick = { onCopyVersion(revision.id) }) { Text("کپی") }
+                                         TextButton(enabled = !busy, onClick = { onSubstitution(revision.id) }) { Text("جایگزینی") }
+                                         TextButton(enabled = !busy, onClick = { onRetire(revision.id) }) { Text("بازنشسته") }
+                                     }
+-                                    RecipeLifecycleState.RETIRED -> TextButton(enabled = !busy, onClick = { onCopyVersion(revision.id) }) { Text("کپی به Draft") }
++                                    RecipeLifecycleState.RETIRED -> TextButton(enabled = !busy, onClick = { onCopyVersion(revision.id) }) { Text("کپی به پیش‌نویس") }
+                                 }
+                             }
+                         }
+@@ -589,7 +589,7 @@ private fun RecipeDraftEditorDialog(
+         title = { Text("ویرایش پیش‌نویس نسخه ${details.revision.revisionNo}") },
+         text = {
+             Column(Modifier.fillMaxWidth().heightIn(max = 570.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+-                Text("نسخه Active ویرایش نمی‌شود؛ تغییرات فقط روی Draft ذخیره می‌شوند.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
++                Text("نسخه فعال ویرایش نمی‌شود؛ تغییرات فقط روی پیش‌نویس ذخیره می‌شوند.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                 SectionHeading("مواد اولیه", "ورودی مستقیم رسپی")
+                 ingredients.forEachIndexed { index, row ->
+                     IngredientEditorCard(
+@@ -603,7 +603,7 @@ private fun RecipeDraftEditorDialog(
+                     )
+                 }
+                 OutlinedButton(onClick = { ingredients = ingredients + IngredientDraft() }, modifier = Modifier.fillMaxWidth()) { Text("افزودن ماده") }
+-                SectionHeading("زیررسپی", "فقط نسخه Active محصول دیگر قابل انتخاب است")
++                SectionHeading("زیررسپی", "فقط نسخه فعال محصول دیگر قابل انتخاب است")
+                 components.forEachIndexed { index, row ->
+                     Card { Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+@@ -620,7 +620,7 @@ private fun RecipeDraftEditorDialog(
+                     } }
+                 }
+                 OutlinedButton(enabled = componentOptions.isNotEmpty(), onClick = { components = components + ComponentDraft() }, modifier = Modifier.fillMaxWidth()) { Text("افزودن زیررسپی") }
+-                SectionHeading("بهای تمام‌شده", "Snapshot این نسخه")
++                SectionHeading("بهای تمام‌شده", "تصویر ثابت این نسخه")
+                 OutlinedTextField(yieldText, { yieldText = it }, label = { Text("بازده تولید") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+                 OutlinedTextField(portionText, { portionText = it }, label = { Text("وزن پرس") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+@@ -630,7 +630,7 @@ private fun RecipeDraftEditorDialog(
+                 OutlinedTextField(packaging, { packaging = formatMoneyInput(it) }, label = { Text("بسته‌بندی") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+                 OutlinedTextField(labor, { labor = formatMoneyInput(it) }, label = { Text("نیروی مستقیم") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+                 OutlinedTextField(overhead, { overhead = formatMoneyInput(it) }, label = { Text("سربار") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+-                OutlinedTextField(note, { note = it.take(500) }, label = { Text("یادداشت Draft") }, minLines = 2, modifier = Modifier.fillMaxWidth())
++                OutlinedTextField(note, { note = it.take(500) }, label = { Text("یادداشت پیش‌نویس") }, minLines = 2, modifier = Modifier.fillMaxWidth())
+                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+             }
+         },
+@@ -668,7 +668,7 @@ private fun RecipeDraftEditorDialog(
+                         onDismiss,
+                     )
+                 }
+-            }) { Text(if (busy) "در حال ذخیره…" else "ذخیره Draft") }
++            }) { Text(if (busy) "در حال ذخیره…" else "ذخیره پیش‌نویس") }
+         },
+         dismissButton = { TextButton(enabled = !busy, onClick = onDismiss) { Text("انصراف") } },
+     )
+@@ -680,7 +680,7 @@ private fun RecipeActivationDialog(versionId: Long, onDismiss: () -> Unit, onAct
+     AlertDialog(
+         onDismissRequest = onDismiss,
+         title = { Text("فعال‌سازی نسخه رسپی") },
+-        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("نسخه فعال قبلی بازنشسته می‌شود و فروش‌های گذشته Snapshot خود را حفظ می‌کنند."); PersianDateField("تاریخ شروع اثر", day) { day = it } } },
++        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("نسخه فعال قبلی بازنشسته می‌شود و فروش‌های گذشته تصویر ثابت تاریخی خود را حفظ می‌کنند."); PersianDateField("تاریخ شروع اثر", day) { day = it } } },
+         confirmButton = { Button(onClick = { onActivate(day) }, modifier = Modifier.testTag("recipe_activate_confirm")) { Text("فعال‌سازی") } },
+         dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } },
+     )
+@@ -746,7 +746,7 @@ private fun parseBasisPoints(value: String): Int {
+     return (micros / 10_000L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+ }
+ private fun formatBasisPointsInput(value: Int): String = if (value == 0) "0" else if (value % 100 == 0) (value / 100).toString() else "%d.%02d".format(value / 100, value % 100)
+-private fun formatBasisPoints(value: Int?): String = value?.let { "%d.%02d٪".format(it / 100, kotlin.math.abs(it % 100)) } ?: "—"
++private fun formatBasisPoints(value: Int?): String = value?.let { toPersianDigits("%d.%02d".format(it / 100, kotlin.math.abs(it % 100))) + "٪" } ?: "—"
+ private fun safeMulDiv(left: Long, right: Long, divisor: Long): Long {
+     require(left >= 0 && right >= 0 && divisor > 0)
+     val result = java.math.BigInteger.valueOf(left).multiply(java.math.BigInteger.valueOf(right)).divide(java.math.BigInteger.valueOf(divisor))
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ReportPrinter.kt b/app/src/main/java/ir/restaurant/management/ui/ReportPrinter.kt
+index 19c167e..3098e8b 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ReportPrinter.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ReportPrinter.kt
+@@ -5,6 +5,16 @@ import android.print.PrintAttributes
+ import android.print.PrintManager
+ import android.webkit.WebView
+ import android.webkit.WebViewClient
++import android.widget.Toast
++import ir.restaurant.management.RestaurantManagementApplication
++import ir.restaurant.management.core.CorrelationId
++import ir.restaurant.management.domain.audit.AuditAction
++import ir.restaurant.management.domain.audit.AuditEntityType
++import ir.restaurant.management.domain.audit.AuditEventDraft
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.launch
+ import ir.restaurant.management.domain.accounting.JournalDetails
+ import ir.restaurant.management.domain.accounting.ProfitLossSnapshot
+ import ir.restaurant.management.domain.accounting.TrialBalanceSnapshot
+@@ -18,23 +28,34 @@ import ir.restaurant.management.domain.purchase.PurchaseOrderRecord
+ import ir.restaurant.management.domain.recipe.MenuItem
+ import ir.restaurant.management.domain.recipe.RecipeIngredientItem
+ import ir.restaurant.management.domain.sales.SalesInvoiceDetails
++import ir.restaurant.management.domain.treasury.TreasuryChannel
+ import ir.restaurant.management.organizationDisplayName
+ import ir.restaurant.management.core.SignedLongMath
+ 
+ private const val PRINT_CSS = """
+-    @page { size: A4; margin: 14mm; }
+-    body { font-family: sans-serif; color: #1d1b20; line-height: 1.7; }
+-    h1 { color: #8d332c; font-size: 22px; margin-bottom: 4px; }
+-    .meta { color: #625b71; margin-bottom: 18px; }
+-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+-    th, td { border: 1px solid #aaa; padding: 7px; text-align: right; }
+-    th { background: #f5e9e7; }
++    @page { size: A4 portrait; margin: 12mm 10mm 14mm; }
++    html, body { direction: rtl; }
++    * { box-sizing: border-box; }
++    body {
++      margin: 0; font-family: Tahoma, Arial, sans-serif; color: #1d1b20; line-height: 1.7;
++      font-size: 11.5pt; -webkit-print-color-adjust: exact; print-color-adjust: exact;
++    }
++    h1 { color: #8d332c; font-size: 20pt; margin: 0 0 4mm; break-after: avoid-page; page-break-after: avoid; }
++    h2 { font-size: 14pt; margin: 7mm 0 2mm; break-after: avoid-page; page-break-after: avoid; }
++    .meta { color: #625b71; margin-bottom: 5mm; }
++    table { width: 100%; border-collapse: collapse; margin-top: 3mm; page-break-inside: auto; }
++    thead { display: table-header-group; }
++    tfoot { display: table-footer-group; }
++    tr { break-inside: avoid; page-break-inside: avoid; }
++    th, td { border: 0.25mm solid #aaa; padding: 2mm; text-align: right; vertical-align: top; }
++    th { background: #f5e9e7; font-weight: 700; }
+     .total { font-weight: bold; background: #f7f2fa; }
+-    .footer { margin-top: 28px; color: #625b71; font-size: 11px; }
++    .footer { margin-top: 8mm; padding-top: 3mm; border-top: 0.25mm solid #ddd; color: #625b71; font-size: 9pt; }
++    small { font-size: 8.5pt; color: #625b71; }
+ """
+ 
+ private fun htmlDocument(context: Context, title: String, body: String): String =
+-    """<!doctype html><html dir="rtl" lang="fa"><head><meta charset="utf-8"><style>$PRINT_CSS</style></head><body><h1>${title.html()}</h1>$body<div class="footer">${context.organizationDisplayName().html()} · ${epochDayToPersian(currentEpochDay()).display()}</div></body></html>"""
++    """<!doctype html><html dir="rtl" lang="fa"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>$PRINT_CSS</style></head><body><h1>${title.html()}</h1>$body<div class="footer">${context.organizationDisplayName().html()} · ${epochDayToPersian(currentEpochDay()).display()}</div></body></html>"""
+ 
+ private fun String.html(): String = buildString(length) {
+     this@html.forEach { char ->
+@@ -51,7 +72,57 @@ private fun String.html(): String = buildString(length) {
+     }
+ }
+ 
+-private fun printHtml(context: Context, title: String, html: String) {
++private data class PrintAuditDescriptor(
++    val entityType: String = "REPORT",
++    val entityId: Long? = null,
++    val businessEpochDay: Long? = null,
++)
++
++/** Every print invocation is append-only audited before Android receives the print job. Reprints therefore create a second audit event. */
++private fun printHtml(
++    context: Context,
++    title: String,
++    html: String,
++    audit: PrintAuditDescriptor = PrintAuditDescriptor(),
++) {
++    val application = context.applicationContext as? RestaurantManagementApplication
++    if (application == null) {
++        Toast.makeText(context, "ثبت حسابرسی چاپ ممکن نیست؛ چاپ انجام نشد.", Toast.LENGTH_LONG).show()
++        return
++    }
++    CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
++        try {
++            val actor = application.container.authorizationService.actorIdentity()
++            val now = System.currentTimeMillis()
++            application.container.auditService.record(
++                AuditEventDraft(
++                    action = AuditAction.of("REPORT_PRINT"),
++                    entityType = AuditEntityType.of(audit.entityType),
++                    entityId = audit.entityId,
++                    actorId = actor.id,
++                    actorDisplayName = actor.displayName,
++                    occurredAtEpochMillis = now,
++                    businessEpochDay = audit.businessEpochDay,
++                    deviceId = "local-android",
++                    referenceType = audit.entityType.takeIf { audit.entityId != null },
++                    referenceId = audit.entityId,
++                    reason = "PRINT_OR_REPRINT_REQUEST",
++                    beforeSnapshot = null,
++                    afterSnapshot = "title=${title.take(160)}",
++                    correlationId = CorrelationId.new("report_print").value,
++                    description = "چاپ یا چاپ مجدد سند: $title",
++                    actorRoleSnapshot = actor.role.name,
++                ),
++            )
++        } catch (error: Exception) {
++            Toast.makeText(context, "ثبت حسابرسی چاپ ناموفق بود؛ چاپ انجام نشد.", Toast.LENGTH_LONG).show()
++            return@launch
++        }
++        renderPrintJob(context, title, html)
++    }
++}
++
++private fun renderPrintJob(context: Context, title: String, html: String) {
+     val webView = WebView(context)
+     webView.settings.apply {
+         javaScriptEnabled = false
+@@ -61,30 +132,39 @@ private fun printHtml(context: Context, title: String, html: String) {
+     }
+     webView.webViewClient = object : WebViewClient() {
+         override fun onPageFinished(view: WebView, url: String?) {
+-            // WebView.setWebViewClient is non-null in the current Android API stubs.
+-            // Replace the callback client so redirects or duplicate finish events cannot print twice.
+             view.webViewClient = WebViewClient()
+             val manager = context.getSystemService(Context.PRINT_SERVICE) as PrintManager
+             manager.print(
+                 title,
+                 view.createPrintDocumentAdapter(title),
+-                PrintAttributes.Builder().setMediaSize(PrintAttributes.MediaSize.ISO_A4).build(),
++                PrintAttributes.Builder()
++                    .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
++                    .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
++                    .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
++                    .build(),
+             )
+         }
+     }
+     webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+ }
+ 
++private fun treasuryChannelTitle(channel: TreasuryChannel): String = when (channel) {
++    TreasuryChannel.CASH -> "نقدی"
++    TreasuryChannel.BANK -> "بانکی"
++    TreasuryChannel.CARD -> "کارتخوان"
++    TreasuryChannel.TRANSFER -> "انتقال بانکی"
++}
++
+ fun printPurchaseInvoice(context: Context, details: PurchaseDetails) {
+     val rows = details.lines.joinToString("") {
+-        "<tr><td>${it.itemName.html()}</td><td>${it.quantityMicros / 1_000_000.0} ${it.unit.html()}</td><td>${formatMoney(it.unitCostRial).html()}</td><td>${formatMoney(it.lineTotalRial).html()}</td></tr>"
++        "<tr><td>${it.itemName.html()}</td><td>${formatQuantity(it.quantityMicros)} ${it.unit.html()}</td><td>${formatMoney(it.unitCostRial).html()}</td><td>${formatMoney(it.lineTotalRial).html()}</td></tr>"
+     }
+     val body = """
+         <div class="meta">تأمین‌کننده: ${details.supplierName.html()} · تاریخ: ${epochDayToPersian(details.purchaseEpochDay).display()}</div>
+         <table><tr><th>شرح</th><th>تعداد</th><th>فی</th><th>جمع</th></tr>$rows
+         <tr class="total"><td colspan="3">جمع کل</td><td>${formatMoney(details.totalRial).html()}</td></tr></table>
+     """.trimIndent()
+-    printHtml(context, "فاکتور خرید ${details.invoiceNo}", htmlDocument(context, "فاکتور خرید ${details.invoiceNo}", body))
++    printHtml(context, "فاکتور خرید ${details.invoiceNo}", htmlDocument(context, "فاکتور خرید ${details.invoiceNo}", body), PrintAuditDescriptor("PURCHASE", details.id, details.purchaseEpochDay))
+ }
+ 
+ fun printSalesInvoice(context: Context, details: SalesInvoiceDetails) {
+@@ -105,7 +185,7 @@ fun printSalesInvoice(context: Context, details: SalesInvoiceDetails) {
+         <h2>روش‌های پرداخت</h2><table><tr><th>روش</th><th>مبلغ</th><th>پیگیری</th></tr>$paymentRows</table>
+         ${if (details.invoice.notes.isBlank()) "" else "<p>توضیحات: ${details.invoice.notes.html()}</p>"}
+     """.trimIndent()
+-    printHtml(context, "فاکتور فروش ${details.invoice.invoiceNo}", htmlDocument(context, "فاکتور فروش ${details.invoice.invoiceNo}", body))
++    printHtml(context, "فاکتور فروش ${details.invoice.invoiceNo}", htmlDocument(context, "فاکتور فروش ${details.invoice.invoiceNo}", body), PrintAuditDescriptor("SALES_INVOICE", details.invoice.id, details.invoice.businessEpochDay))
+ }
+ 
+ fun printPurchaseOrder(context: Context, order: PurchaseOrderRecord) {
+@@ -120,7 +200,7 @@ fun printPurchaseOrder(context: Context, order: PurchaseOrderRecord) {
+         ${order.supplierConfirmationNo?.let { "<p>شماره تأیید تأمین‌کننده: ${it.html()}</p>" } ?: ""}
+         <p>این سند، سفارش خرید رسمی مجموعه است.</p>
+     """.trimIndent()
+-    printHtml(context, "سفارش خرید ${order.orderNo}", htmlDocument(context, "سفارش خرید ${order.orderNo}", body))
++    printHtml(context, "سفارش خرید ${order.orderNo}", htmlDocument(context, "سفارش خرید ${order.orderNo}", body), PrintAuditDescriptor("PURCHASE_ORDER", order.id, order.orderEpochDay))
+ }
+ 
+ fun printPayrollSlip(context: Context, payroll: PayrollRecord) {
+@@ -132,22 +212,22 @@ fun printPayrollSlip(context: Context, payroll: PayrollRecord) {
+           <tr><th>جمع کسورات</th><td>${formatMoney(deductions).html()}</td></tr>
+           <tr class="total"><th>خالص پرداختی</th><td>${formatMoney(payroll.netPayRial).html()}</td></tr>
+           <tr><th>تاریخ پرداخت</th><td>${epochDayToPersian(payroll.paymentEpochDay).display()}</td></tr>
+-          <tr><th>روش پرداخت</th><td>${payroll.paymentMethod.storedValue.html()}</td></tr>
++          <tr><th>روش پرداخت</th><td>${treasuryChannelTitle(payroll.paymentMethod).html()}</td></tr>
+           <tr><th>وضعیت</th><td>${if (payroll.status == PayrollStatus.REVERSED) "باطل‌شده" else if (payroll.status == PayrollStatus.PENDING_APPROVAL) "در انتظار تأیید" else "پرداخت‌شده"}</td></tr>
+           ${payroll.reversalEpochDay?.let { "<tr><th>ابطال</th><td>${epochDayToPersian(it).display()} · ${payroll.reversalReason.html()}</td></tr>" }.orEmpty()}
+         </table>
+     """.trimIndent()
+-    printHtml(context, "فیش حقوقی ${payroll.employeeName}", htmlDocument(context, "فیش حقوقی", body))
++    printHtml(context, "فیش حقوقی ${payroll.employeeName}", htmlDocument(context, "فیش حقوقی", body), PrintAuditDescriptor("PAYROLL", payroll.id, payroll.paymentEpochDay))
+ }
+ 
+ fun printAttendanceSummary(context: Context, employeeName: String, summary: AttendanceSummary) {
+     val body = """
+         <div class="meta">پرسنل: ${employeeName.html()} · از ${epochDayToPersian(summary.startEpochDay).display()} تا ${epochDayToPersian(summary.endEpochDay).display()}</div>
+         <table>
+-          <tr><th>روز حاضر</th><td>${summary.presentDays}</td><th>روز غیبت</th><td>${summary.absentDays}</td></tr>
+-          <tr><th>مرخصی</th><td>${summary.leaveDays}</td><th>ماموریت</th><td>${summary.missionDays}</td></tr>
+-          <tr><th>کارکرد</th><td>${summary.workedMinutes} دقیقه</td><th>تأخیر</th><td>${summary.lateMinutes} دقیقه</td></tr>
+-          <tr class="total"><th>اضافه‌کاری</th><td colspan="3">${summary.overtimeMinutes} دقیقه</td></tr>
++          <tr><th>روز حاضر</th><td>${ErpDisplayFormatters.integer(summary.presentDays)}</td><th>روز غیبت</th><td>${ErpDisplayFormatters.integer(summary.absentDays)}</td></tr>
++          <tr><th>مرخصی</th><td>${ErpDisplayFormatters.integer(summary.leaveDays)}</td><th>ماموریت</th><td>${ErpDisplayFormatters.integer(summary.missionDays)}</td></tr>
++          <tr><th>کارکرد</th><td>${ErpDisplayFormatters.integer(summary.workedMinutes)} دقیقه</td><th>تأخیر</th><td>${ErpDisplayFormatters.integer(summary.lateMinutes)} دقیقه</td></tr>
++          <tr class="total"><th>اضافه‌کاری</th><td colspan="3">${ErpDisplayFormatters.integer(summary.overtimeMinutes)} دقیقه</td></tr>
+         </table>
+     """.trimIndent()
+     printHtml(context, "گزارش حضور $employeeName", htmlDocument(context, "گزارش حضور و غیاب", body))
+@@ -162,7 +242,7 @@ fun printJournal(context: Context, details: JournalDetails) {
+         <table><tr><th>کد</th><th>حساب</th><th>بدهکار</th><th>بستانکار</th><th>شرح</th></tr>$rows
+         <tr class="total"><td colspan="2">جمع</td><td>${formatMoney(details.totalDebitRial).html()}</td><td>${formatMoney(details.totalCreditRial).html()}</td><td></td></tr></table>
+     """.trimIndent()
+-    printHtml(context, "سند ${details.entryNo}", htmlDocument(context, "سند حسابداری ${details.entryNo}", body))
++    printHtml(context, "سند ${details.entryNo}", htmlDocument(context, "سند حسابداری ${details.entryNo}", body), PrintAuditDescriptor("JOURNAL", details.id, details.entryEpochDay))
+ }
+ 
+ fun printAccountingSummary(
+@@ -190,7 +270,7 @@ fun printAccountingSummary(
+ 
+ fun printAssetRegister(context: Context, assets: List<AssetRecord>) {
+     val rows = assets.joinToString("") {
+-        "<tr><td>${it.assetCode.html()}</td><td>${it.name.html()}</td><td>${it.category.html()}</td><td>${it.quantity}</td><td>${formatMoney(it.purchaseCostRial).html()}</td><td>${formatMoney(it.bookValueRial).html()}</td><td>${if (it.isActive) "فعال" else "خارج‌شده"}</td></tr>"
++        "<tr><td>${it.assetCode.html()}</td><td>${it.name.html()}</td><td>${it.category.html()}</td><td>${ErpDisplayFormatters.integer(it.quantity)}</td><td>${formatMoney(it.purchaseCostRial).html()}</td><td>${formatMoney(it.bookValueRial).html()}</td><td>${if (it.isActive) "فعال" else "خارج‌شده"}</td></tr>"
+     }
+     val body = "<table><tr><th>کد</th><th>دارایی</th><th>دسته</th><th>تعداد</th><th>بهای خرید</th><th>ارزش دفتری</th><th>وضعیت</th></tr>$rows</table>"
+     printHtml(context, "دفتر دارایی‌ها", htmlDocument(context, "دفتر دارایی‌های ثابت", body))
+@@ -219,7 +299,7 @@ fun printInventoryPeriodClosure(
+         <h2>جزئیات کالاها</h2>
+         <table><tr><th>کالا</th><th>اول</th><th>خرید</th><th>خروج</th><th>انتظار</th><th>شمارش</th><th>مغایرت مقدار</th><th>مغایرت ارزش</th></tr>$rows</table>
+     """.trimIndent()
+-    printHtml(context, "بستن دوره انبار", htmlDocument(context, "گزارش قطعی دوره انبار", body))
++    printHtml(context, "بستن دوره انبار", htmlDocument(context, "گزارش قطعی دوره انبار", body), PrintAuditDescriptor("INVENTORY_PERIOD", closure.id, closure.toEpochDay))
+ }
+ 
+ fun printRecipeSheet(context: Context, item: MenuItem, ingredients: List<RecipeIngredientItem>) {
+@@ -230,7 +310,7 @@ fun printRecipeSheet(context: Context, item: MenuItem, ingredients: List<RecipeI
+         <div class="meta">دسته: ${item.category.ifBlank { "بدون دسته‌بندی" }.html()} · قیمت فروش: ${formatMoney(item.salePriceRial).html()} · نسخه رسپی: ${item.recipeRevisionNo}${if (item.recipeEffectiveFromEpochDay > 0) " · تاریخ اثر: ${epochDayToPersian(item.recipeEffectiveFromEpochDay).display()}" else ""}</div>
+         <table><tr><th>ماده اولیه</th><th>مقدار برای یک واحد</th><th>واحد</th></tr>$rows</table>
+     """.trimIndent()
+-    printHtml(context, "رسپی ${item.name}", htmlDocument(context, "برگه رسپی ${item.name}", body))
++    printHtml(context, "رسپی ${item.name}", htmlDocument(context, "برگه رسپی ${item.name}", body), PrintAuditDescriptor("RECIPE", item.id, item.recipeEffectiveFromEpochDay.takeIf { it > 0 }))
+ }
+ 
+ fun printManagementSummary(
+@@ -252,7 +332,7 @@ fun printManagementSummary(
+           <tr><th>سود خالص</th><td>${formatMoney(netProfitRial).html()}</td><th>نقدینگی</th><td>${formatMoney(liquidityRial).html()}</td></tr>
+           <tr><th>فروش</th><td>${formatMoney(salesRial).html()}</td><th>سود ناخالص</th><td>${formatMoney(grossProfitRial).html()}</td></tr>
+           <tr><th>مطالبات</th><td>${formatMoney(receivablesRial).html()}</td><th>ارزش انبار</th><td>${formatMoney(inventoryRial).html()}</td></tr>
+-          <tr><th>کالای کم‌موجود</th><td>$lowStockCount</td><th>تسویه سررسیدشده</th><td>$overdueCount</td></tr>
++          <tr><th>کالای کم‌موجود</th><td>${ErpDisplayFormatters.integer(lowStockCount)}</td><th>تسویه سررسیدشده</th><td>${ErpDisplayFormatters.integer(overdueCount)}</td></tr>
+         </table>
+     """.trimIndent()
+     printHtml(context, "گزارش مدیریتی", htmlDocument(context, "خلاصه گزارش مدیریتی", body))
+diff --git a/app/src/main/java/ir/restaurant/management/ui/ReportsScreens.kt b/app/src/main/java/ir/restaurant/management/ui/ReportsScreens.kt
+index 7e60df8..e767b9a 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/ReportsScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/ReportsScreens.kt
+@@ -3,6 +3,7 @@ package ir.restaurant.management.ui
+ import ir.restaurant.management.organizationDisplayTitle
+ 
+ import ir.restaurant.management.domain.personnel.PayrollStatus
++import ir.restaurant.management.domain.recipe.MenuQuadrant
+ import ir.restaurant.management.core.FixedPointRatio
+ 
+ import androidx.compose.foundation.layout.Arrangement
+@@ -138,7 +139,7 @@ fun ReportsCenterScreen(
+                 }
+             }
+             item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) { MetricTile("فروش فعال", formatMoney(sales.activeSalesRial), Modifier.weight(1f)); MetricTile("سود ناخالص", formatMoney(sales.grossProfitRial), Modifier.weight(1f)) } }
+-            item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) { MetricTile("روزهای رویداد", (salesReport?.dayCount ?: 0).toString(), Modifier.weight(1f)); MetricTile("ارزش انبار", formatMoney(dashboard.inventoryValueRial), Modifier.weight(1f)) } }
++            item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) { MetricTile("روزهای رویداد", ErpDisplayFormatters.integer(salesReport?.dayCount ?: 0), Modifier.weight(1f)); MetricTile("ارزش انبار", formatMoney(dashboard.inventoryValueRial), Modifier.weight(1f)) } }
+             item {
+                 OutlinedButton(
+                     onClick = {
+@@ -160,16 +161,16 @@ fun ReportsCenterScreen(
+                 ) { Text("چاپ گزارش مدیریتی / PDF") }
+             }
+             item { SectionHeading("شاخص‌های فروش و منو", "محاسبه زنده از آمار روزانه صندوق و رسپی‌ها") }
+-            item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) { MetricTile("حاشیه سود", "${kpi.marginPercent}%", Modifier.weight(1f)); MetricTile("روزهای رویداد", kpi.invoiceCount.toString(), Modifier.weight(1f)) } }
++            item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) { MetricTile("حاشیه سود", "${toPersianDigits(kpi.marginPercent.toString())}٪", Modifier.weight(1f)); MetricTile("روزهای رویداد", ErpDisplayFormatters.integer(kpi.invoiceCount), Modifier.weight(1f)) } }
+             item { Card(shape = MaterialTheme.shapes.extraLarge) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                 Text("پیش‌بینی جریان نقدی", fontWeight = FontWeight.ExtraBold)
+                 ReportAlertRow("مانده پایان دوره", formatMoney(cashFlow.endBalanceRial), cashFlow.endBalanceRial < 0)
+                 ReportAlertRow("کمترین مانده", formatMoney(cashFlow.minimumBalanceRial), cashFlow.minimumBalanceRial < 0)
+-                ReportAlertRow("روزهای کسری", "${cashFlow.deficitDays.size} روز", cashFlow.deficitDays.isNotEmpty())
++                ReportAlertRow("روزهای کسری", "${ErpDisplayFormatters.integer(cashFlow.deficitDays.size)} روز", cashFlow.deficitDays.isNotEmpty())
+             } } }
+             sales.report?.menuPerformance?.takeIf { it.isNotEmpty() }?.let { menu -> item { Card(shape = MaterialTheme.shapes.extraLarge) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                 Text("مهندسی منو", fontWeight = FontWeight.ExtraBold)
+-                menu.take(8).forEach { result -> ReportAlertRow(result.name, "${result.quadrant.name} · ${formatMoney(result.grossProfitRial)}", result.grossProfitRial < 0) }
++                menu.take(8).forEach { result -> ReportAlertRow(result.name, "${menuQuadrantTitle(result.quadrant)} · ${formatMoney(result.grossProfitRial)}", result.grossProfitRial < 0) }
+             } } } }
+             if (reorders.isNotEmpty()) item { Card(shape = MaterialTheme.shapes.extraLarge) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                 Text("پیشنهاد سفارش مجدد بر اساس مصرف ۳۰روزه", fontWeight = FontWeight.ExtraBold)
+@@ -177,7 +178,7 @@ fun ReportsCenterScreen(
+             } } }
+             operations.supplierPriceInsights.filter { it.changePercent >= 5 }.takeIf { it.isNotEmpty() }?.let { changes -> item { Card(shape = MaterialTheme.shapes.extraLarge) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                 Text("هشدار افزایش قیمت خرید", fontWeight = FontWeight.ExtraBold)
+-                changes.sortedByDescending { it.changePercent }.take(8).forEach { result -> ReportAlertRow(result.itemName, "+${result.changePercent}% · ${result.supplierName}", true) }
++                changes.sortedByDescending { it.changePercent }.take(8).forEach { result -> ReportAlertRow(result.itemName, "+${toPersianDigits(result.changePercent.toString())}٪ · ${result.supplierName}", true) }
+             } } } }
+             operations.wasteRecords.takeIf { it.isNotEmpty() }?.let { wastes -> item { Card(shape = MaterialTheme.shapes.extraLarge) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                 Text("کنترل ضایعات", fontWeight = FontWeight.ExtraBold)
+@@ -186,13 +187,13 @@ fun ReportsCenterScreen(
+             } } } }
+             item { SectionHeading("نیروی انسانی و دارایی", "کنترل هزینه کار و ظرفیت عملیاتی") }
+             item { Card(shape = MaterialTheme.shapes.extraLarge) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+-                ReportAlertRow("نسبت حقوق ثبت‌شده به فروش", "$laborCostPercent%", laborCostPercent > 35)
+-                ReportAlertRow("مرخصی در انتظار بررسی", "${personnel.pendingLeaves.size} درخواست", personnel.pendingLeaves.isNotEmpty())
++                ReportAlertRow("نسبت حقوق ثبت‌شده به فروش", "${toPersianDigits(laborCostPercent.toString())}٪", laborCostPercent > 35)
++                ReportAlertRow("مرخصی در انتظار بررسی", "${ErpDisplayFormatters.integer(personnel.pendingLeaves.size)} درخواست", personnel.pendingLeaves.isNotEmpty())
+                 ReportAlertRow("مانده مساعده پرسنل", formatMoney(outstandingAdvances), outstandingAdvances > 0)
+                 ReportAlertRow("ارزش دفتری دارایی‌های فعال", formatMoney(activeAssetBookValue), false)
+             } } }
+             item { SectionHeading("نیازمند توجه", "مواردی که بهتر است امروز بررسی شوند") }
+-            item { Card(shape = MaterialTheme.shapes.extraLarge, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) { Column(Modifier.fillMaxWidth().padding(17.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) { ReportAlertRow("کالاهای کم‌موجود", "$lowStock مورد", lowStock > 0); ReportAlertRow("تسویه‌های سررسید", "$openSettlements مورد", openSettlements > 0); ReportAlertRow("بدهی تأمین‌کنندگان", formatMoney(dashboard.supplierPayablesRial), dashboard.supplierPayablesRial > 0) } } }
++            item { Card(shape = MaterialTheme.shapes.extraLarge, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) { Column(Modifier.fillMaxWidth().padding(17.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) { ReportAlertRow("کالاهای کم‌موجود", "${ErpDisplayFormatters.integer(lowStock)} مورد", lowStock > 0); ReportAlertRow("تسویه‌های سررسید", "${ErpDisplayFormatters.integer(openSettlements)} مورد", openSettlements > 0); ReportAlertRow("بدهی تأمین‌کنندگان", formatMoney(dashboard.supplierPayablesRial), dashboard.supplierPayablesRial > 0) } } }
+             item { SectionHeading("گزارش‌های تفصیلی", "جست‌وجو و دسترسی سریع به گزارش‌های هر حوزه") }
+             item {
+                 OutlinedTextField(
+@@ -289,6 +290,13 @@ private fun ReportsRangeDialog(
+     )
+ }
+ 
++private fun menuQuadrantTitle(value: MenuQuadrant): String = when (value) {
++    MenuQuadrant.STAR -> "ستاره"
++    MenuQuadrant.PLOWHORSE -> "پرفروش کم‌حاشیه"
++    MenuQuadrant.PUZZLE -> "پرسود کم‌فروش"
++    MenuQuadrant.DOG -> "کم‌فروش کم‌حاشیه"
++}
++
+ @Composable
+ private fun ReportAlertRow(title: String, value: String, needsAttention: Boolean) {
+     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+diff --git a/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt b/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
+index 6d67612..ef42c60 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/RestaurantManagementApp.kt
+@@ -224,6 +224,9 @@ private fun AuthenticatedRestaurantManagementApp(
+     val accounting: AccountingViewModel = viewModel(
+         factory = AccountingViewModel.factory(container.accountingUseCases),
+     )
++    val globalSearch: GlobalSearchViewModel = viewModel(
++        factory = GlobalSearchViewModel.factory(container.globalSearchRepository),
++    )
+     val sales: DailySalesViewModel = viewModel(
+         factory = DailySalesViewModel.factory(
+             container.dailySalesRepository,
+@@ -278,6 +281,7 @@ private fun AuthenticatedRestaurantManagementApp(
+     val operationsState by operations.state.collectAsStateWithLifecycle()
+     val inventoryState by inventory.state.collectAsStateWithLifecycle()
+     val accountingState by accounting.state.collectAsStateWithLifecycle()
++    val globalSearchState by globalSearch.state.collectAsStateWithLifecycle()
+     val salesState by sales.state.collectAsStateWithLifecycle()
+     val treasuryState by treasury.state.collectAsStateWithLifecycle()
+     val crmState by crm.state.collectAsStateWithLifecycle()
+@@ -491,6 +495,9 @@ private fun AuthenticatedRestaurantManagementApp(
+                 inventory = inventory,
+                 accountingState = accountingState,
+                 accounting = accounting,
++                globalSearchState = globalSearchState,
++                globalSearch = globalSearch,
++                crm = crm,
+                 salesState = salesState,
+                 sales = sales,
+                 personnelState = personnelState,
+diff --git a/app/src/main/java/ir/restaurant/management/ui/SupplierOperationsScreens.kt b/app/src/main/java/ir/restaurant/management/ui/SupplierOperationsScreens.kt
+index c1fd274..bd4ad82 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/SupplierOperationsScreens.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/SupplierOperationsScreens.kt
+@@ -200,7 +200,7 @@ private fun SupplierMergeDialog(
+         title = { Text("ادغام کنترل‌شده تأمین‌کننده") },
+         text = {
+             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+-                Text("سوابق مالی «${source.name}» بازنویسی نمی‌شوند؛ فقط Master مبدأ پس از کنترل وابستگی‌ها غیرفعال می‌شود.")
++                Text("سوابق مالی «${source.name}» بازنویسی نمی‌شوند؛ فقط رکورد پایه مبدأ پس از کنترل وابستگی‌ها غیرفعال می‌شود.")
+                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                 SelectionField(
+                     label = "تأمین‌کننده مقصد",
+diff --git a/app/src/main/java/ir/restaurant/management/ui/SyncViewModel.kt b/app/src/main/java/ir/restaurant/management/ui/SyncViewModel.kt
+index 1ac77c4..35cbe6d 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/SyncViewModel.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/SyncViewModel.kt
+@@ -27,7 +27,7 @@ class SyncViewModel(private val repository: LocalSyncRepository,private val cont
+         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SyncUiState())
+     fun save(endpoint:String,organizationId:String,enabled:Boolean,accessToken:String,refreshToken:String){val previous=container.syncConfig();val value=CloudSyncConfig(endpoint,organizationId,enabled,accessToken.trim(),refreshToken.trim(),if(accessToken.isBlank())0 else System.currentTimeMillis()+15*60_000L,previous.deviceId);viewModelScope.launch{transient.value=runCatching{container.saveSyncConfig(value);Triple(value,"تنظیمات و توکن کوتاه‌عمر همگام‌سازی ذخیره شد.",false)}.getOrElse{Triple(value,it.message,false)}}}
+     fun runNow(){if(transient.value.third)return;viewModelScope.launch{transient.value=transient.value.copy(third=true);val text=runCatching{container.runSyncAuthorized()}.fold({"${it.uploaded} تغییر همگام شد؛ ${it.conflicts} تعارض"},{it.message?:"همگام‌سازی انجام نشد."});transient.value=transient.value.copy(second=text,third=false)}}
+-    fun requeueDeadLetters(){viewModelScope.launch{val count=repository.requeueDeadLetters();transient.value=transient.value.copy(second="$count پیام Dead-letter برای تلاش مجدد آماده شد.")}}
++    fun requeueDeadLetters(){viewModelScope.launch{val count=repository.requeueDeadLetters();transient.value=transient.value.copy(second="${ErpDisplayFormatters.integer(count)} پیام ناموفق برای تلاش مجدد آماده شد.")}}
+     fun resolveIssue(changeId:String,keepLocal:Boolean){viewModelScope.launch{runCatching{container.resolveSyncIssueAuthorized(changeId,keepLocal)}.onSuccess{transient.value=transient.value.copy(second=if(keepLocal)"نسخه محلی برای ارسال مجدد انتخاب شد." else "وضعیت سرور پذیرفته شد.")}.onFailure{transient.value=transient.value.copy(second=it.message)}}}
+     fun clearMessage(){transient.value=transient.value.copy(second=null)}
+ 
+diff --git a/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt b/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
+index b5dc1fc..891eb74 100644
+--- a/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
++++ b/app/src/main/java/ir/restaurant/management/ui/TreasuryScreen.kt
+@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
+ import androidx.compose.foundation.layout.fillMaxWidth
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.LazyRow
+ import androidx.compose.foundation.lazy.items
+ import androidx.compose.material3.AlertDialog
+ import androidx.compose.material3.Button
+@@ -131,8 +132,8 @@ internal fun TreasuryScreen(
+         }
+         item {
+             SectionHeading("ثبت عملیات", "حساب و نوع عملیات را انتخاب کنید")
+-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+-                TreasuryFormMode.entries.forEach { item ->
++            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
++                items(TreasuryFormMode.entries, key = { it.name }) { item ->
+                     FilterChip(selected = mode == item, onClick = { mode = item }, label = { Text(item.title) })
+                 }
+             }
+@@ -142,12 +143,12 @@ internal fun TreasuryScreen(
+         } else {
+             item {
+                 Text("حساب مبدأ/عملیاتی")
+-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+-                    state.accounts.forEach { account ->
++                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
++                    items(state.accounts, key = { it.id.value }) { account ->
+                         FilterChip(
+                             selected = accountId == account.id.value,
+                             onClick = { accountId = account.id.value },
+-                            label = { Text(account.name) },
++                            label = { Text(account.name, maxLines = 1) },
+                         )
+                     }
+                 }
+@@ -155,12 +156,13 @@ internal fun TreasuryScreen(
+             if (mode == TreasuryFormMode.TRANSFER) {
+                 item {
+                     Text("حساب مقصد")
+-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+-                        state.accounts.filter { it.id.value != accountId }.forEach { account ->
++                    val destinationAccounts = state.accounts.filter { it.id.value != accountId }
++                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
++                        items(destinationAccounts, key = { it.id.value }) { account ->
+                             FilterChip(
+                                 selected = targetAccountId == account.id.value,
+                                 onClick = { targetAccountId = account.id.value },
+-                                label = { Text(account.name) },
++                                label = { Text(account.name, maxLines = 1) },
+                             )
+                         }
+                     }
+@@ -189,12 +191,12 @@ internal fun TreasuryScreen(
+         }
+         if (mode == TreasuryFormMode.SETTLEMENT) {
+             item {
+-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+-                    TreasuryDirection.entries.forEach { direction ->
++                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                    items(TreasuryDirection.entries, key = { it.name }) { direction ->
+                         FilterChip(
+                             selected = settlementDirection == direction,
+                             onClick = { settlementDirection = direction },
+-                            label = { Text(if (direction == TreasuryDirection.RECEIPT) "تسویه دریافتنی" else "تسویه پرداختنی") },
++                            label = { Text(if (direction == TreasuryDirection.RECEIPT) "تسویه دریافتنی" else "تسویه پرداختنی", maxLines = 1) },
+                         )
+                     }
+                 }
+diff --git a/app/src/main/java/ir/restaurant/management/ui/UiPaging.kt b/app/src/main/java/ir/restaurant/management/ui/UiPaging.kt
+new file mode 100644
+index 0000000..4f85f54
+--- /dev/null
++++ b/app/src/main/java/ir/restaurant/management/ui/UiPaging.kt
+@@ -0,0 +1,27 @@
++package ir.restaurant.management.ui
++
++/** Pure presentation paging contract shared by large ERP lists and search results. */
++internal data class UiPageWindow(
++    val pageIndex: Int,
++    val pageCount: Int,
++    val totalCount: Int,
++    val fromIndex: Int,
++    val toIndexExclusive: Int,
++) {
++    val hasPrevious: Boolean get() = pageIndex > 0
++    val hasNext: Boolean get() = pageIndex + 1 < pageCount
++    val visibleCount: Int get() = (toIndexExclusive - fromIndex).coerceAtLeast(0)
++}
++
++internal fun uiPageWindow(totalCount: Int, requestedPage: Int, pageSize: Int): UiPageWindow {
++    require(pageSize > 0) { "pageSize must be positive" }
++    val safeTotal = totalCount.coerceAtLeast(0)
++    val pageCount = if (safeTotal == 0) 1 else ((safeTotal - 1) / pageSize) + 1
++    val pageIndex = requestedPage.coerceIn(0, pageCount - 1)
++    val from = (pageIndex * pageSize).coerceAtMost(safeTotal)
++    val to = (from + pageSize).coerceAtMost(safeTotal)
++    return UiPageWindow(pageIndex, pageCount, safeTotal, from, to)
++}
++
++internal fun <T> List<T>.page(window: UiPageWindow): List<T> =
++    if (isEmpty() || window.fromIndex >= size) emptyList() else subList(window.fromIndex, window.toIndexExclusive.coerceAtMost(size))
+diff --git a/app/src/test/java/ir/restaurant/management/domain/search/GlobalSearchNormalizationTest.kt b/app/src/test/java/ir/restaurant/management/domain/search/GlobalSearchNormalizationTest.kt
+new file mode 100644
+index 0000000..d8585e9
+--- /dev/null
++++ b/app/src/test/java/ir/restaurant/management/domain/search/GlobalSearchNormalizationTest.kt
+@@ -0,0 +1,16 @@
++package ir.restaurant.management.domain.search
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++
++class GlobalSearchNormalizationTest {
++    @Test
++    fun normalizesArabicPersianVariantsAndDigits() {
++        assertEquals("کبابی 123", normalizePersianSearchText("  كبابي ۱۲٣  "))
++    }
++
++    @Test
++    fun collapsesDirectionalAndWhitespaceCharacters() {
++        assertEquals("فروش روزانه", normalizePersianSearchText("فروش\u200c   روزانه"))
++    }
++}
+diff --git a/app/src/test/java/ir/restaurant/management/ui/MoneyFormatterTest.kt b/app/src/test/java/ir/restaurant/management/ui/MoneyFormatterTest.kt
+new file mode 100644
+index 0000000..3606090
+--- /dev/null
++++ b/app/src/test/java/ir/restaurant/management/ui/MoneyFormatterTest.kt
+@@ -0,0 +1,18 @@
++package ir.restaurant.management.ui
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class MoneyFormatterTest {
++    @Test
++    fun rial_is_persian_grouped_and_explicitly_labeled() {
++        assertEquals("۵٬۰۰۰٬۰۰۰ ریال", formatMoney(5_000_000L, CurrencyUnit.RIAL))
++        assertEquals("۰ ریال", formatMoney(0L, CurrencyUnit.RIAL))
++    }
++
++    @Test
++    fun percent_basis_points_uses_persian_digits_and_percent_sign() {
++        assertEquals("۳۵.۲۵٪", formatPercentBasisPoints(3_525L))
++        assertEquals("۰.۰۰٪", formatPercentBasisPoints(0L))
++    }
++}
+diff --git a/app/src/test/java/ir/restaurant/management/ui/UiPagingTest.kt b/app/src/test/java/ir/restaurant/management/ui/UiPagingTest.kt
+new file mode 100644
+index 0000000..e20eaed
+--- /dev/null
++++ b/app/src/test/java/ir/restaurant/management/ui/UiPagingTest.kt
+@@ -0,0 +1,36 @@
++package ir.restaurant.management.ui
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class UiPagingTest {
++    @Test
++    fun window_clamps_page_and_never_drops_tail() {
++        val window = uiPageWindow(totalCount = 121, requestedPage = 99, pageSize = 50)
++        assertEquals(2, window.pageIndex)
++        assertEquals(3, window.pageCount)
++        assertEquals(100, window.fromIndex)
++        assertEquals(121, window.toIndexExclusive)
++        assertEquals(21, window.visibleCount)
++        assertTrue(window.hasPrevious)
++        assertFalse(window.hasNext)
++    }
++
++    @Test
++    fun empty_window_is_stable_first_page() {
++        val window = uiPageWindow(totalCount = 0, requestedPage = 4, pageSize = 20)
++        assertEquals(0, window.pageIndex)
++        assertEquals(1, window.pageCount)
++        assertEquals(0, window.fromIndex)
++        assertEquals(0, window.toIndexExclusive)
++    }
++
++    @Test
++    fun page_returns_only_requested_slice() {
++        val rows = (1..105).toList()
++        val window = uiPageWindow(rows.size, requestedPage = 1, pageSize = 50)
++        assertEquals((51..100).toList(), rows.page(window))
++    }
++}
