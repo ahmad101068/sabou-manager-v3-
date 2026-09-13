@@ -36,6 +36,9 @@ jobs:
           TAG='v1.0.0'
           TARGET="${GITHUB_SHA}"
 
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "${TAG} already exists; leaving it unchanged."
           else
