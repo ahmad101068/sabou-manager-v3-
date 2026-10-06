@@ -1,0 +1,88 @@
+name: Reference Phase 2 validation
+on:
+  push:
+    branches: ['chore/reference-phase2-validation-20261006']
+    paths: ['reference-validation/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: reference-phase2-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [source, payroll-room]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Restore and verify exact reference history
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode reference-validation/source-phase2.bundle.b64 > "$RUNNER_TEMP/source-phase2.bundle"
+          echo "7a4356b462d734e857ce06261bdb813337479a17a700d8a992a64b66e146a2f0  $RUNNER_TEMP/source-phase2.bundle" | sha256sum -c -
+          git clone "$RUNNER_TEMP/source-phase2.bundle" reference-source
+          git -C reference-source checkout fix/phase2-critical
+          git -C reference-source remote remove origin
+          git -C reference-source config core.autocrlf false
+          git -C reference-source config pull.ff only
+          git -C reference-source config merge.ff only
+          git -C reference-source config fetch.prune false
+          test "$(git -C reference-source rev-parse HEAD)" = 07040f4f4a19aeb108bf4351c16c93b4e5397072
+          test -z "$(git -C reference-source status --porcelain)"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$sdkmanager" --licenses > /dev/null
+          sdk_exit=${PIPESTATUS[1]}
+          set -o pipefail
+          test "$sdk_exit" = 0
+          "$sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+      - name: Full source validation, retaining all failures
+        if: matrix.suite == 'source'
+        working-directory: reference-source
+        run: python3 scripts/run-source-validation.py
+      - name: Compile real Room regression fixture
+        if: matrix.suite == 'payroll-room'
+        working-directory: reference-source
+        run: sh gradlew --no-daemon --console=plain :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Enable emulator acceleration
+        if: matrix.suite == 'payroll-room'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run F01 before-fix reproduction on Android 35
+        if: matrix.suite == 'payroll-room'
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: cd reference-source && sh gradlew --no-daemon --console=plain :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=ir.restaurant.management.data.repository.Phase2PayrollReversalRegressionTest
+      - name: Retain validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reference-phase2-${{ matrix.suite }}-${{ github.sha }}
+          path: |
+            reference-source/.ci-reports/
+            reference-source/app/build/test-results/
+            reference-source/app/build/reports/
+            reference-source/app/build/outputs/androidTest-results/
+          if-no-files-found: warn
+          retention-days: 14
