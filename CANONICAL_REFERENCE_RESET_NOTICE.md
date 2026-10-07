@@ -1,13 +1,13 @@
-# Sabou Manager — Canonical Reference Reset Notice
+# Sabou Manager — Canonical Reference Notice
 
-**DO NOT START NEW DEVELOPMENT FROM THIS BRANCH YET.**
+**DO NOT START NEW DEVELOPMENT FROM GITHUB main YET.**
 
-The current canonical development reference is Phase 2 Foundation, established on 2026-10-07.
+The current canonical development reference is Phase 3, established on 2026-10-07.
 
 Canonical reference identity:
-- commit: `7d8d882839fdd42883553272ef1c5e9b92d3c148`
-- tree: `87c81ce1d9ea0e5b0025be21064d436e467b24fb`
-- tag: `sabou-reference-foundation-p2-2026-10-07`
+- commit: `a305d43b03c4e4e2344753cb43880e410451a07b`
+- tree: `d187b43a9873602be3833162c0b8ec416026976b`
+- tag: `sabou-reference-financial-p3-2026-10-07`
 - versionName/versionCode: `1.0.3 / 212`
 - Room schema: `61`
 - database generation: `2`
@@ -15,11 +15,11 @@ Canonical reference identity:
 - historical migrations in production path: `NO`
 - old installation data compatibility: `NOT SUPPORTED`
 - production readiness: `NOT PRODUCTION READY`
-- next phase: `PHASE 3 — Financial, Treasury & Inventory Core`
+- next phase: `PHASE 4 — Authorization, Scope & Command Integrity`
 
-This GitHub `main` is older/different and is preserved only for provenance until the exact Phase 2 canonical tree is imported and verified.
+Phase 3 closes the Daily Sales Confirm/Post live-WAC dead-end, adds CONFIRMED recovery, branch-scoped treasury balance and explicit negative-balance policy, fixes accounting replay ordering, and repairs accounting-period re-close behavior.
 
-The pre-reset GitHub state is protected at:
+This GitHub `main` remains older/different and is preserved only for provenance until the exact canonical tree is imported and verified.
+
+Pre-reset GitHub state:
 `archive/pre-reference-reset-20261007`
-
-Do not merge, cherry-pick, or start new feature work from legacy agent/diagnostic/remediation/temp/phase branches. They should be retired only after the exact canonical Phase 2 tree is present on GitHub and verified.
